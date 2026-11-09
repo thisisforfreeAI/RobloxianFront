@@ -92,6 +92,11 @@ local function onIntent(player: Player, raw: any)
 		if not id then
 			Net.sendState(player, { notice = why })
 		end
+	elseif i.kind == "recon" then
+		local n, why = sim.deployRecon(side, i.unitIds)
+		if n == 0 then
+			Net.sendState(player, { notice = why })
+		end
 	elseif i.kind == "truck" then
 		local ok, why = sim.orderTruck(side, i.rigId)
 		if not ok then
@@ -132,6 +137,23 @@ local function structureRow(e: any, owner: number, details: boolean): { any }
 	}
 end
 
+-- 0 none, 1 scout deployed (recon), 2 gun packing up, 3 gun setting up
+local function unitStatus(e: any): number
+	if (e.reconLeft or 0) > 0 then
+		return 1
+	end
+	if e.packAt and e.packAt > sim.time then
+		return 2
+	end
+	if not e.path and rules:text(`units.{e.kind}.nato`) == "artillery" then
+		local setup = rules:number(if rules:text(`units.{e.kind}.weapon`) == "mortar" then "mortar.setupSec" else "artillery.setupSec")
+		if (e.still or 0) < setup then
+			return 3
+		end
+	end
+	return 0
+end
+
 local function viewFor(side: number): ({ any }, { any }, { number }?)
 	local viewer = if side > 0 then viewers[side] else nil
 	if side > 0 and not viewer then
@@ -146,7 +168,7 @@ local function viewFor(side: number): ({ any }, { any }, { number }?)
 	for _, e in sim.list do
 		if e.cat == "unit" then
 			if not viewer or viewer.unitVisible(e) then
-				table.insert(units, { e.id, e.kind, e.side, e.x, e.y, e.heading, e.hp, e.maxHp })
+				table.insert(units, { e.id, e.kind, e.side, e.x, e.y, e.heading, e.hp, e.maxHp, unitStatus(e) })
 			end
 		elseif e.kind == "rig" then
 			local seen = not viewer or e.side == side or viewer.visibleAt(e.x, e.y)
@@ -226,7 +248,8 @@ local function privateState()
 			payload.lost = s.lost
 			local producers = {}
 			for _, e in sim.list do
-				if e.alive and e.side == side and e.cat == "structure" and e.queue then
+				local makes = e.cat == "structure" and rules.data[`structures.{e.kind}.produces`] :: { string }?
+				if e.alive and e.side == side and e.queue and makes and #makes > 0 then
 					table.insert(producers, { id = e.id, kind = e.kind, queue = #e.queue, left = sim.queueLeft(side, e.id), built = e.built })
 				end
 			end

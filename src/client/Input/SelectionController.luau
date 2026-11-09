@@ -5,6 +5,7 @@
 	Left click on one of your buildings (HQ, barracks, factory): pick it as the producer for the HUD.
 	Right click on an enemy unit or building: attack order. Right click on the ground: move order. X: stop. Esc: clear.
 	T with the cursor on one of your rigs: send a truck to it.
+	R: selected scout cars deploy for recon (PROVISIONAL key).
 	Trucks drive themselves and cannot be selected.
 	The client only proposes; the server re-checks ownership and the target.
 	Key choices (X, Esc) are PROVISIONAL until WarFront's bindings are confirmed.
@@ -175,7 +176,7 @@ function SelectionController.start(mySide: number, sendIntent: (any) -> (), opts
 				end
 			end
 			for id, v in StructureRenderer.each() do
-				if PRODUCERS[v.kind] and v.side ~= mySide and v.side ~= 0 then
+				if v.kind ~= "rig" and v.side ~= mySide and v.side ~= 0 then
 					local p, on = workspace.CurrentCamera:WorldToViewportPoint(World.toWorld(v.x, v.y, 1))
 					local d = (Vector2.new(p.X, p.Y) - mouse).Magnitude
 					if on and d < math.max(bestDist, 40) then
@@ -207,6 +208,18 @@ function SelectionController.start(mySide: number, sendIntent: (any) -> (), opts
 			end
 			if best then
 				sendIntent({ kind = "truck", rigId = best })
+			end
+		elseif input.KeyCode == Enum.KeyCode.R and next(selected) then
+			-- R: selected scout cars deploy for recon (PROVISIONAL key; the server checks cooldowns)
+			local ids = {}
+			for id in selected do
+				local v = UnitRenderer.each()[id]
+				if v and v.kind == "scout" then
+					table.insert(ids, id)
+				end
+			end
+			if #ids > 0 then
+				sendIntent({ kind = "recon", unitIds = ids })
 			end
 		elseif input.KeyCode == Enum.KeyCode.X and next(selected) then
 			send(sendIntent, "stop")

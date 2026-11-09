@@ -16,9 +16,9 @@
 	Production  per producer (HQ, barracks, factory; units.<k>.from), paid up front (units.<k>.cost),
 	            units.<k>.buildSec each, production.maxQueue, match.unitCap counts units plus every
 	            queue. Refusals in the game's order: blocked, notOperational, requires, queueFull,
-	            unitCap, oil. Slice units: infantry, engineer (HQ); infantry, AT (barracks); tank, IFV
-	            (factory).
-	Buildings   barracks and factory (the game's placeStructure). Placement check in the game's order:
+	            unitCap, oil. Slice units: infantry, engineer (HQ); infantry, AT, mortar (barracks);
+	            tank, IFV, artillery, scout car (factory).
+	Buildings   barracks, factory, bunker and AT gun (the game's placeStructure). Placement check in the game's order:
 	            footprint inside the map and on buildable terrain ("terrain"), no road within the
 	            footprint + max(1, round(footprint x roadClearShare)) + roadClearPad ("onRoad"), no rig
 	            within footprint + rigs.padCells ("onRig"), no structure within the two footprints +
@@ -54,11 +54,24 @@
 	            road cells (x1 off road).
 	Combat      each shooter picks the nearest valid enemy unit in range (attack orders first), then
 	            trucks, then structures (armed structures count as 4x closer). A shot every reloadSec
-	            (+/- combat.reloadJitter); the hit lands after the bullet flight (70 cells/s). Unit hit =
-	            dps x reloadSec x vs[target armour] x (armour.movingFire if an armoured shooter moves)
-	            x terrain cover (1 - cover, or flank rules when hit from behind combat.flankDeg)
-	            x armour facing (armoured targets). Structure hit = dps x reloadSec x vs.structure.
-	            Truck hit = dps x reloadSec x vs.armour. The HQ shoots too.
+	            (+/- combat.reloadJitter); the hit lands after the shot's flight (cells/s: bullets 70,
+	            cannon 38, rocket 22, shell 13, mortar 6.5). Unit hit = dps x reloadSec x vs[target
+	            armour] x (armour.movingFire if an armoured shooter moves) x terrain cover (1 - cover, or
+	            flank rules when hit from behind combat.flankDeg) x armour facing (armoured targets).
+	            Splash (units.<k>.splash > 0): the hit x bunching (1 + min(bunchMax, bunchSplash x (foot
+	            soldiers within bunchCells - 1))), and half of it on the target's comrades within splash.
+	            Artillery fire (nato "artillery": mortar, artillery) ignores flanking and armour facing.
+	            Structure hit = dps x reloadSec x vs.structure. Truck hit = dps x reloadSec x vs.armour.
+	            Every built, working, armed building fires (HQ, bunker, AT gun): nearest unit, else truck.
+	Artillery   mortars and artillery fire only after standing still mortar.setupSec / artillery.setupSec;
+	            after firing they are revealed to the enemy for artillery.revealSec (artillery.revealCells
+	            of vision round them) and must pack (packSec) before moving. Mortars: no target inside
+	            mortar.minRange, and with fog on only targets on cells their nation sees (vision map
+	            refreshed every mortar.spotEveryTicks) unless the target is revealed; on an attack order
+	            they hold between minRange x backOffShare and the reach (Kat, APPROX re-plan rule).
+	Scouts      deployRecon: the scout stops and sees intel.scoutReconRadius (not shortened by night) for
+	            intel.scoutDeploySec; any order packs it; then intel.scoutCooldownSec before it can
+	            deploy again.
 	HQ loss     a nation whose HQ dies with no active factory is eliminated at once (all its units and
 	            buildings die, its rigs turn neutral and empty); with one it has hqLoss.graceSec to
 	            rehouse. The command truck that does that is not in the slice, so the nation is out
@@ -78,8 +91,8 @@
 	Engineers can be trained (the HQ lists them) but their building and repair work is not in the slice.
 	Fog: visionFor / nightAmount below; the server filters snapshots per side (Shared.Simulation.Fog).
 	Not in the slice: line of sight (the game's only blockers are settlement buildings), weather, veterancy, smoke, rig damage,
-	        settlements, refineries, rail, events, defences (bunker, AT gun, SAM, radar), mortars,
-	        artillery, rockets, scouts, the command truck, power lines and dams.
+	        settlements, refineries, rail, events, SAM, radar, rocket artillery (salvo barrages),
+	        drones, craters, the command truck, power lines and dams.
 ]]
 
 local Sim = {}
@@ -128,6 +141,10 @@ export type Event = { type: string, [string]: any }
 
 local TRUCK = "truck"
 local BULLET_SPEED = 70 -- cells/s, the game's bullet flight speed
+-- cells/s, the game's shot speeds for the other weapons
+local SHOT_SPEED: { [string]: number } = {
+	cannon = 38, rocket = 22, missile = 18, shell = 13, salvo = 9.5, bomb = 11, mortar = 6.5, barrage = 11,
+}
 
 function Sim.new(deps: Deps)
 	local r = deps.rules
@@ -369,13 +386,14 @@ function Sim.new(deps: Deps)
 	local function canAttack(a: number, b: number): boolean
 		return a ~= b and a > 0 and b > 0
 	end
+	self.canAttack = canAttack
 
 
 	---------------------------------------------------------------- structures and territory
 
 	-- The kinds the slice lets a nation place, and the units each producer may train in the slice.
-	local PLACEABLE = { barracks = true, factory = true }
-	local SLICE_UNITS = { infantry = true, engineer = true, at = true, tank = true, ifv = true }
+	local PLACEABLE = { barracks = true, factory = true, bunker = true, atgun = true }
+	local SLICE_UNITS = { infantry = true, engineer = true, at = true, tank = true, ifv = true, mortar = true, artillery = true, scout = true }
 	self.PLACEABLE = PLACEABLE
 
 	local function footprintOf(kind: string): number
@@ -897,6 +915,69 @@ function Sim.new(deps: Deps)
 		return false
 	end
 
+	---------------------------------------------------------------- scout recon
+
+	-- units with the recon ability (the scout car)
+	local function canRecon(e: Entity): boolean
+		local ab = r.data[`units.{e.kind}.abilities`] :: { string }?
+		return e.cat == "unit" and ab ~= nil and table.find(ab, "recon") ~= nil
+	end
+	self.canRecon = canRecon
+	function self.scoutDeployed(e: Entity): boolean
+		return (e.reconLeft or 0) > 0
+	end
+	function self.scoutReadyIn(e: Entity): number
+		return math.max(0, (e.reconReadyAt or 0) - self.time)
+	end
+	-- the game's gwe: pack up, then intel.scoutCooldownSec before it can deploy again
+	local function packRecon(e: Entity)
+		e.reconLeft = 0
+		e.reconReadyAt = self.time + num("intel.scoutCooldownSec")
+	end
+	-- any new order packs a deployed scout (the game's clearOrders -> GJe)
+	local function clearRecon(e: Entity)
+		if (e.reconLeft or 0) > 0 then
+			packRecon(e)
+		end
+	end
+	-- the game's deployRecon (qJe): the scout stops and sees intel.scoutReconRadius around it for
+	-- intel.scoutDeploySec. Returns (count deployed, reason when none).
+	function self.deployRecon(side: number, ids: { number }): (number, string?)
+		local n, cooling, any = 0, false, false
+		for _, id in ids do
+			local e = self.entities[id]
+			if e and e.alive and e.side == side and canRecon(e) then
+				any = true
+				if (e.reconLeft or 0) <= 0 then
+					if self.scoutReadyIn(e) > 0 then
+						cooling = true
+					else
+						e.target, e.attackId, e.path, e.spot = nil, nil, nil, nil
+						e.reconLeft = num("intel.scoutDeploySec")
+						n += 1
+					end
+				end
+			end
+		end
+		if n > 0 then
+			return n, nil
+		end
+		return 0, if not any then "noScouts" elseif cooling then "cooldown" else "blocked"
+	end
+	-- the game's ZJe: deployed scouts stay put and count down
+	local function reconTick(dt: number)
+		for _, e in self.list do
+			if e.alive and (e.reconLeft or 0) > 0 then
+				e.target, e.path = nil, nil
+				e.reconLeft -= dt
+				if e.reconLeft <= 0 then
+					packRecon(e)
+					event({ type = "scoutPacked", id = e.id, side = e.side })
+				end
+			end
+		end
+	end
+
 	function self.orderMove(side: number, ids: { number }, x: number, y: number): { number }
 		local refused = {}
 		local group = {}
@@ -904,6 +985,7 @@ function Sim.new(deps: Deps)
 			local e = self.entities[id]
 			if orderable(e, side) then
 				e.attackId = nil
+				clearRecon(e)
 				table.insert(group, e)
 			elseif e and e.side ~= side then
 				table.insert(refused, id)
@@ -933,6 +1015,7 @@ function Sim.new(deps: Deps)
 			local e = self.entities[id]
 			if orderable(e, side) then
 				e.target, e.attackId, e.path = nil, nil, nil
+				clearRecon(e)
 			elseif e and e.side ~= side then
 				table.insert(refused, id)
 			end
@@ -950,6 +1033,7 @@ function Sim.new(deps: Deps)
 			local e = self.entities[id]
 			if orderable(e, side) then
 				e.attackId, e.target, e.path = targetId, nil, nil
+				clearRecon(e)
 			elseif e and e.side ~= side then
 				table.insert(refused, id)
 			end
@@ -1188,12 +1272,46 @@ function Sim.new(deps: Deps)
 		return numOr(`{key}.vs.{armour}`, 0)
 	end
 
-	local function hitUnit(target: Entity, dps: number, key: string, secs: number, by: number, fromX: number, fromY: number)
+	local function d2(ax: number, ay: number, bx: number, by: number): number
+		return (ax - bx) ^ 2 + (ay - by) ^ 2
+	end
+
+	-- the game's bunchFactor: splash hurts more where foot soldiers crowd
+	local function bunchFactor(by: number, x: number, y: number): number
+		local cells = num("combat.bunchCells")
+		local share = num("combat.bunchSplash")
+		if share <= 0 or cells <= 0 then
+			return 1
+		end
+		local n = 0
+		for _, u in self.list do
+			if u.alive and u.cat == "unit" and u.kind ~= TRUCK and d2(u.x, u.y, x, y) <= cells * cells
+				and text(unitKey(u) .. ".move") == "foot" and (by < 0 or canAttack(by, u.side)) then
+				n += 1
+			end
+		end
+		return 1 + math.min(num("combat.bunchMax"), share * math.max(0, n - 1))
+	end
+
+	local function killIfDead(u: Entity, by: number)
+		if u.hp <= 0 and u.alive then
+			u.alive = false
+			event({ type = "destroyed", id = u.id, kind = u.kind, side = u.side, by = by })
+		end
+	end
+
+	-- the game's hitUnit. splash > 0: the hit grows with bunching and half of it also lands on the
+	-- target's comrades within splash cells. bombard (artillery fire): no flanking, no armour facing.
+	local function hitUnit(target: Entity, dps: number, key: string, secs: number, by: number, fromX: number, fromY: number, splash: number?, bombard: boolean?)
+		local s = splash or 0
 		local p = dps * vsOf(key, target.class) * secs
-		local g = if target.class == "armour" then num(`armour.{armourSide(target, fromX, fromY)}`) else 0
+		if s > 0 then
+			p *= bunchFactor(by, target.x, target.y)
+		end
+		local g = if target.class == "armour" and not bombard then num(`armour.{armourSide(target, fromX, fromY)}`) else 0
 		if target.class ~= "air" then
 			local y = coverAt(cellAt(target.x, target.y))
-			if flanked(target, fromX, fromY) then
+			if not bombard and flanked(target, fromX, fromY) then
 				p *= (1 - y * num("combat.flankCoverKeep")) * (if g ~= 0 then 1 else num("combat.flankBonus"))
 			else
 				p *= 1 - y
@@ -1204,10 +1322,17 @@ function Sim.new(deps: Deps)
 		end
 		target.hp -= p
 		target.hitAt, target.hitBy = self.time, by
-		if target.hp <= 0 and target.alive then
-			target.alive = false
-			event({ type = "destroyed", id = target.id, kind = target.kind, side = target.side, by = by })
+		if s > 0 then
+			for _, b in self.list do
+				if b ~= target and b.alive and b.cat == "unit" and b.kind ~= TRUCK and b.side == target.side
+					and d2(b.x, b.y, target.x, target.y) <= s * s and vsOf(key, b.class) > 0 then
+					b.hp -= p * 0.5
+					b.hitAt, b.hitBy = self.time, by
+					killIfDead(b, by)
+				end
+			end
 		end
+		killIfDead(target, by)
 	end
 
 	local function hitTruck(t: Entity, dps: number, key: string, secs: number, by: number)
@@ -1239,7 +1364,7 @@ function Sim.new(deps: Deps)
 			local t = self.entities[s.target]
 			if t and t.alive then
 				if s.kind == "unit" then
-					hitUnit(t, s.dps, s.key, s.secs, s.by, s.fromX, s.fromY)
+					hitUnit(t, s.dps, s.key, s.secs, s.by, s.fromX, s.fromY, s.splash, s.bombard)
 				elseif s.kind == "convoy" then
 					hitTruck(t, s.dps, s.key, s.secs, s.by)
 				else
@@ -1251,20 +1376,17 @@ function Sim.new(deps: Deps)
 
 	---------------------------------------------------------------- combat
 
-	local function d2(ax: number, ay: number, bx: number, by: number): number
-		return (ax - bx) ^ 2 + (ay - by) ^ 2
-	end
-
 	local function validUnitTarget(side: number, o: Entity, key: string): boolean
 		return o.alive and o.hp > 0 and o.cat == "unit" and o.kind ~= TRUCK and canAttack(side, o.side) and vsOf(key, o.class) > 0
 	end
 
-	local function nearestUnit(x: number, y: number, side: number, range: number, key: string): Entity?
+	local function nearestUnit(x: number, y: number, side: number, range: number, key: string, minR: number?, ok: ((Entity) -> boolean)?): Entity?
 		local best, bestD = nil, range * range
+		local lo = (minR or 0) ^ 2
 		for _, o in self.list do
 			if validUnitTarget(side, o, key) then
 				local d = d2(x, y, o.x, o.y)
-				if d <= bestD then -- the game keeps the last of equally near targets
+				if d >= lo and d <= bestD and (not ok or ok(o)) then -- the game keeps the last of equally near targets
 					best, bestD = o, d
 				end
 			end
@@ -1272,12 +1394,13 @@ function Sim.new(deps: Deps)
 		return best
 	end
 
-	local function nearestTruck(x: number, y: number, side: number, range: number): Entity?
+	local function nearestTruck(x: number, y: number, side: number, range: number, minR: number?): Entity?
 		local best, bestD = nil, range * range
+		local lo = (minR or 0) ^ 2
 		for _, o in self.list do
 			if o.alive and o.kind == TRUCK and canAttack(side, o.side) then
 				local d = d2(x, y, o.x, o.y)
-				if d <= bestD then
+				if d <= bestD and d >= lo then
 					best, bestD = o, d
 				end
 			end
@@ -1285,15 +1408,16 @@ function Sim.new(deps: Deps)
 		return best
 	end
 
-	local function nearestStructure(x: number, y: number, side: number, range: number, key: string): Entity?
+	local function nearestStructure(x: number, y: number, side: number, range: number, key: string, minR: number?, ok: ((Entity) -> boolean)?): Entity?
 		if vsOf(key, "structure") <= 0 then
 			return nil
 		end
 		local best, bestW = nil, math.huge
+		local lo = (minR or 0) ^ 2
 		for _, o in self.list do
 			if o.alive and o.cat == "structure" and o.kind ~= "rig" and canAttack(side, o.side) then
 				local d = d2(x, y, o.x, o.y)
-				if d <= range * range then
+				if d <= range * range and d >= lo and (not ok or ok(o)) then
 					local wgt = d * (if numOr(`structures.{o.kind}.dps`, 0) > 0 then 0.25 else 1)
 					if wgt < bestW then
 						best, bestW = o, wgt
@@ -1316,11 +1440,11 @@ function Sim.new(deps: Deps)
 		return reload
 	end
 
+	-- the game's flightSec: distance / the weapon's shot speed (0 = lands at once)
 	local function flight(key: string, ax: number, ay: number, bx: number, by: number): number
-		if text(key .. ".weapon") == "bullets" then
-			return math.sqrt(d2(ax, ay, bx, by)) / BULLET_SPEED
-		end
-		return 0 -- UNCONFIRMED for other weapons (not in the slice)
+		local w = text(key .. ".weapon")
+		local speed = if w == "bullets" then BULLET_SPEED else (SHOT_SPEED[w] or 0)
+		return if speed > 0 then math.sqrt(d2(ax, ay, bx, by)) / speed else 0
 	end
 
 	local function fire(e: Entity, key: string, target: Entity, kind: string, dps: number, dt: number)
@@ -1333,21 +1457,33 @@ function Sim.new(deps: Deps)
 		if secs <= 0 then
 			return
 		end
+		local arty = e.cat == "unit" and text(key .. ".nato") == "artillery"
+		if arty then
+			-- the game's Jze: a firing gun is revealed to the enemy and stays deployed (packs before moving)
+			e.revealedUntil = self.time + num("artillery.revealSec")
+			e.packAt = -1
+		end
 		local strike: { [string]: any } = {
 			kind = kind, at = self.time + flight(key, e.x, e.y, tx, ty), target = target.id, dps = dps,
 			key = key, secs = secs, by = e.side, fromX = e.x, fromY = e.y,
 		}
+		if kind == "unit" and e.cat == "unit" then
+			strike.splash = numOr(key .. ".splash", 0)
+			strike.bombard = arty
+		end
 		if kind == "structure" then
 			strike.damage = dps * vsOf(key, "structure") * secs
 		end
 		table.insert(self.strikes, strike)
 	end
 
+	-- the game's structure fire: every built, working, armed building shoots the nearest enemy unit
+	-- in range, else the nearest enemy truck
 	local function structuresFire(dt: number)
 		for _, st in self.list do
-			if st.alive and st.kind == "hq" then
-				local key = "structures.hq"
-				local dps = num(key .. ".dps")
+			if st.alive and isStructure(st) and st.built >= 1 and not self.inactiveReason(st) then
+				local key = `structures.{st.kind}`
+				local dps = numOr(key .. ".dps", 0)
 				if dps > 0 then
 					local range = num(key .. ".range")
 					local u = nearestUnit(st.x, st.y, st.side, range, key)
@@ -1364,6 +1500,64 @@ function Sim.new(deps: Deps)
 		end
 	end
 
+	-- mortar spotting (the game's jat / Xbe): with fog on, a mortar only fires on cells its nation
+	-- sees, from a vision map refreshed every mortar.spotEveryTicks ticks
+	local spotCache: { [number]: { at: number, grid: { number } } } = {}
+	local function spotted(side: number, x: number, y: number): boolean
+		if not self.fogOn() then
+			return true
+		end
+		local c = cellAt(x, y)
+		if c < 0 then
+			return false
+		end
+		local at = self.ticks // math.max(1, math.floor(num("mortar.spotEveryTicks") + 0.5))
+		local sc = spotCache[side]
+		if not sc or sc.at ~= at then
+			sc = sc or { at = at, grid = table.create(W * H, 0) }
+			sc.at = at
+			self.visionFor(side, sc.grid)
+			spotCache[side] = sc
+		end
+		return sc.grid[c + 1] == 2
+	end
+	local function revealed(o: Entity): boolean
+		return o.revealedUntil ~= nil and o.revealedUntil > self.time
+	end
+
+	-- the game's mortar attack think (Kat): hold between minRange x backOffShare and the reach
+	-- (range, or sight when the target is not spotted, x attackRangeShare); back off when too close.
+	-- Returns the target once in that band. APPROX: re-plans only when the approach point moves 2+
+	-- cells, like the other units' approach.
+	local function mortarApproach(e: Entity, t: Entity, range: number, minR: number): Entity?
+		local spot = revealed(t) or spotted(e.side, t.x, t.y)
+		local reach = (if spot then range else math.min(range, num(unitKey(e) .. ".sight") * self.sightFactor()))
+			* num("combat.attackRangeShare")
+		local f = math.min(reach * 0.9, minR * num("mortar.backOffShare"))
+		local p = math.sqrt(d2(e.x, e.y, t.x, t.y))
+		if p >= f and p <= reach then
+			e.target, e.path = nil, nil
+			return t
+		end
+		local ax, ay
+		if p < f then
+			local mid = (f + reach) / 2
+			local ux, uy = if p > 1e-6 then (e.x - t.x) / p else 1, if p > 1e-6 then (e.y - t.y) / p else 0
+			ax = math.clamp(t.x + ux * mid, 0.5, W - 0.5)
+			ay = math.clamp(t.y + uy * mid, 0.5, H - 0.5)
+		else
+			local w = math.max(0.5, (reach - f) / 2)
+			local keep = math.max(f + 0.25, reach - w * 0.5)
+			ax, ay = t.x + (e.x - t.x) / p * keep, t.y + (e.y - t.y) / p * keep
+		end
+		local ac = cellAt(ax, ay)
+		local g = e.goalCell
+		if ac >= 0 and (not e.path or not g or math.max(math.abs(ac % W - g % W), math.abs(ac // W - g // W)) >= 2) then
+			planTo(e, ac, ax, ay)
+		end
+		return nil
+	end
+
 	local function unitsFire(dt: number)
 		for _, e in self.list do
 			if e.alive and e.hp > 0 and e.cat == "unit" and e.kind ~= TRUCK then
@@ -1371,6 +1565,21 @@ function Sim.new(deps: Deps)
 				local dps = num(key .. ".dps")
 				if dps > 0 then
 					local range = num(key .. ".range")
+					-- artillery (mortars too) fire only after standing still for their set-up time
+					local arty = text(key .. ".nato") == "artillery"
+					local mortar = text(key .. ".weapon") == "mortar"
+					local minR = if mortar then num("mortar.minRange") else 0
+					local spotUnit: ((Entity) -> boolean)? = nil
+					local spotStructure: ((Entity) -> boolean)? = nil
+					if mortar then
+						spotUnit = function(o: Entity): boolean
+							return revealed(o) or spotted(e.side, o.x, o.y)
+						end
+						spotStructure = function(o: Entity): boolean
+							local cx, cy = centre(o.cell)
+							return spotted(e.side, cx, cy)
+						end
+					end
 					-- armoured shooters fire weaker on the move
 					local eff = dps * (if e.class == "armour" and e.moved then num("armour.movingFire") else 1)
 					local focus: Entity? = nil
@@ -1378,6 +1587,8 @@ function Sim.new(deps: Deps)
 						local t = self.entities[e.attackId]
 						if not t or not t.alive then
 							e.attackId = nil
+						elseif mortar then
+							focus = mortarApproach(e, t, range, minR)
 						else
 							local dist = math.sqrt(d2(e.x, e.y, t.x, t.y))
 							if dist > range then
@@ -1398,33 +1609,52 @@ function Sim.new(deps: Deps)
 							end
 						end
 					end
-					local unitTarget: Entity? = nil
-					if focus then
-						if focus.cat == "unit" and focus.kind ~= TRUCK then
-							unitTarget = focus
+					local setup = if mortar then num("mortar.setupSec") else num("artillery.setupSec")
+					local ready = not arty or (not e.path and (e.still or 0) >= setup)
+					if focus and mortar then
+						local fx, fy = focus.x, focus.y
+						if focus.cat == "structure" then
+							fx, fy = centre(focus.cell)
 						end
-					else
-						unitTarget = nearestUnit(e.x, e.y, e.side, range, key)
+						local ok = d2(e.x, e.y, fx, fy) >= minR * minR
+							and (if focus.cat == "structure" then spotted(e.side, fx, fy) else (spotUnit :: any)(focus))
+						if not ok then
+							focus = nil
+						end
 					end
-					if unitTarget then
-						fire(e, key, unitTarget, "unit", eff, dt)
-					else
-						local truck: Entity? = nil
+					if ready then
+						local unitTarget: Entity? = nil
 						if focus then
-							if focus.kind == TRUCK then
-								truck = focus
+							if focus.cat == "unit" and focus.kind ~= TRUCK then
+								unitTarget = focus
 							end
 						else
-							truck = nearestTruck(e.x, e.y, e.side, range)
+							unitTarget = nearestUnit(e.x, e.y, e.side, range, key, minR, spotUnit)
 						end
-						if truck then
-							fire(e, key, truck, "convoy", eff, dt)
+						if unitTarget then
+							fire(e, key, unitTarget, "unit", eff, dt)
 						else
-							local st = if focus and focus.cat == "structure" then focus else nearestStructure(e.x, e.y, e.side, range, key)
-							if st then
-								fire(e, key, st, "structure", eff, dt)
+							local truck: Entity? = nil
+							if focus then
+								if focus.kind == TRUCK then
+									truck = focus
+								end
+							else
+								truck = nearestTruck(e.x, e.y, e.side, range, minR)
+								if truck and spotUnit and not spotUnit(truck) then
+									truck = nil
+								end
+							end
+							if truck then
+								fire(e, key, truck, "convoy", eff, dt)
+							else
+								local st = if focus and focus.cat == "structure" then focus else nearestStructure(e.x, e.y, e.side, range, key, minR, spotStructure)
+								if st then
+									fire(e, key, st, "structure", eff, dt)
+								end
 							end
 						end
+
 					end
 				end
 			end
@@ -1792,6 +2022,10 @@ function Sim.new(deps: Deps)
 		self.list = keep
 	end
 
+	local function packSecOf(e: Entity): number
+		return if text(unitKey(e) .. ".weapon") == "mortar" then num("mortar.packSec") else num("artillery.packSec")
+	end
+
 	function self.step(dt: number)
 		if self.winner then
 			return
@@ -1802,6 +2036,7 @@ function Sim.new(deps: Deps)
 			updateConnections()
 		end
 		production(dt)
+		reconTick(dt)
 		checkHeadless()
 		landStrikes()
 		structuresFire(dt)
@@ -1809,7 +2044,26 @@ function Sim.new(deps: Deps)
 			if e.alive and e.cat == "unit" and e.kind ~= TRUCK then
 				e.px, e.py, e.firing = e.x, e.y, false
 				e.moved = false
-				if e.target and e.path then
+				-- the game's Qze: a deployed gun (it fired) packs up for packSec before it can move
+				local held = false
+				if e.packAt ~= nil then
+					local going = e.target ~= nil and e.path ~= nil
+					if e.packAt < 0 then
+						if going then
+							e.packAt = self.time + packSecOf(e)
+							e.still = 0
+							held = true
+						end
+					elseif self.time < e.packAt then
+						held = true
+					else
+						e.packAt = nil
+					end
+				end
+				e.stillStep = if held then "held" elseif e.target and e.path then "move" else "still"
+				if held then
+					-- packing: stands where it is
+				elseif e.target and e.path then
 					e.moved = pathing.step(e, dt)
 					if e.path and e.pathIndex > #e.path then
 						-- arrive (idle where it stands)
@@ -1821,6 +2075,16 @@ function Sim.new(deps: Deps)
 			end
 		end
 		unitsFire(dt)
+		-- seconds standing still (artillery sets up before firing): moving resets it, packing holds it
+		for _, e in self.list do
+			if e.alive and e.cat == "unit" and e.stillStep then
+				if e.stillStep == "move" then
+					e.still = 0
+				elseif e.stillStep == "still" then
+					e.still = (e.still or 0) + dt
+				end
+			end
+		end
 		-- face direction: aim while firing, else hull heading (vehicles), else motion
 		for _, e in self.list do
 			if e.alive and e.cat == "unit" and e.kind ~= TRUCK then
@@ -1931,6 +2195,20 @@ function Sim.new(deps: Deps)
 						circle(e.x, e.y, m)
 					end
 				end
+			end
+		end
+		-- deployed scouts see intel.scoutReconRadius (not shortened by night)
+		local rr = num("intel.scoutReconRadius")
+		for _, e in self.list do
+			if e.alive and e.side == side and (e.reconLeft or 0) > 0 then
+				circle(e.x, e.y, rr)
+			end
+		end
+		-- enemy guns that fired lately are revealed (artillery.revealCells around them)
+		local rc = num("artillery.revealCells")
+		for _, e in self.list do
+			if e.alive and e.cat == "unit" and e.side ~= side and e.revealedUntil and e.revealedUntil > self.time then
+				circle(e.x, e.y, rc)
 			end
 		end
 	end

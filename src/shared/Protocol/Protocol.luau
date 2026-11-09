@@ -13,8 +13,8 @@ Protocol.JOIN = "Join" -- RemoteFunction, client -> server, returns { map, side,
 Protocol.STATE = "State" -- RemoteEvent, server -> one client (2 Hz): own oil, HQ queue, match result
 
 -- Units the slice can train (the server checks which producer may train what) and buildings it can place.
-Protocol.PRODUCIBLE = { infantry = true, engineer = true, at = true, tank = true, ifv = true }
-Protocol.BUILDABLE = { barracks = true, factory = true }
+Protocol.PRODUCIBLE = { infantry = true, engineer = true, at = true, tank = true, ifv = true, mortar = true, artillery = true, scout = true }
+Protocol.BUILDABLE = { barracks = true, factory = true, bunker = true, atgun = true }
 
 Protocol.MAX_UNITS_PER_ORDER = 64
 
@@ -23,8 +23,9 @@ export type StopIntent = { kind: "stop", unitIds: { number } }
 export type AttackIntent = { kind: "attack", unitIds: { number }, targetId: number }
 export type ProduceIntent = { kind: "produce", item: string, structureId: number? } -- no id = the HQ
 export type BuildIntent = { kind: "build", structure: string, x: number, y: number } -- footprint centre cell
+export type ReconIntent = { kind: "recon", unitIds: { number } } -- deploy scouts for recon
 export type TruckIntent = { kind: "truck", rigId: number } -- send an idle truck to a rig, or buy one
-export type Intent = MoveIntent | StopIntent | AttackIntent | ProduceIntent | TruckIntent | BuildIntent
+export type Intent = MoveIntent | StopIntent | AttackIntent | ProduceIntent | TruckIntent | BuildIntent | ReconIntent
 
 local function finite(n: any): boolean
 	return type(n) == "number" and n == n and n ~= math.huge and n ~= -math.huge
@@ -99,6 +100,8 @@ function Protocol.parse(raw: any, mapWidth: number, mapHeight: number): (Intent?
 		return { kind = "move", unitIds = ids, x = raw.x, y = raw.y }, nil
 	elseif raw.kind == "stop" then
 		return { kind = "stop", unitIds = ids }, nil
+	elseif raw.kind == "recon" then
+		return { kind = "recon", unitIds = ids }, nil
 	elseif raw.kind == "attack" then
 		if not finite(raw.targetId) or raw.targetId % 1 ~= 0 then
 			return nil, "targetId must be an integer"

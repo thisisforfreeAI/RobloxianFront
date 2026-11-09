@@ -672,6 +672,192 @@ if fs.isFile(matchPath) then
 		assert(#structuresOf(sim, 1, "factory") >= 1 or trained > 0, "factory or units from buildings")
 	end)
 
+	test("defences: a bunker goes up in 10 s, then fires on enemy infantry in its 16.5 cell range", function()
+		local sim = newSim()
+		for _, side in { 1, 2 } do
+			for _, u in units(sim, side, "infantry") do
+				u.alive = false
+			end
+		end
+		local id = sim.placeStructure(1, "bunker", cellOf(20, 42)) :: number
+		assert(id, "placed")
+		eq(sim.sides[1].oil, 600 - 110)
+		local foe = sim.spawnUnit("infantry", 2, 20.5, 56.5)
+		foe.hp = 1e6
+		run(sim, 9.9)
+		eq(foe.hp, 1e6, "an unbuilt bunker does not fire")
+		run(sim, 3)
+		assert(foe.hp < 1e6, "a built bunker fires")
+		foe.x, foe.y = 20.5, 60.5 -- 18 cells: out of range
+		local hp = foe.hp
+		run(sim, 3)
+		eq(foe.hp, hp, "out of range")
+	end)
+	test("defences: the AT gun's cannon shot flies at 38 cells/s; tank shells and AT rockets fly too", function()
+		local sim = newSim()
+		for _, side in { 1, 2 } do
+			for _, u in units(sim, side, "infantry") do
+				u.alive = false
+			end
+		end
+		local id = sim.placeStructure(1, "atgun", cellOf(20, 42)) :: number
+		run(sim, 8.1)
+		eq(sim.entities[id].built, 1)
+		local tank = sim.spawnUnit("tank", 2, 20.5, 61.5)
+		tank.hp = 1e6
+		sim.strikes = {}
+		local seen = nil
+		for _ = 1, 200 do
+			run(sim, 0.05)
+			for _, s in sim.strikes do
+				if s.by == 1 and not seen then
+					seen = s.at - sim.time
+				end
+			end
+			if seen then
+				break
+			end
+		end
+		assert(seen, "the AT gun fired")
+		assert(math.abs(seen - 19 / 38) < 0.06, `19 cells at 38 cells/s: {seen}`)
+	end)
+	test("bot guards its home: after 300 s it builds bunkers or AT guns near the HQ", function()
+		local sim = newSim()
+		local bot = Bot.new(sim, 1, "turtle")
+		for _ = 1, 45 do
+			sim.sides[1].oil = 5000
+			run(sim, 10, { bot })
+		end
+		local n = #structuresOf(sim, 1, "bunker") + #structuresOf(sim, 1, "atgun")
+		assert(n >= 1, `defences built: {n}`)
+	end)
+
+	-- artillery, mortars and scouts
+	local Fog = require("../src/shared/Simulation/Fog")
+	local function emptySim()
+		local sim = newSim()
+		for _, side in { 1, 2 } do
+			for _, u in units(sim, side, "infantry") do
+				u.alive = false
+			end
+		end
+		run(sim, 0.05)
+		return sim
+	end
+	-- runs, returning the time of the first new strike by key, and its flight time
+	local function firstShot(sim, key: string, seconds: number): (number?, number?)
+		local known = {}
+		for _, st in sim.strikes do
+			known[st] = true
+		end
+		for _ = 1, math.floor(seconds * 20 + 0.5) do
+			sim.step(0.05)
+			for _, st in sim.strikes do
+				if not known[st] and st.key == key then
+					return sim.time, st.at - sim.time
+				end
+			end
+		end
+		return nil, nil
+	end
+	test("mortar: sets up 3 s before firing, shells fly at 6.5 cells/s, nothing inside 7.5 cells", function()
+		local sim = emptySim()
+		local m = sim.spawnUnit("mortar", 1, 90.5, 10.5)
+		m.hp = 1e6
+		local foe = sim.spawnUnit("infantry", 2, 90.5, 22.5)
+		foe.hp = 1e6
+		local t0 = sim.time
+		local at, fl = firstShot(sim, "units.mortar", 6)
+		assert(at, "fired")
+		assert(at - t0 >= 3 - 1e-6 and at - t0 <= 3.15, `set-up 3 s: fired after {at - t0}`)
+		assert(math.abs((fl :: number) - 12 / 6.5) < 0.01, `flight {fl}`)
+		foe.x, foe.y = 90.5, 17.5 -- 7 cells
+		local again = firstShot(sim, "units.mortar", 8)
+		eq(again, nil, "inside the minimum range")
+	end)
+	test("mortar spotting: with fog on it fires only on cells its nation sees", function()
+		local sim = emptySim()
+		local m = sim.spawnUnit("mortar", 1, 90.5, 5.5)
+		m.hp = 1e6
+		local foe = sim.spawnUnit("infantry", 2, 90.5, 35.5) -- 30 cells: in range 43.2, beyond sight 18
+		foe.hp = 1e6
+		eq(firstShot(sim, "units.mortar", 6), nil, "unseen")
+		local spot = sim.spawnUnit("infantry", 1, 90.5, 52.5) -- sees the foe 17 cells away
+		spot.hp = 1e6
+		assert(firstShot(sim, "units.mortar", 2), "fires once a comrade spots it")
+	end)
+	test("artillery: splash hits comrades within 4.5 cells for half the hit, with bunching", function()
+		local sim = emptySim()
+		local a = sim.spawnUnit("artillery", 1, 90.5, 5.5)
+		a.hp = 1e6
+		local main = sim.spawnUnit("infantry", 2, 90.5, 40.5)
+		local mate = sim.spawnUnit("infantry", 2, 92.5, 41.5)
+		local far = sim.spawnUnit("infantry", 2, 96.5, 41.5)
+		for _, u in { main, mate, far } do
+			u.hp = 1e6
+		end
+		local at = firstShot(sim, "units.artillery", 6)
+		assert(at, "fired (artillery needs no spotting)")
+		run(sim, 3)
+		local hitMain, hitMate = 1e6 - main.hp, 1e6 - mate.hp
+		assert(hitMain > 0, "main hit")
+		assert(math.abs(hitMate - hitMain * 0.5) < 1e-6, `half splash: {hitMate} vs {hitMain}`)
+		eq(far.hp, 1e6, "6 cells from the target: no splash")
+		-- 12 dps x 0.9 soft x 7 s x bunch (1 + 0.2 x 1) x (1 - cover)
+		local cover = sim.coverAt and sim.coverAt(sim.roads.cellAt(main.x, main.y)) or 0
+		assert(math.abs(hitMain - 12 * 0.9 * 7 * 1.2 * (1 - cover)) < 1e-6, `damage {hitMain}`)
+	end)
+	test("artillery: a gun that fired is revealed for 6 s and packs 3 s before it moves", function()
+		local sim = emptySim()
+		local a = sim.spawnUnit("artillery", 1, 90.5, 5.5)
+		a.hp = 1e6
+		local foe = sim.spawnUnit("infantry", 2, 90.5, 40.5)
+		foe.hp = 1e6
+		local viewer = Fog.newViewer(sim, 2)
+		viewer.update()
+		assert(not viewer.visibleAt(a.x, a.y), "hidden before it fires")
+		local at = firstShot(sim, "units.artillery", 6)
+		assert(at, "fired")
+		eq(a.packAt, -1, "deployed")
+		viewer.update()
+		assert(viewer.visibleAt(a.x, a.y), "revealed to the enemy")
+		foe.alive = false
+		sim.orderMove(1, { a.id }, 90.5, 20.5)
+		run(sim, 2.9)
+		eq(a.y, 5.5, "packing")
+		run(sim, 1)
+		assert(a.y > 5.5, "moving after packSec")
+		run(sim, 3)
+		viewer.update()
+		assert(not viewer.visibleAt(a.x, a.y), "reveal over after revealSec")
+	end)
+	test("scout: recon for 90 s sees 66 cells and holds still, then a 60 s cooldown; orders pack it", function()
+		local sim = emptySim()
+		local sc = sim.spawnUnit("scout", 1, 90.5, 30.5)
+		local foe = sim.spawnUnit("infantry", 2, 150.5, 30.5) -- 60 cells
+		foe.hp, sc.hp = 1e6, 1e6
+		local viewer = Fog.newViewer(sim, 1)
+		viewer.update()
+		assert(not viewer.unitVisible(foe), "beyond the scout's sight 15")
+		eq((sim.deployRecon(1, { sc.id })), 1)
+		viewer.update()
+		assert(viewer.unitVisible(foe), "recon radius 66")
+		sim.orderMove(1, { sc.id }, 60.5, 30.5)
+		assert(not sim.scoutDeployed(sc), "a move order packs it")
+		near(sim.scoutReadyIn(sc), 60, "cooldown")
+		local n, why = sim.deployRecon(1, { sc.id })
+		eq(n, 0)
+		eq(why, "cooldown")
+		run(sim, 60.05)
+		sim.orderStop(1, { sc.id })
+		eq((sim.deployRecon(1, { sc.id })), 1)
+		local x = sc.x
+		run(sim, 89.9)
+		assert(sim.scoutDeployed(sc) and sc.x == x, "deployed and still")
+		run(sim, 0.2)
+		assert(not sim.scoutDeployed(sc), "packs after 90 s")
+	end)
+
 	-- fog of war
 	local Fog = require("../src/shared/Simulation/Fog")
 	local function soloSim()

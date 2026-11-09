@@ -3,7 +3,8 @@
 	Hud: top bar, oil, the selected producer's training buttons and queue, build buttons, notices and
 	the end-of-match banner. PLACEHOLDER visuals (TEMP-003).
 	Producer: click one of your buildings (HQ, barracks, factory) to pick it; with none picked the HQ
-	trains. Q / E train its first / second unit, B / F place a barracks / factory (PROVISIONAL keys).
+	trains. Q / E / Z / C train its first to fourth unit, B / F / K / G place a barracks / factory / bunker /
+	AT gun (PROVISIONAL keys; K and G are the game's letters for the bunker and AT gun).
 	Costs and names come from the match rules; the server checks every order.
 ]]
 local Players = game:GetService("Players")
@@ -18,9 +19,11 @@ local Hud = {}
 -- what each producer trains in the slice (the game's lists minus units not in the slice)
 local TRAINS = {
 	hq = { "infantry", "engineer" },
-	barracks = { "infantry", "at" },
-	factory = { "tank", "ifv" },
+	barracks = { "infantry", "at", "mortar" },
+	factory = { "tank", "ifv", "artillery", "scout" },
 }
+-- PROVISIONAL keys for a producer's 1st..4th unit (WarFront's bindings are not confirmed yet)
+local TRAIN_KEYS = { Enum.KeyCode.Q, Enum.KeyCode.E, Enum.KeyCode.Z, Enum.KeyCode.C }
 local PRODUCER_NAME = { hq = "HQ", barracks = "Barracks", factory = "War Factory" }
 
 local rules: any
@@ -87,7 +90,7 @@ local function refreshButtons()
 		local item = list[i]
 		b.Visible = item ~= nil
 		if item then
-			b.Text = `{unitName(item)} ({rules:number(`units.{item}.cost`)}) [{if i == 1 then "Q" else "E"}]`
+			b.Text = `{unitName(item)} ({rules:number(`units.{item}.cost`)}) [{TRAIN_KEYS[i].Name}]`
 		end
 	end
 	refreshQueue()
@@ -108,14 +111,14 @@ function Hud.start(info: { [string]: any }, acts: { produce: (string, number?) -
 	gui.ResetOnSpawn = false
 	local sideText = if info.side == 1 then "Side 1 (blue)" elseif info.side == 2 then "Side 2 (red)" else "Spectator"
 	local bar = label(gui, UDim2.new(1, 0, 0, 28), UDim2.new(), 14)
-	bar.Text = `RobloxianFront · {info.map} · {sideText} · WASD pan · wheel zoom · click/drag select · right-click move or attack · X stop · click a building to train there · Q/E train · B/F build · PLACEHOLDER ART`
+	bar.Text = `RobloxianFront · {info.map} · {sideText} · WASD pan · wheel zoom · click/drag select · right-click move or attack · X stop · click a building to train there · Q/E/Z/C train · B/F/K/G build · R scouts recon · PLACEHOLDER ART`
 
 	oilLabel = label(gui, UDim2.fromOffset(230, 34), UDim2.fromOffset(10, 38), 18)
 	oilLabel.Text = "Oil —"
 	oilLabel.TextColor3 = Color3.fromRGB(250, 210, 90)
 	queueLabel = label(gui, UDim2.fromOffset(230, 22), UDim2.fromOffset(10, 74), 13)
 	queueLabel.Text = "HQ queue 0/6"
-	for i = 1, 2 do
+	for i = 1, #TRAIN_KEYS do
 		local b = button(gui, UDim2.fromOffset(10, 100 + (i - 1) * 34), Color3.fromRGB(50, 90, 60))
 		b.Activated:Connect(function()
 			train(i)
@@ -129,16 +132,17 @@ function Hud.start(info: { [string]: any }, acts: { produce: (string, number?) -
 			actions.build(kind)
 		end)
 	end
-	buildButton("barracks", "B", 178)
-	buildButton("factory", "F", 212)
+	buildButton("barracks", "B", 250)
+	buildButton("factory", "F", 284)
+	buildButton("bunker", "K", 318)
+	buildButton("atgun", "G", 352)
 	UserInputService.InputBegan:Connect(function(input, processed)
 		if processed then
 			return
 		end
-		if input.KeyCode == Enum.KeyCode.Q then
-			train(1)
-		elseif input.KeyCode == Enum.KeyCode.E then
-			train(2)
+		local i = table.find(TRAIN_KEYS, input.KeyCode)
+		if i then
+			train(i)
 		end
 	end)
 	notice = label(gui, UDim2.fromOffset(260, 26), UDim2.new(0.5, -130, 0, 40), 14)

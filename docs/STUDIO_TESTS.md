@@ -71,6 +71,12 @@ cover, armour facing, truck ambush, HQ loss eliminates, bot). A 10-minute bot-vs
 | B15 | Fog | Play (F5) and look around | Ground outside your units' and buildings' sight is darkened; red units appear only inside your clear area and vanish when they leave it; the red HQ is always shown; a red barracks or factory you scouted stays as a faded block marked `(last seen)` after you leave | not run |
 | B16 | Night | Watch the clear area for 5 minutes | From about 4:20 the clear circles shrink over ~40 s to 0.4x (night), and grow back between about 6:58 and 7:22, repeating every 480 s (the game's day) | not run |
 | B17 | Fog in two-player | Clients and Servers, 2 players | Each player sees only their own side's vision: player 2 does not see player 1's units unless they are in sight | not run |
+| B18 | Bunker / AT gun | Press K (bunker) or G (AT gun), place it inside your territory | Costs 110 / 80 oil, shows "Bunker N%" / "AT Gun N%", finishes in 10 s / 8 s, then fires at red units in range (16.5 / 19.5 cells) | not run |
+| B19 | Defences in the bot's base | Spectate or scout the red base after 5 minutes | The bot has a bunker near the nearest rig it does not own and bunkers or AT guns round its HQ | not run |
+| B20 | Mortar | Click your barracks, train a mortar (Z), right-click a red unit 15–30 cells away | The mortar walks into range, shows SETTING UP for 3 s, then fires slow shells; it will not fire at units closer than 7.5 cells or at units nobody on your side can see | not run |
+| B21 | Artillery | Click your factory, train artillery (Z), let it stop near red units within ~49 cells | SETTING UP for 4 s, then shells; ordering it to move right after firing shows PACKING for 3 s before it drives off | not run |
+| B22 | Scout car | Train a scout (C at the factory), select it, press R | It shows RECON and stops, the clear area around it grows to 66 cells for 90 s; a move order cancels it and R is refused ("cooldown") for 60 s | not run |
+| B23 | Train keys | Click a barracks / factory | The panel lists 3 / 4 units with keys Q, E, Z, C; build buttons B, F, K, G are below them | not run |
 
 Known limits (not failures): no fog (TEMP-001), straight-line movement and trucks drive off-road (TEMP-002),
 placeholder shapes (TEMP-003), bot is a simple script, rigs can't be damaged yet, one unit type (infantry).

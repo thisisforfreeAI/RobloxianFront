@@ -1,7 +1,7 @@
 --!strict
 --[[
-	BuildController: placing a barracks or factory.
-	Start placing from the HUD (or B / F, PROVISIONAL keys until WarFront's bindings are confirmed); a
+	BuildController: placing a barracks, factory, bunker or AT gun.
+	Start placing from the HUD (or B / F / K / G, PROVISIONAL keys until WarFront's bindings are confirmed); a
 	3 x 3 cell ghost follows the cursor, snapped to cells. Green: every footprint cell is inside your
 	territory (from the server's state); red: it is not. Left click asks the server to build there
 	(Shift keeps placing); right click or Esc cancels. The server runs the game's full placement check
@@ -18,7 +18,8 @@ local World = require(ReplicatedStorage:WaitForChild("Shared").Config.World)
 local BuildController = {}
 
 local S = World.STUDS_PER_CELL
-local FOOT = 1 -- production.footprint.facility
+local FOOT = 1 -- production.footprint.facility and .defence
+local KEYS = { [Enum.KeyCode.B] = "barracks", [Enum.KeyCode.F] = "factory", [Enum.KeyCode.K] = "bunker", [Enum.KeyCode.G] = "atgun" }
 local placing: string? = nil
 local lastPlaced = -1
 local ghost: Part
@@ -88,10 +89,8 @@ function BuildController.start(mapWidth: number, send: (any) -> ())
 
 	UserInputService.InputBegan:Connect(function(input, processed)
 		if not placing then
-			if not processed and input.KeyCode == Enum.KeyCode.B then
-				BuildController.begin("barracks")
-			elseif not processed and input.KeyCode == Enum.KeyCode.F then
-				BuildController.begin("factory")
+			if not processed and KEYS[input.KeyCode] then
+				BuildController.begin(KEYS[input.KeyCode])
 			end
 			return
 		end

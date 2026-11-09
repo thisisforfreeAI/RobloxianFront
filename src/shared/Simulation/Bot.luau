@@ -12,9 +12,18 @@
 	            rig has bots.truckSaveFor trucks); then tank upgrades where a round trip outpumps
 	            tankTripShare of the tank; then a pump upgrade on the richest rig with 2+ trucks once oil
 	            >= bots.upgradeOil. While saving for a truck it trains nothing.
-	  training  the HQ (queue < 2) trains an engineer when the army is 4+ and it has fewer than
-	            bots.engineers (every bots.engineerEverySec), otherwise infantry while it has no barracks
-	            or the army is under 8.
+	  building  the build order (Pst: barracks, factory, a bunker at the nearest rig it does not own,
+	            barracks, radar (skipped), factory), then home guards after 300 s (bunker or AT gun
+	            50/50 near the HQ while fewer than round(homeGuards x (0.5 + persona defence)) armed
+	            buildings stand there), then rig guards after 180 s (bunker 60% / AT gun at far rigs).
+	  training  producers factory, barracks, HQ (queue < 2). HQ: an engineer when the army is 4+ and it
+	            has fewer than bots.engineers (every bots.engineerEverySec), otherwise infantry while it
+	            has no barracks or the army is under 8. Barracks (while foot units are under half the
+	            army): AT 30%, mortar bots.mortarShare x (0.5 + defence), else infantry. Factory: a scout
+	            (army >= scoutArmy, every scoutEverySec, up to round(army x scoutShare)), else tank 45%,
+	            IFV 30%, artillery 13% (the rocket 12% trains nothing: not in the slice).
+	  scouts    an idle scout near an enemy HQ (scoutStandOff x 1.6) deploys for recon; otherwise
+	            sometimes (scoutSendChance) drives to scoutStandOff short of one.
 	  fall back groups under strong threat (influence map) retreat to the nearest safe own point.
 	  idle army one idle unit stays at each own rig; the persona's home share (max bots.homeKeepMax)
 	            stays nearest the HQ; unfinished orders are re-sent up to 3 times.
@@ -27,8 +36,9 @@
 
 	Intel: like the game's bots (intel.fog and bots.fog are on) it sees only with its own vision and
 	remembers what it saw (see the intel section); an unseen enemy HQ counts at least
-	bots.unknownHqDefence and an unseen rig bots.unknownDefence. Not in the slice, so skipped: buildings other than barracks and factory, engineers' work,
-	recon, drones, artillery, cities and the capital, bridges, rail, naval, events, sabotage.
+	bots.unknownHqDefence and an unseen rig bots.unknownDefence. Not in the slice, so skipped: SAM, radar, night ops, artillery base, naval yard,
+	forward HQ, engineers' work, drones, rocket barrages, cities and the capital, bridges, rail, naval,
+	events, sabotage.
 	APPROX: the bot's random numbers are not the game's sequence; held-truck rescues are skipped
 	(trucks are never held by enemies in the slice). UNCONFIRMED: which persona a lobby slot defaults to
 	(MatchService picks one).
@@ -503,14 +513,28 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 		return n
 	end
 
-	-- Dst: what to build next. APPROX: kinds the slice cannot place (bunker, radar, SAM, night ops,
-	-- artillery base, naval yard, forward HQ, guard posts) are passed over.
+	-- armed buildings of this nation (not the HQ) within reach of a point, built or not (Dst's d)
+	local function guardsNear(x: number, y: number, reach: number): number
+		local n = 0
+		for _, e in sim.list do
+			if e.alive and e.side == side and e.cat == "structure" and e.kind ~= "hq" and e.kind ~= "rig"
+				and num(`structures.{e.kind}.dps`) > 0 and (e.x - x) ^ 2 + (e.y - y) ^ 2 <= reach * reach then
+				n += 1
+			end
+		end
+		return n
+	end
+
+	-- Dst: what to build next. APPROX: kinds the slice cannot place (radar, SAM, night ops, artillery
+	-- base, naval yard, forward HQ) are passed over.
 	local function plan(): any
 		local hq = sim.hqOf(side)
 		if not hq then
 			return nil
 		end
 		local W = sim.roads.width
+		local ax, ay = hq.cell % W + 0.5, hq.cell // W + 0.5
+		local hqReach = num("structures.hq.buildRadius")
 		local seen: { [string]: number } = {}
 		local inc = income()
 		for _, g in BUILD_ORDER do
@@ -519,20 +543,45 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 				if sim.time < g.after * diff.buildDelay or inc < g.minIncome then
 					break
 				end
-				if sim.PLACEABLE[g.type] then
-					return {
-						type = g.type,
-						near = { x = hq.cell % W + 0.5, y = hq.cell // W + 0.5 },
-						reach = num("structures.hq.buildRadius"),
-					}
+				if g.type == "bunker" then
+					-- at the nearest rig this nation does not own (the game's sort is stable)
+					local best, bestD = nil, math.huge
+					for _, rg in sim.rigs do
+						if rg.side ~= side then
+							local d = hypot(rg.x - ax, rg.y - ay)
+							if d < bestD then
+								best, bestD = rg, d
+							end
+						end
+					end
+					if best then
+						return { type = "bunker", near = { x = best.x, y = best.y }, reach = math.huge }
+					end
+				elseif sim.PLACEABLE[g.type] then
+					return { type = g.type, near = { x = ax, y = ay }, reach = hqReach }
+				end
+			end
+		end
+		-- home guards, then rig guards (bots.homeGuards / rigGuards x (0.5 + persona defence))
+		local f = math.floor(num("bots.homeGuards") * (0.5 + persona.defence) + 0.5)
+		if sim.time > 300 and guardsNear(ax, ay, hqReach) < f then
+			return { type = if rand() < 0.5 then "bunker" else "atgun", near = { x = ax, y = ay }, reach = hqReach }
+		end
+		local pr = math.floor(num("bots.rigGuards") * (0.5 + persona.defence) + 0.5)
+		if sim.time > 180 and pr > 0 then
+			local pad = num("territory.rigPad")
+			for _, rg in sim.rigs do
+				if rg.side == side and hypot(rg.x - ax, rg.y - ay) >= hqReach and guardsNear(rg.x, rg.y, pad) < pr then
+					return { type = if rand() < 0.6 then "bunker" else "atgun", near = { x = rg.x, y = rg.y }, reach = pad }
 				end
 			end
 		end
 		return nil
 	end
 
-	-- Vst: up to 120 random points in the nation's base sources; a facility takes the valid spot
-	-- nearest the HQ (plus up to 3 cells x cell scale of noise).
+	-- Vst: up to 120 random points in the nation's base sources. A spot with unlimited reach takes the
+	-- valid point nearest its target; a facility the one nearest the HQ (plus up to 3 cells x cell scale
+	-- of noise); a defence the one closest to 2.5 cells x cell scale from what it guards (plus up to 2).
 	local function placeBuilding(p: any)
 		if not p then
 			return
@@ -559,7 +608,15 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 			if hypot(m - p.near.x, y - p.near.y) <= p.reach then
 				local w = math.floor(y) * W + math.floor(m)
 				if m >= 0 and y >= 0 and m < W and y < H and sim.territoryAt(w) == side and not sim.canPlace(side, p.type, w) then
-					local score = hypot(m - cx, y - cy) + rand() * 3 * scale
+					local score
+				if p.reach == math.huge then
+					score = hypot(m - p.near.x, y - p.near.y)
+				elseif sim.deps.rules:text(`structures.{p.type}.kind`) == "facility" then
+					score = hypot(m - cx, y - cy) + rand() * 3 * scale
+				else
+					-- a defence: about 2.5 cells (x cell scale) out from the point it guards
+					score = math.abs(hypot(m - p.near.x, y - p.near.y) - 2.5 * scale) + rand() * 2 * scale
+				end
 					if score < bestScore then
 						best, bestScore = w, score
 					end
@@ -624,20 +681,27 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 				end
 			elseif st.kind == "barracks" then
 				if footShort then
-					-- APPROX: the slice has no mortars, so the mortar share trains infantry
-					item = if k < 0.3 then "at" else "infantry"
+					local mortarShare = num("bots.mortarShare") * (0.5 + persona.defence)
+					item = if k < 0.3 then "at" elseif k < 0.3 + mortarShare then "mortar" else "infantry"
 				end
 			elseif st.kind == "factory" then
-				-- APPROX: scouts are not in the slice, so the game's scout pick (army >= bots.scoutArmy, fewer
-				-- than round(army x bots.scoutShare) scouts, every bots.scoutEverySec) is skipped and the
-				-- factory makes its usual pick; artillery and rocket picks train nothing.
-				item = if k < 0.45 then "tank" elseif k < 0.75 then "ifv" else nil
+				-- a scout once the army is bots.scoutArmy, up to round(army x scoutShare) (max intel.scoutMax),
+				-- one per bots.scoutEverySec; otherwise the usual pick. APPROX: rocket artillery is not in
+				-- the slice, so its pick trains nothing.
+				local maxScouts = math.min(num("intel.scoutMax"), math.max(1, math.floor(h * num("bots.scoutShare") + 0.5)))
+				if h >= num("bots.scoutArmy") and c("scout") < maxScouts and sim.time - self.lastScout >= num("bots.scoutEverySec") then
+					item = "scout"
+				else
+					item = if k < 0.45 then "tank" elseif k < 0.75 then "ifv" elseif k < 0.88 then "artillery" else nil
+				end
 			end
 			if item and sim.sides[side].oil - num(`units.{item}.cost`) >= reserve then
 				if sim.orderProduce(side, item, st.id) then
 					counts[item] = c(item) + 1
 					if item == "engineer" then
 						self.lastEngineer = sim.time
+					elseif item == "scout" then
+						self.lastScout = sim.time
 					end
 				end
 			end
@@ -925,6 +989,53 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 		end
 	end
 
+	---------------------------------------------------------------- scouts (Qst)
+
+	-- An idle, ready scout within bots.scoutStandOff x 1.6 of the nearest enemy HQ deploys; otherwise,
+	-- with chance bots.scoutSendChance per think, it drives to scoutStandOff short of a random enemy HQ.
+	local function scouts()
+		local list = {}
+		for _, e in sim.list do
+			if e.alive and e.side == side and sim.canRecon(e) then
+				table.insert(list, e)
+			end
+		end
+		if #list == 0 then
+			return
+		end
+		local hqs = {}
+		for _, st in sim.list do
+			if st.alive and st.kind == "hq" and sim.canAttack(side, st.side) then
+				table.insert(hqs, st)
+			end
+		end
+		if #hqs == 0 then
+			return
+		end
+		local W = sim.roads.width
+		local standOff = num("bots.scoutStandOff")
+		for _, u in list do
+			if not sim.scoutDeployed(u) and idle(u) and sim.scoutReadyIn(u) <= 0 then
+				local best, bestD = hqs[1], math.huge
+				for _, h in hqs do
+					local d = hypot(h.cell % W + 0.5 - u.x, h.cell // W + 0.5 - u.y)
+					if d < bestD then
+						best, bestD = h, d
+					end
+				end
+				if bestD <= standOff * 1.6 then
+					sim.deployRecon(side, { u.id })
+				elseif rand() < num("bots.scoutSendChance") then
+					local h = hqs[math.floor(rand() * #hqs) + 1] or best
+					local hx, hy = h.cell % W + 0.5, h.cell // W + 0.5
+					local d = math.max(1, hypot(hx - u.x, hy - u.y))
+					local k = math.max(0, (d - standOff) / d)
+					sim.orderMove(side, { u.id }, u.x + (hx - u.x) * k, u.y + (hy - u.y) * k)
+				end
+			end
+		end
+	end
+
 	---------------------------------------------------------------- think loop
 
 	local function think()
@@ -940,6 +1051,7 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 			placeBuilding(p)
 			training(p)
 		end
+		scouts()
 		fallBack()
 		local pool = idleArmy()
 		defence(pool)

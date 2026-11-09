@@ -3,8 +3,8 @@
 	StructureRenderer: live state of HQs and oil rigs from server snapshots, drawn over the static map.
 	  HQ: health bar; a dark slab when destroyed.
 	  Rig: ring in the owner's colour (none while neutral), capture progress bar, stored oil.
-	  Barracks / factory: a 3 x 3 cell block in the owner's colour (pale while being built), with its
-	  name, build progress or health. Removed when destroyed.
+	  Barracks / factory / bunker / AT gun: a 3 x 3 cell block in the owner's colour (pale while being
+	  built; defences are low and darker), with its name, build progress or health. Removed when destroyed.
 	PLACEHOLDER visuals (TEMP-003).
 ]]
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -15,8 +15,9 @@ local StructureRenderer = {}
 
 export type View = { id: number, kind: string, side: number, x: number, y: number, anchor: Part, ring: Part?, block: Part?, bar: Frame, barBack: Frame, text: TextLabel, seen: number, built: number }
 
-local NAMES = { barracks = "Barracks", factory = "War Factory" }
--- footprint radius in cells (production.footprint.facility = 1, so 3 x 3)
+local NAMES = { barracks = "Barracks", factory = "War Factory", bunker = "Bunker", atgun = "AT Gun" }
+local DEFENCE = { bunker = true, atgun = true }
+-- footprint radius in cells (production.footprint.facility and .defence = 1, so 3 x 3)
 local FOOT = 1
 
 local S = World.STUDS_PER_CELL
@@ -41,7 +42,11 @@ local function create(id: number, kind: string, x: number, y: number): View
 	local block: Part? = nil
 	if NAMES[kind] then
 		local size = (FOOT * 2 + 1) * S - 0.4
-		block = part(Vector3.new(size, 2.2, size), CFrame.new(World.toWorld(x, y, 1.1)), Color3.new(0.7, 0.7, 0.7), 0)
+		local tall = if DEFENCE[kind] then 1.2 else 2.2
+		block = part(Vector3.new(size, tall, size), CFrame.new(World.toWorld(x, y, tall / 2)), Color3.new(0.7, 0.7, 0.7), 0)
+		if DEFENCE[kind] then
+			(block :: Part).Material = Enum.Material.Concrete
+		end
 	end
 	if kind == "rig" then
 		local r = 1.6 * S + 0.6

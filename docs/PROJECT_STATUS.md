@@ -11,7 +11,7 @@ Last updated: 2026-11-09
 Phase 1. Milestone 1A done (Studio tests 1–7 pass). Pilot sprite REQ-0001 approved. Milestone 1B (gameplay loop) rewritten for WarFront parity and tested outside Studio; Studio tests B1–B9 pending.
 
 ## Verified outside Studio (actually run, Linux container)
-- Lune 0.11.1 `tests/run`: 51 passed, 0 failed (latest run) (including the 2 that read the GameData generated from your install).
+- Lune 0.11.1 `tests/run`: 59 passed, 0 failed (latest run) (including the 2 that read the GameData generated from your install).
 - Rojo 7.4.4 `rojo build` succeeds. All .luau files compile (syntax only).
 - Synthetic atlas: 16 × 120 px frames pack to 960×240 (8×2, no padding); validator passes on dimensions,
   rectangles, direction order, pixel identity, pivot, partial alpha, edge bleed, arrow orientation, manifest.
@@ -105,10 +105,36 @@ Bot-vs-bot on Saddle with fog: balanced v warlord, warlord wins at 11:26; turtle
 11:13; balanced v turtle, balanced at 16:16; balanced v balanced, side 1 at 16:55. CPU about 3–4% of
 real time. Lune: 51 tests pass.
 
+Defences and more units (2026-11-09), traced from the game's code:
+- Bunker (110 oil, 10 s, 1100 hp, MG 8 dps, 16.5 cells) and AT gun (80 oil, 8 s, 300 hp, cannon 14 dps
+  x2 vs armour, 19.5 cells). Placed like other buildings (keys K and G). Every built, working, armed
+  building now fires: the nearest enemy unit in range, else a truck. Defences add territory like other
+  buildings.
+- Shot flight now follows each weapon's speed (cannon 38, rocket 22, shell 13, mortar 6.5 cells/s; bullets
+  stay 70). Before, tank and AT shots landed instantly. This is a correction for parity.
+- Mortar (barracks) and artillery (factory): fire only after standing still 3 s / 4 s, are revealed to the
+  enemy for 6 s after firing, and pack 2 s / 3 s before moving again. Splash (3.6 / 4.5 cells): the hit
+  grows with bunched foot soldiers and half of it lands on the target's comrades. Artillery fire ignores
+  flanking and armour facing. Mortars have a 7.5 cell minimum range and, with fog on, only fire on cells
+  their side sees (artillery needs no spotting, as in the game).
+- Scout car (factory): R deploys it for recon, seeing 66 cells for 90 s (not shortened by night); any
+  order packs it; then a 60 s cooldown.
+- Bot: builds the game's bunker step at the nearest rig it does not own, home guards after 300 s and rig
+  guards after 180 s; trains mortars, artillery and scouts with the game's shares; sends scouts to deploy
+  near enemy HQs.
+- Client (placeholder looks): defence blocks are low and grey-textured; units show RECON, PACKING or
+  SETTING UP; the producer panel has up to 4 units (Q/E/Z/C).
+- Not in the slice: rocket artillery (its 12% factory pick trains nothing), SAM, radar, drones, veterancy.
+
+Bot-vs-bot on Saddle (30 min cap): balanced v warlord, warlord at 13:07; turtle v warlord, warlord at
+14:59; balanced v turtle, balanced at 19:44; balanced v balanced had no winner by 30:00 (side 1 had 10
+rigs to 4 and was pushing; the bot's push moves units past the HQ rather than attacking it, which needs
+a look). CPU about 5% of real time.
+
 ## Next
-1. You run Studio tests B15–B17 (fog) and commit.
-2. Then: more units (mortar, artillery, scout) and defences (bunker, AT gun), engineers' repair work,
-   vehicle steering; later shared group routes and separation.
+1. You run Studio tests B18–B23 (defences, mortar, artillery, scout) and commit.
+2. Then: engineers' repair work, vehicle steering, a closer look at the bot's HQ push; later shared group
+   routes and separation.
 
 ## Open questions
 1. Rights scope: original art, audio, voice; public redistribution of extracted data.

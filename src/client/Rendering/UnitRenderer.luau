@@ -26,6 +26,7 @@ export type View = {
 	ring: Part,
 	bar: Frame,
 	barGui: BillboardGui,
+	status: TextLabel,
 	from: Vector3,
 	to: Vector3,
 	fromYaw: number,
@@ -86,10 +87,26 @@ local function create(id: number, kind: string, side: number): View
 	bar.BorderSizePixel = 0
 	bar.Parent = back
 	barGui.Parent = body
+	-- status tag: RECON (scout deployed), PACKING / SETTING UP (artillery and mortars)
+	local tagGui = Instance.new("BillboardGui")
+	tagGui.Size = UDim2.fromOffset(70, 12)
+	tagGui.StudsOffsetWorldSpace = Vector3.new(0, 2.6, cells * S * 0.7)
+	tagGui.AlwaysOnTop = true
+	tagGui.Adornee = body
+	local status = Instance.new("TextLabel")
+	status.Size = UDim2.fromScale(1, 1)
+	status.BackgroundTransparency = 1
+	status.TextColor3 = Color3.fromRGB(255, 240, 170)
+	status.TextStrokeTransparency = 0.3
+	status.Font = Enum.Font.GothamBold
+	status.TextSize = 9
+	status.Text = ""
+	status.Parent = tagGui
+	tagGui.Parent = body
 	model.PrimaryPart = body
 	model.Parent = folder
 	return {
-		id = id, kind = kind, side = side, model = model, body = body, ring = ring, bar = bar, barGui = barGui,
+		id = id, kind = kind, side = side, model = model, body = body, ring = ring, bar = bar, barGui = barGui, status = status,
 		from = Vector3.zero, to = Vector3.zero, fromYaw = 0, toYaw = 0, t = 1, seen = 0,
 	}
 end
@@ -120,7 +137,9 @@ function UnitRenderer.start()
 	end)
 end
 
--- units: { {id, kind, side, x, y, heading, hp, maxHp}, ... }
+local STATUS = { [1] = "RECON", [2] = "PACKING", [3] = "SETTING UP" }
+
+-- units: { {id, kind, side, x, y, heading, hp, maxHp, status}, ... }
 function UnitRenderer.apply(tick: number, units: { any })
 	if tick <= lastTick then
 		return -- stale or duplicate snapshot
@@ -142,6 +161,7 @@ function UnitRenderer.apply(tick: number, units: { any })
 		v.to, v.toYaw, v.t, v.seen = target, heading, 0, tick
 		local frac = math.clamp((u[7] or 1) / math.max(1, u[8] or u[7] or 1), 0, 1)
 		v.barGui.Enabled = frac < 0.999
+		v.status.Text = STATUS[u[9] or 0] or ""
 		v.bar.Size = UDim2.fromScale(frac, 1)
 		v.bar.BackgroundColor3 = if frac > 0.5 then Color3.fromRGB(110, 220, 90) elseif frac > 0.25 then Color3.fromRGB(240, 200, 60) else Color3.fromRGB(230, 70, 60)
 	end
