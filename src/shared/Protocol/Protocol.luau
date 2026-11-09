@@ -25,9 +25,10 @@ export type ProduceIntent = { kind: "produce", item: string, structureId: number
 export type BuildIntent = { kind: "build", structure: string, x: number, y: number } -- footprint centre cell
 export type ReconIntent = { kind: "recon", unitIds: { number } } -- deploy scouts for recon
 export type GarrisonIntent = { kind: "garrison", unitIds: { number }, x: number, y: number } -- into the held settlement at (x, y)
+export type ForwardIntent = { kind: "forward", cityId: number, item: string } -- train in a held, secured town
 export type RepairIntent = { kind: "repair", unitIds: { number }, targetId: number } -- engineers mend an own building
 export type TruckIntent = { kind: "truck", rigId: number } -- send an idle truck to a rig, or buy one
-export type Intent = MoveIntent | StopIntent | AttackIntent | ProduceIntent | TruckIntent | BuildIntent | ReconIntent | GarrisonIntent | RepairIntent
+export type Intent = MoveIntent | StopIntent | AttackIntent | ProduceIntent | TruckIntent | BuildIntent | ReconIntent | GarrisonIntent | RepairIntent | ForwardIntent
 
 local function finite(n: any): boolean
 	return type(n) == "number" and n == n and n ~= math.huge and n ~= -math.huge
@@ -81,6 +82,15 @@ function Protocol.parse(raw: any, mapWidth: number, mapHeight: number): (Intent?
 			return nil, "cell outside the map"
 		end
 		return { kind = "build", structure = raw.structure, x = raw.x, y = raw.y }, nil
+	end
+	if raw.kind == "forward" then
+		if type(raw.item) ~= "string" or not Protocol.PRODUCIBLE[raw.item] then
+			return nil, "cannot produce that"
+		end
+		if not finite(raw.cityId) or raw.cityId % 1 ~= 0 then
+			return nil, "cityId must be an integer"
+		end
+		return { kind = "forward", cityId = raw.cityId, item = raw.item }, nil
 	end
 	if raw.kind == "truck" then
 		if not finite(raw.rigId) or raw.rigId % 1 ~= 0 then

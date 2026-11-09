@@ -22,6 +22,8 @@
 	            army): AT 30%, mortar bots.mortarShare x (0.5 + defence), else infantry. Factory: a scout
 	            (army >= scoutArmy, every scoutEverySec, up to round(army x scoutShare)), else tank 45%,
 	            IFV 30%, artillery 13% (the rocket 12% trains nothing: not in the slice).
+	            Then, while short of foot units or garrison men, secured towns nearer the enemy than any
+	            barracks / HQ train infantry or AT there (forward training, bots.forwardShare).
 	  scouts    an idle scout near an enemy HQ (scoutStandOff x 1.6) deploys for recon; otherwise
 	            sometimes (scoutSendChance) drives to scoutStandOff short of one.
 	  fall back groups under strong threat (influence map) retreat to the nearest safe own point.
@@ -784,6 +786,61 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 	end
 
 	local PRIORITY = { factory = 1, barracks = 2, hq = 3 }
+	-- the game's Nst: secured towns (forward queue under 2) at least bots.forwardCloser nearer the
+	-- nearest known enemy building than any own built barracks / HQ train there, each with chance
+	-- bots.forwardShare: AT 30% of the time, else infantry, keeping `reserve` oil.
+	local function forwardTrain(reserve: number)
+		local rules = sim.deps.rules
+		if not rules:flag("cities.forward.on") then
+			return
+		end
+		local towns = {}
+		for _, st in sim.settlements do
+			if st.owner == side and sim.forwardActive(st) and (if st.forward then #st.forward.queue else 0) < 2 then
+				table.insert(towns, st)
+			end
+		end
+		if #towns == 0 then
+			return
+		end
+		local W = sim.roads.width
+		local hq = sim.hqOf(side)
+		local hx, hy = 0, 0
+		if hq then
+			hx, hy = hq.cell % W + 0.5, hq.cell // W + 0.5
+		end
+		local tx, ty, best = nil, nil, math.huge
+		for _, k in intel.structures do
+			if k.owner ~= side and k.owner > 0 and sim.canAttack(side, k.owner) then
+				local x, y = k.cell % W + 0.5, k.cell // W + 0.5
+				local d = if hq then hypot(x - hx, y - hy) else 0
+				if d < best then
+					tx, ty, best = x, y, d
+				end
+			end
+		end
+		if not tx then
+			return
+		end
+		local near = math.huge
+		for _, st in sim.list do
+			if st.alive and st.side == side and st.cat == "structure" and (st.built or 1) >= 1 and (st.kind == "barracks" or st.kind == "hq") then
+				near = math.min(near, hypot(st.cell % W + 0.5 - tx, st.cell // W + 0.5 - ty))
+			end
+		end
+		local trains = (rules.data["cities.forward.trains"] :: { string }?) or {}
+		for _, st in towns do
+			if hypot(st.x - tx, st.y - ty) + scaled(num("bots.forwardCloser")) > near or rand() >= num("bots.forwardShare") then
+				continue
+			end
+			local pick = if rand() < 0.3 and table.find(trains, "at") then "at" else "infantry"
+			local item = if table.find(trains, pick) then pick else trains[1]
+			if item and sim.sides[side].oil - sim.unitCost(side, item) >= reserve then
+				sim.queueForward(side, st.id, item)
+			end
+		end
+	end
+
 	local function training(p: any)
 		local counts: { [string]: number } = {}
 		local idleMen = 0 -- idle units that could garrison (the game's r)
@@ -869,6 +926,9 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 					end
 				end
 			end
+		end
+		if not hasFactory or c("infantry") + c("at") + c("mortar") < h * 0.5 or menShort then
+			forwardTrain(reserve)
 		end
 	end
 

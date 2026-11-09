@@ -831,6 +831,45 @@ if fs.isFile(matchPath) then
 		eq(sim.railPace(1, 40.5 + 97, 45.5), 1, "beyond 96")
 		eq(sim.railPace(2, 40.5, 45.5), 1, "only its owner's trucks")
 	end)
+	test("forward training: a secured town trains infantry / AT (faster with workforce); lost = refund", function()
+		local sim = newSim({ settlements = { { name = "T", x = 130, y = 45, kind = "town" }, { name = "V", x = 90, y = 45, kind = "village" } } })
+		clearUnits(sim, {})
+		local town, village = sim.settlements[1], sim.settlements[2]
+		eq(select(2, sim.queueForward(1, town.id, "infantry")), "notHeld")
+		town.owner, town.hold = 1, 1
+		eq(select(2, sim.queueForward(1, town.id, "infantry")), "notSecured")
+		eq(select(2, sim.queueForward(1, town.id, "tank")), "blocked", "trains infantry and AT only")
+		village.owner = 1
+		eq(select(2, sim.queueForward(1, village.id, "infantry")), "blocked", "towns and cities only")
+		local ids = {}
+		for _ = 1, 3 do
+			table.insert(ids, sim.spawnUnit("infantry", 1, 130.5, 45.5).id)
+		end
+		sim.orderGarrison(1, town.id, ids)
+		eq(sim.cityStatus(town), "secured")
+		near(sim.workforce(1), 0.12, "one secured town: workforce 0.12")
+		local oil = sim.sides[1].oil
+		local price = sim.unitCost(1, "infantry")
+		assert(sim.queueForward(1, town.id, "infantry"))
+		eq(sim.sides[1].oil, oil - price, "paid now (with the town discount)")
+		local bt = 7 / 1.12 -- infantry buildSec 7 over 1 + workforce
+		near(sim.forwardLeft(town.id), bt)
+		local before = #units(sim, 1, "infantry")
+		run(sim, bt - 0.2)
+		eq(#units(sim, 1, "infantry"), before, "not yet")
+		run(sim, 0.4)
+		eq(#units(sim, 1, "infantry"), before + 1, "appears at the town")
+		local u = units(sim, 1, "infantry")[before + 1]
+		assert(math.abs(math.sqrt((u.x - 130) ^ 2 + (u.y - 45) ^ 2) - 6.5) < 1.5, "radius + 0.5 from the centre")
+		-- queued, then the town is lost: refunded
+		local atPrice = sim.unitCost(1, "at")
+		assert(sim.queueForward(1, town.id, "at"))
+		local mid = sim.sides[1].oil
+		town.owner = 2
+		run(sim, 0.1)
+		eq(town.forward, nil)
+		assert(math.abs(sim.sides[1].oil - mid - atPrice) < 0.5, "what was paid comes back (plus 0.1 s of HQ trickle)")
+	end)
 	test("towns: two infantry take a neutral town in 16 s; a held town lets its owner build round it", function()
 		local sim = newSim({ settlements = { { name = "T", x = 130, y = 45, kind = "town" }, { name = "V", x = 90, y = 45, kind = "village" } } })
 		for _, side in { 1, 2 } do

@@ -17,7 +17,7 @@ local CityOverlay = {}
 local S = World.STUDS_PER_CELL
 local SIDE_COLOR = { [1] = Color3.fromRGB(70, 130, 230), [2] = Color3.fromRGB(220, 80, 70) }
 
-type View = { ring: Part, text: TextLabel, name: string }
+type View = { ring: Part, text: TextLabel, name: string, owner: number, x: number, y: number, r: number }
 local views: { [number]: View } = {}
 
 function CityOverlay.start(settlements: { any })
@@ -52,7 +52,7 @@ function CityOverlay.start(settlements: { any })
 		text.Text = ""
 		text.Parent = gui
 		gui.Parent = ring
-		views[i] = { ring = ring, text = text, name = s.name or "" }
+		views[i] = { ring = ring, text = text, name = s.name or "", owner = 0, x = x, y = y, r = r }
 	end
 end
 
@@ -66,6 +66,7 @@ function CityOverlay.apply(cities: { any })
 		local trait, works = c[8], c[9]
 		local v = views[id]
 		if v then
+			v.owner = owner
 			v.ring.Transparency = if owner > 0 then 0.55 else 1
 			v.ring.Color = SIDE_COLOR[owner] or Color3.new(1, 1, 1)
 			if owner <= 0 and capSide > 0 and capProgress > 0 then
@@ -89,6 +90,23 @@ function CityOverlay.apply(cities: { any })
 			end
 		end
 	end
+end
+
+-- the settlement of `side` whose ring is under the screen point (nil if none)
+function CityOverlay.pick(mouse: Vector2, side: number): number?
+	local best, bestDist = nil, math.huge
+	for id, v in views do
+		if v.owner == side then
+			local p, on = workspace.CurrentCamera:WorldToViewportPoint(World.toWorld(v.x, v.y, 0.25))
+			local edge = workspace.CurrentCamera:WorldToViewportPoint(World.toWorld(v.x + v.r, v.y, 0.25))
+			local rad = math.max(24, (Vector2.new(edge.X, edge.Y) - Vector2.new(p.X, p.Y)).Magnitude)
+			local d = (Vector2.new(p.X, p.Y) - mouse).Magnitude
+			if on and d <= rad and d < bestDist then
+				best, bestDist = id, d
+			end
+		end
+	end
+	return best
 end
 
 return CityOverlay

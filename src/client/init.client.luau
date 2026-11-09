@@ -43,6 +43,9 @@ do
 		produce = function(item: string, structureId: number?)
 			send({ kind = "produce", item = item, structureId = structureId })
 		end,
+		forward = function(item: string, cityId: number)
+			send({ kind = "forward", item = item, cityId = cityId })
+		end,
 		build = BuildController.begin,
 	})
 	stateEvent.OnClientEvent:Connect(function(state)

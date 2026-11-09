@@ -3,6 +3,7 @@
 	SelectionController: RTS selection and orders.
 	Left click: select own unit (Shift adds/toggles). Left drag: box select (Shift adds).
 	Left click on one of your buildings (HQ, barracks, factory): pick it as the producer for the HUD.
+	Left click inside one of your towns or cities: pick it for forward training.
 	Right click on an enemy unit or building: attack order. Right click on the ground: move order. X: stop. Esc: clear.
 	T with the cursor on one of your rigs: send a truck to it.
 	R: selected scout cars deploy for recon (PROVISIONAL key).
@@ -22,6 +23,7 @@ local World = require(Shared.Config.World)
 local Protocol = require(Shared.Protocol.Protocol)
 local UnitRenderer = require(script.Parent.Parent.Rendering.UnitRenderer)
 local StructureRenderer = require(script.Parent.Parent.Rendering.StructureRenderer)
+local CityOverlay = require(script.Parent.Parent.Rendering.CityOverlay)
 
 local SelectionController = {}
 
@@ -135,6 +137,12 @@ function SelectionController.start(mySide: number, sendIntent: (any) -> (), opts
 				end)
 				if st then
 					opts.onProducer(st.id, st.kind)
+				else
+					-- one of your towns: train there (forward training)
+					local city = CityOverlay.pick(b, mySide)
+					if city then
+						opts.onProducer(city, "town")
+					end
 				end
 			end
 		else

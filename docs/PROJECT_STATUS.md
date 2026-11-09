@@ -11,7 +11,7 @@ Last updated: 2026-11-09
 Phase 1. Milestone 1A done (Studio tests 1–7 pass). Pilot sprite REQ-0001 approved. Milestone 1B (gameplay loop) rewritten for WarFront parity and tested outside Studio; Studio tests B1–B9 pending.
 
 ## Verified outside Studio (actually run, Linux container)
-- Lune 0.11.1 `tests/run`: 72 passed, 0 failed (latest run) (including the 2 that read the GameData generated from your install).
+- Lune 0.11.1 `tests/run`: 73 passed, 0 failed (latest run) (including the 2 that read the GameData generated from your install).
 - Rojo 7.4.4 `rojo build` succeeds. All .luau files compile (syntax only).
 - Synthetic atlas: 16 × 120 px frames pack to 960×240 (8×2, no padding); validator passes on dimensions,
   rectangles, direction order, pixel identity, pivot, partial alpha, edge bleed, arrow orientation, manifest.
@@ -188,8 +188,17 @@ game's bot does. Not in the slice: the radio trait's radar and the airfield's ai
 aircraft yet). Bot-vs-bot after this: balanced v warlord ends (warlord, about 13 min); turtle v balanced
 reached the 30-minute cap with no winner (6/11 towns held), where it used to end.
 
+Forward training and workforce (2026-11-09), traced from the game's queueForward, rZe, productionSpeed
+and the bot's Nst: click inside one of your towns or cities and the HUD shows Infantry / AT buttons for
+it (Q / E). It trains only while the town is secured (full garrison); paid at once, up to 6 queued,
+counted against the unit cap. New men appear just outside the town's edge. If the town is lost the queue
+is refunded. Every secured settlement also speeds up all training: village 6%, town 12%, city 20%, at
+most 60%. The bot trains in its secured towns that are nearer the enemy than its barracks when it is
+short of foot units or garrison men. Bot-vs-bot after this: balanced v warlord ends (warlord, about
+13-15 min); turtle v balanced ends again (balanced, about 20-22 min).
+
 ## Next
-1. You run Studio tests B18–B29 (defences, mortar, artillery, scout) and commit.
+1. You run Studio tests B18–B30 (defences, mortar, artillery, scout) and commit.
 2. Then: engineers' repair work, vehicle steering, a closer look at the bot's HQ push; later shared group
    routes and separation.
 

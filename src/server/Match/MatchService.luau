@@ -109,6 +109,11 @@ local function onIntent(player: Player, raw: any)
 		if n == 0 then
 			Net.sendState(player, { notice = why })
 		end
+	elseif i.kind == "forward" then
+		local ok, why = sim.queueForward(side, i.cityId, i.item)
+		if not ok then
+			Net.sendState(player, { notice = why })
+		end
 	elseif i.kind == "repair" then
 		local n, why = sim.orderRepair(side, i.targetId, i.unitIds)
 		if n == 0 then
@@ -290,6 +295,16 @@ local function privateState()
 				prices[item] = sim.unitCost(side, item)
 			end
 			payload.prices = prices
+			-- own towns and cities that can train (forward training): queue, time left, working now
+			local forwards = {}
+			for _, st in sim.settlements do
+				if st.owner == side and table.find((rules.data["cities.forward.kinds"] :: { string }?) or {}, st.kind) then
+					local f = st.forward
+					table.insert(forwards, { id = st.id, queue = if f then #f.queue else 0, left = sim.forwardLeft(st.id),
+						active = sim.forwardActive(st) })
+				end
+			end
+			payload.forwards = forwards
 			local runs = territoryRuns(side)
 			local key = table.concat(runs, ",")
 			if sentTerritory[player] ~= key then

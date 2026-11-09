@@ -13,8 +13,8 @@
 
 	Economy     nations start with match.startOil and trucks.startIdle idle light trucks. A built HQ
 	            trickles rigs.hqOil per second (x the nation's oil multiplier).
-	Production  per producer (HQ, barracks, factory; units.<k>.from), paid up front (units.<k>.cost),
-	            units.<k>.buildSec each, production.maxQueue, match.unitCap counts units plus every
+	Production  per producer (HQ, barracks, factory; units.<k>.from), paid up front (unitCost: units.<k>.cost
+	            less settlement discounts), units.<k>.buildSec / (1 + workforce) each, production.maxQueue, match.unitCap counts units plus every
 	            queue. Refusals in the game's order: blocked, notOperational, requires, queueFull,
 	            unitCap, oil. Slice units: infantry, engineer (HQ); infantry, AT, mortar (barracks);
 	            tank, IFV, artillery, scout car (factory).
@@ -679,6 +679,29 @@ function Sim.new(deps: Deps)
 		return math.floor(v + 0.5) -- Math.round (no negative costs)
 	end
 	self.unitCost = unitCost
+	-- the game's ile / productionSpeed / buildTime: secured settlements add cities.workforce.<kind>
+	-- (max workforceMax) to production speed; a unit takes buildSec / (1 + workforce)
+	local function workforce(side: number): number
+		local n = 0
+		for _, st in settlements do
+			if st.owner == side and cityStatus(st) == "secured" then
+				n += num(`cities.workforce.{st.kind}`)
+			end
+		end
+		return math.min(num("cities.workforceMax"), n)
+	end
+	self.workforce = workforce
+	local function buildTime(side: number, item: string): number
+		return math.max(0.01, num(`units.{item}.buildSec`)) / (1 + workforce(side))
+	end
+	self.buildTime = buildTime
+	-- the game's Fpe: a held, secured town or city (cities.forward.kinds) trains units itself
+	local function forwardActive(st: Entity): boolean
+		local kinds = r.data["cities.forward.kinds"] :: { string }?
+		return r:flag("cities.forward.on") and st.owner > 0 and kinds ~= nil and table.find(kinds, st.kind) ~= nil
+			and cityStatus(st) == "secured"
+	end
+	self.forwardActive = forwardActive
 
 	local function baseSources(only: number?): { any }
 		local out = {}
@@ -1396,6 +1419,11 @@ function Sim.new(deps: Deps)
 				elseif e.queue and isStructure(e) then
 					n += #e.queue
 				end
+			end
+		end
+		for _, st in settlements do -- the game's sZe: forward queues count too
+			if st.forward and st.forward.owner == side then
+				n += #st.forward.queue
 			end
 		end
 		return n
@@ -2346,8 +2374,11 @@ function Sim.new(deps: Deps)
 	-- Discounts: secured settlements cut unit prices (cities.discount.<kind>, max discountMax).
 	-- Traits (towns and cities, assigned at the start, work while secured): hospital heals foot units
 	-- nearby, rail speeds own trucks within rail.reach, factory cuts vehicle prices.
+	-- Workforce: secured settlements speed all training by cities.workforce.<kind> (max workforceMax).
+	-- Forward training (queueForward): a held, secured town or city trains cities.forward.trains
+	-- (infantry, AT) itself; the queue waits while it is not secured and is refunded if it is lost.
 	-- Not in the slice: the radio trait's radar and the airfield's air drop (no radar or air units yet),
-	-- forward training, workforce, integrity damage.
+	-- integrity damage.
 	local function settlementsTick(dt: number)
 		local minPace, need = num("rigs.minPace"), math.max(0.1, num("rigs.need"))
 		garrisonTick()
@@ -2600,7 +2631,7 @@ function Sim.new(deps: Deps)
 					end
 					if #st.queue > 0 and not why then
 						local item = st.queue[1]
-						st.queueProgress += dt / math.max(0.01, num(`units.{item}.buildSec`))
+						st.queueProgress += dt / buildTime(st.side, item)
 						if st.queueProgress >= 1 then
 							st.queueProgress = 0
 							table.remove(st.queue, 1)
@@ -2623,7 +2654,126 @@ function Sim.new(deps: Deps)
 		if not st or not st.alive or not st.queue or #st.queue == 0 then
 			return nil
 		end
-		return (1 - st.queueProgress) * math.max(0.01, num(`units.{st.queue[1]}.buildSec`))
+		return (1 - st.queueProgress) * buildTime(side, st.queue[1])
+	end
+
+	---------------------------------------------------------------- forward training (the game's DX, Upe, Wpe, rZe)
+
+	-- why a settlement cannot queue `item` for `side` now (nil = it can)
+	local function forwardProblem(side: number, st: Entity?, item: string): string?
+		local trains = r.data["cities.forward.trains"] :: { string }?
+		local kinds = r.data["cities.forward.kinds"] :: { string }?
+		if not st or not trains or not table.find(trains, item) or not SLICE_UNITS[item] then
+			return "blocked"
+		end
+		if not r:flag("cities.forward.on") or not kinds or not table.find(kinds, st.kind) then
+			return "blocked"
+		end
+		if st.owner ~= side or side <= 0 then
+			return "notHeld"
+		end
+		if cityStatus(st) ~= "secured" then
+			return "notSecured"
+		end
+		if (if st.forward then #st.forward.queue else 0) >= num("production.maxQueue") then
+			return "queueFull"
+		end
+		if unitsAndQueued(side) >= num("match.unitCap") then
+			return "unitCap"
+		end
+		if self.sides[side].oil < unitCost(side, item) then
+			return "oil"
+		end
+		return nil
+	end
+	self.forwardProblem = forwardProblem
+	-- the game's queueForward (Upe): pay now, train in the settlement
+	function self.queueForward(side: number, cityId: number, item: string): (boolean, string?)
+		local st = settlements[cityId]
+		local s = self.sides[side]
+		if not s or s.lost or self.winner then
+			return false, "blocked"
+		end
+		local why = forwardProblem(side, st, item)
+		if why then
+			return false, why
+		end
+		local cost = unitCost(side, item)
+		s.oil -= cost
+		local f = st.forward or { owner = side, queue = {}, paid = {}, progress = 0 }
+		st.forward = f
+		table.insert(f.queue, item)
+		table.insert(f.paid, cost)
+		return true, nil
+	end
+	-- the game's Wpe: cancel queue entry `index` (1-based) for a refund of what was paid
+	function self.cancelForward(side: number, cityId: number, index: number): (boolean, string?)
+		local st = settlements[cityId]
+		local f = st and st.forward
+		if not st or not f or f.owner ~= side then
+			return false, "notOwned"
+		end
+		if index < 1 or index > #f.queue then
+			return false, "blocked"
+		end
+		table.remove(f.queue, index)
+		local paid = table.remove(f.paid, index)
+		if index == 1 then
+			f.progress = 0
+		end
+		self.sides[side].oil += paid or 0
+		if #f.queue == 0 then
+			st.forward = nil
+		end
+		return true, nil
+	end
+	-- seconds left on a settlement's head unit
+	function self.forwardLeft(cityId: number): number?
+		local st = settlements[cityId]
+		local f = st and st.forward
+		if not f or #f.queue == 0 then
+			return nil
+		end
+		return (1 - f.progress) * buildTime(f.owner, f.queue[1])
+	end
+	-- the game's rZe: a queue whose settlement changed hands (or whose nation is out) is refunded and
+	-- dropped; one whose settlement is not secured waits; the head unit appears radius + 0.5 from the
+	-- centre at a random angle (the nearest free spot).
+	local function forwardTick(dt: number)
+		for _, st in settlements do
+			local f = st.forward
+			if f then
+				local s = self.sides[f.owner]
+				if f.owner ~= st.owner or not s or s.lost then
+					if s and not s.lost then
+						for _, p in f.paid do
+							s.oil += p
+						end
+					end
+					st.forward = nil
+				elseif #f.queue == 0 then
+					st.forward = nil
+				elseif forwardActive(st) then
+					f.progress += dt / buildTime(f.owner, f.queue[1])
+					if f.progress >= 1 then
+						f.progress = 0
+						table.remove(f.paid, 1)
+						local item = table.remove(f.queue, 1) :: string
+						local a = rand() * math.pi * 2
+						local x, y = st.x + math.cos(a) * (st.radius + 0.5), st.y + math.sin(a) * (st.radius + 0.5)
+						local c = cellAt(x, y)
+						if c < 0 or not roads.passable(c) then
+							x, y = freePointNear(math.clamp(x, 0, W - 1e-6), math.clamp(y, 0, H - 1e-6))
+						end
+						local u = self.spawnUnit(item, f.owner, x, y)
+						event({ type = "forwardReady", id = u.id, side = f.owner, kind = item, city = st.id })
+						if #f.queue == 0 then
+							st.forward = nil
+						end
+					end
+				end
+			end
+		end
 	end
 
 	-- the game's checkHeadless: a nation without an HQ that may rehouse (an active factory) has
@@ -2962,6 +3112,7 @@ function Sim.new(deps: Deps)
 		end
 		rigs(dt)
 		settlementsTick(dt)
+		forwardTick(dt)
 		cityHealing(dt)
 		repairsTick(dt)
 		updateRoutes()

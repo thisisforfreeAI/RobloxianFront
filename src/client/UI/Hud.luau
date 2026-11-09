@@ -3,7 +3,8 @@
 	Hud: top bar, oil, the selected producer's training buttons and queue, build buttons, notices and
 	the end-of-match banner. PLACEHOLDER visuals (TEMP-003).
 	Producer: click one of your buildings (HQ, barracks, factory) to pick it; with none picked the HQ
-	trains. Q / E / Z / C train its first to fourth unit, B / F / K / G place a barracks / factory / bunker /
+	trains. Click one of your towns or cities to train infantry / AT there (forward training; it works
+	while the town is secured). Q / E / Z / C train its first to fourth unit, B / F / K / G place a barracks / factory / bunker /
 	AT gun (PROVISIONAL keys; K and G are the game's letters for the bunker and AT gun).
 	Costs and names come from the match rules; the server checks every order.
 ]]
@@ -21,10 +22,11 @@ local TRAINS = {
 	hq = { "infantry", "engineer" },
 	barracks = { "infantry", "at", "mortar" },
 	factory = { "tank", "ifv", "artillery", "scout" },
+	town = { "infantry", "at" }, -- cities.forward.trains (a held, secured town or city)
 }
 -- PROVISIONAL keys for a producer's 1st..4th unit (WarFront's bindings are not confirmed yet)
 local TRAIN_KEYS = { Enum.KeyCode.Q, Enum.KeyCode.E, Enum.KeyCode.Z, Enum.KeyCode.C }
-local PRODUCER_NAME = { hq = "HQ", barracks = "Barracks", factory = "War Factory" }
+local PRODUCER_NAME = { hq = "HQ", barracks = "Barracks", factory = "War Factory", town = "Town" }
 
 local rules: any
 local oilLabel: TextLabel
@@ -35,7 +37,8 @@ local banner: TextLabel
 local noticeUntil = 0
 local selected: { id: number?, kind: string } = { id = nil, kind = "hq" }
 local lastProducers: { any } = {}
-local actions: { produce: (string, number?) -> (), build: (string) -> () }
+local lastForwards: { any } = {}
+local actions: { produce: (string, number?) -> (), build: (string) -> (), forward: (string, number) -> () }
 
 local function label(parent: Instance, size: UDim2, pos: UDim2, textSize: number): TextLabel
 	local t = Instance.new("TextLabel")
@@ -66,6 +69,24 @@ local function unitName(item: string): string
 end
 
 local function refreshQueue()
+	if selected.kind == "town" then
+		local f = nil
+		for _, p in lastForwards do
+			if p.id == selected.id then
+				f = p
+			end
+		end
+		if not f then
+			queueLabel.Text = "Only your towns and cities can train"
+		elseif not f.active then
+			queueLabel.Text = `Town queue {f.queue}/6 · needs a full garrison (secured)`
+		elseif f.left then
+			queueLabel.Text = `Town queue {f.queue}/6 · next {math.ceil(f.left)} s`
+		else
+			queueLabel.Text = `Town queue {f.queue}/6`
+		end
+		return
+	end
 	local entry = nil
 	for _, p in lastProducers do
 		if (selected.id and p.id == selected.id) or (not selected.id and p.kind == "hq") then
@@ -100,12 +121,14 @@ end
 
 local function train(i: number)
 	local item = (TRAINS[selected.kind] or {})[i]
-	if item then
+	if item and selected.kind == "town" and selected.id then
+		actions.forward(item, selected.id)
+	elseif item then
 		actions.produce(item, selected.id)
 	end
 end
 
-function Hud.start(info: { [string]: any }, acts: { produce: (string, number?) -> (), build: (string) -> () })
+function Hud.start(info: { [string]: any }, acts: { produce: (string, number?) -> (), build: (string) -> (), forward: (string, number) -> () })
 	actions = acts
 	rules = Rules.new(require(Shared:WaitForChild("GameData").RulesMatch) :: any)
 	local gui = Instance.new("ScreenGui")
@@ -175,6 +198,12 @@ function Hud.update(state: { [string]: any }, mySide: number)
 		end
 		if changed then
 			refreshButtons()
+		end
+	end
+	if state.forwards then
+		lastForwards = state.forwards
+		if selected.kind == "town" then
+			refreshQueue()
 		end
 	end
 	if state.producers then
