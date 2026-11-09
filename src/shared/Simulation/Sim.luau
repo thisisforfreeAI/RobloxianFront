@@ -82,8 +82,9 @@
 	        unit spawn spots (door/rally) are simplified; the random numbers (reload jitter) do not
 	        follow the game's seeded sequence; tie order between equally near targets may differ;
 	        rig routes refresh every 10 ticks per rig; units caught inside a new footprint step to the
-	        nearest free cell centre; vehicles (tank, IFV) follow paths like foot units (no drive model,
-	        acceleration or turning).
+	        nearest free cell centre; vehicles drive with the game's model (Pathing: accelerate, brake,
+	        corner, pivot / three-point turn, reverse) minus formations, overtaking and dodging; a
+	        standing vehicle without a turret turns its hull to its target (the game's Wat).
 	UNCONFIRMED: the territory edge noise uses the map's seed (the game uses its match seed); where
 	        the headless check sits in the tick order.
 	UNCONFIRMED (older): new units start with no face direction and an empty shot timer; a dead nation's
@@ -1610,6 +1611,20 @@ function Sim.new(deps: Deps)
 	local function hasHull(e: Entity): boolean
 		return e.cat == "unit" and e.kind ~= TRUCK and text(unitKey(e) .. ".move") ~= "foot"
 	end
+	-- the game's qat: the nearest enemy ground unit within r (ties to the lower id)
+	local function nearestFoe(e: Entity, rr: number): Entity?
+		local best, bestD = nil, rr * rr
+		for _, o in self.list do
+			if o.alive and o.cat == "unit" and o.kind ~= TRUCK and not o.inside and canAttack(e.side, o.side)
+				and o.class ~= "air" and text(unitKey(o) .. ".move") ~= "sea" then
+				local h = (o.x - e.x) ^ 2 + (o.y - e.y) ^ 2
+				if h < bestD or (h == bestD and best and o.id < best.id) then
+					best, bestD = o, h
+				end
+			end
+		end
+		return best
+	end
 
 	-- Armour facing: the hull heading for vehicles, otherwise the face direction.
 	local function facingOf(e: Entity): (number?, number?)
@@ -3061,6 +3076,7 @@ function Sim.new(deps: Deps)
 					e.moved = pathing.step(e, dt)
 					if e.moved and holdAtEnemy(e, fromX, fromY) then
 						e.x, e.y, e.pathIndex, e.moved = fromX, fromY, fromIndex, false
+						e.pace = 0
 					end
 					if e.path and e.pathIndex > #e.path then
 						-- arrive (idle where it stands; the game's arrive sets its post there)
@@ -3079,6 +3095,9 @@ function Sim.new(deps: Deps)
 				if e.chasing and e.firing and e.path then
 					e.target, e.path, e.spot, e.chasing = nil, nil, nil, nil
 				elseif not e.path then
+					if hasHull(e) then
+						pathing.idleTurn(e, dt, self.ticks, nearestFoe)
+					end
 					idleThink(e)
 				end
 			end

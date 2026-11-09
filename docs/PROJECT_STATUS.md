@@ -11,7 +11,7 @@ Last updated: 2026-11-09
 Phase 1. Milestone 1A done (Studio tests 1–7 pass). Pilot sprite REQ-0001 approved. Milestone 1B (gameplay loop) rewritten for WarFront parity and tested outside Studio; Studio tests B1–B9 pending.
 
 ## Verified outside Studio (actually run, Linux container)
-- Lune 0.11.1 `tests/run`: 73 passed, 0 failed (latest run) (including the 2 that read the GameData generated from your install).
+- Lune 0.11.1 `tests/run`: 75 passed, 0 failed (latest run) (including the 2 that read the GameData generated from your install).
 - Rojo 7.4.4 `rojo build` succeeds. All .luau files compile (syntax only).
 - Synthetic atlas: 16 × 120 px frames pack to 960×240 (8×2, no padding); validator passes on dimensions,
   rectangles, direction order, pixel identity, pivot, partial alpha, edge bleed, arrow orientation, manifest.
@@ -197,8 +197,19 @@ most 60%. The bot trains in its secured towns that are nearer the enemy than its
 short of foot units or garrison men. Bot-vs-bot after this: balanced v warlord ends (warlord, about
 13-15 min); turtle v balanced ends again (balanced, about 20-22 min).
 
+Vehicle driving (2026-11-09), traced from the game's Uat drive model: tanks, IFVs, artillery (tracks)
+and scout cars and engineers (wheels) now drive instead of sliding. They speed up at top speed /
+accelSec and brake at top / brakeSec, steer toward a point 1-4.5 cells ahead on their path, slow for
+corners up to 70%, and brake to stop on their goal. Tracked vehicles pivot on the spot when the way
+ahead is more than 50 degrees off; wheeled ones turn no tighter than their turning radius and do
+three-point turns. A goal close behind (6 cells, 12 when shooting forward) is reached in reverse at
+45% pace. A vehicle that makes no progress re-plans after 6 s and gives up after 20 s. A standing
+vehicle without a turret turns its hull toward its target. APPROX: no formations or shared lanes, no
+overtaking or dodging round blockers, no traffic slowdown next to trucks. Bot-vs-bot after this:
+both matchups still end (warlord about 13-15 min; balanced v turtle about 18-20 min).
+
 ## Next
-1. You run Studio tests B18–B30 (defences, mortar, artillery, scout) and commit.
+1. You run Studio tests B18–B31 (defences, mortar, artillery, scout) and commit.
 2. Then: engineers' repair work, vehicle steering, a closer look at the bot's HQ push; later shared group
    routes and separation.
 

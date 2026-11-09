@@ -870,6 +870,52 @@ if fs.isFile(matchPath) then
 		eq(town.forward, nil)
 		assert(math.abs(sim.sides[1].oil - mid - atPrice) < 0.5, "what was paid comes back (plus 0.1 s of HQ trickle)")
 	end)
+	test("drive: a tank speeds up at top / accelSec, pivots to a far goal behind it and stops on its goal", function()
+		local sim = newSim()
+		clearUnits(sim, {})
+		local t = sim.spawnUnit("tank", 1, 60.5, 15.5)
+		t.heading, t.headed, t.hp = 0, true, 1e9
+		sim.orderMove(1, { t.id }, 80.5, 15.5)
+		run(sim, 0.5)
+		local accel = 3.57 * 1.25 / 3.2 -- top (speed x roadMult) / accelSec
+		assert(t.pace > 0 and t.pace <= accel * 0.5 + 1e-6, `accelerating, not at full pace at once ({t.pace})`)
+		run(sim, 20)
+		assert(not t.path, "arrived")
+		assert(math.abs(t.x - 80.5) < 0.5 and math.abs(t.y - 15.5) < 0.5, `on its goal ({t.x}, {t.y})`)
+		-- a far goal behind: it pivots on the spot first (tracks), then drives
+		local x0 = t.x
+		sim.orderMove(1, { t.id }, 50.5, 15.5)
+		run(sim, 0.5)
+		assert(math.abs(t.x - x0) < 0.01, `pivoting in place ({t.x})`)
+		assert(t.steer.pivot, "pivot")
+		run(sim, 30)
+		assert(math.abs(t.x - 50.5) < 0.5, `drove to the far goal ({t.x})`)
+		assert(math.abs(math.cos(t.heading) + 1) < 0.05, "facing west now")
+	end)
+	test("drive: a close goal behind is reached in reverse; a scout car turns no tighter than its radius", function()
+		local sim = newSim()
+		clearUnits(sim, {})
+		local t = sim.spawnUnit("tank", 1, 60.5, 15.5)
+		t.heading, t.headed, t.hp = 0, true, 1e9
+		sim.orderMove(1, { t.id }, 56.5, 15.5) -- 4 cells behind (reverseCells 6)
+		run(sim, 1.5)
+		assert(t.x < 60.5 and t.reversing, `backing up ({t.x})`)
+		assert(math.abs(math.cos(t.heading) - 1) < 0.05, "still facing east")
+		local car = sim.spawnUnit("scout", 1, 60.5, 45.5)
+		car.heading, car.headed, car.hp = 0, true, 1e9
+		sim.orderMove(1, { car.id }, 90.5, 45.5)
+		run(sim, 3)
+		local maxTurn = 0
+		sim.orderMove(1, { car.id }, car.x, 60.5) -- hard right
+		for _ = 1, 20 do
+			local h0 = car.heading
+			run(sim, 0.05)
+			local dh = math.abs(math.atan2(math.sin(car.heading - h0), math.cos(car.heading - h0)))
+			local limit = math.min(sim.deps.rules:number("units.scout.turnDegSec") * math.pi / 180, (car.pace or 0) / sim.deps.rules:number("units.scout.turnRadiusCells")) * 0.05
+			maxTurn = math.max(maxTurn, dh - limit)
+		end
+		assert(maxTurn < 1e-6, `turn rate within min(turnDegSec, pace / radius) (over by {maxTurn})`)
+	end)
 	test("towns: two infantry take a neutral town in 16 s; a held town lets its owner build round it", function()
 		local sim = newSim({ settlements = { { name = "T", x = 130, y = 45, kind = "town" }, { name = "V", x = 90, y = 45, kind = "village" } } })
 		for _, side in { 1, 2 } do
@@ -1162,7 +1208,7 @@ if fs.isFile(matchPath) then
 		sim.orderMove(1, { a.id }, 90.5, 20.5)
 		run(sim, 2.9)
 		eq(a.y, 5.5, "packing")
-		run(sim, 1)
+		run(sim, 2.5) -- packed at 3 s; the gun then pivots (52 deg/s, facing east) and pulls away
 		assert(a.y > 5.5, "moving after packSec")
 		run(sim, 3)
 		viewer.update()
