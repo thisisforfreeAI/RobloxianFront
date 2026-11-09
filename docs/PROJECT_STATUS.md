@@ -11,7 +11,7 @@ Last updated: 2026-11-09
 Phase 1. Milestone 1A done (Studio tests 1–7 pass). Pilot sprite REQ-0001 approved. Milestone 1B (gameplay loop) rewritten for WarFront parity and tested outside Studio; Studio tests B1–B9 pending.
 
 ## Verified outside Studio (actually run, Linux container)
-- Lune 0.11.1 `tests/run`: 65 passed, 0 failed (latest run) (including the 2 that read the GameData generated from your install).
+- Lune 0.11.1 `tests/run`: 67 passed, 0 failed (latest run) (including the 2 that read the GameData generated from your install).
 - Rojo 7.4.4 `rojo build` succeeds. All .luau files compile (syntax only).
 - Synthetic atlas: 16 × 120 px frames pack to 960×240 (8×2, no padding); validator passes on dimensions,
   rectangles, direction order, pixel identity, pivot, partial alpha, edge bleed, arrow orientation, manifest.
@@ -154,8 +154,16 @@ out. The bot garrisons its towns with a share of its army (bots.garrisonShare x 
 infantry to fill them, and weighs enemy garrisons when choosing towns. Not in the slice: city traits,
 forward training, discounts, settlement damage.
 
+Idle units (2026-11-09), traced from the game's idleThink and holdAtEnemy: every unit keeps a post,
+which is where it was sent, stopped or arrived. A unit standing idle chases enemies that come within 18
+cells (match leashCells) of its post if they are out of range, and stops chasing as soon as it can
+shoot. Pushed more than 9 cells from its post with nobody to fight, it walks back. A unit walking
+straight into an enemy it can hurt stops 2.1 cells (enemySpaceCells) short instead of walking through.
+The bot counts chasing units as idle, as the game does. Not yet: foot soldiers looking for nearby cover
+(seekCover).
+
 ## Next
-1. You run Studio tests B18–B25 (defences, mortar, artillery, scout) and commit.
+1. You run Studio tests B18–B26 (defences, mortar, artillery, scout) and commit.
 2. Then: engineers' repair work, vehicle steering, a closer look at the bot's HQ push; later shared group
    routes and separation.
 

@@ -682,6 +682,41 @@ if fs.isFile(matchPath) then
 		eq(sim.canPlace(1, "atgun", cellOf(133, 37)), nil)
 		eq(sim.canPlace(1, "bunker", cellOf(130, 34)), "onRig", "within footprint + padCells of the rig")
 	end)
+	test("idle: a unit knocked more than leashCells/2 off its post walks back; an order moves its post", function()
+		local sim = newSim()
+		local u = units(sim, 1, "infantry")[1]
+		clearUnits(sim, { u })
+		u.x, u.y, u.post = 50.5, 30.5, nil
+		run(sim, 1.1) -- first idle think: the post is where it stands
+		local post = u.post
+		assert(post, "post set")
+		u.x = 62.5 -- 12 cells off (> match leash 18 / 2)
+		run(sim, 1.1)
+		assert(u.path and u.chasing, "walking back on its own")
+		run(sim, 30)
+		assert(math.abs(u.x - 50.5) < 1.5 and math.abs(u.y - 30.5) < 1.5, `back at its post ({u.x}, {u.y})`)
+		u.x = 56.5 -- 6 cells off: within leash / 2, stays
+		run(sim, 2)
+		assert(not u.path, "stays within half the leash")
+		sim.orderMove(1, { u.id }, 60.5, 30.5)
+		assert(not u.chasing, "an order is not idle")
+		run(sim, 30)
+		assert(not u.path and math.abs(u.x - 60.5) < 1.5, "arrived")
+		run(sim, 3)
+		assert(not u.path and math.abs(u.x - 60.5) < 1.5, "its post is now where it was sent")
+	end)
+	test("holdAtEnemy: an armed unit walking into an enemy stops enemySpaceCells (2.1 match) short", function()
+		local sim = newSim()
+		local u = units(sim, 1, "infantry")[1]
+		clearUnits(sim, { u })
+		u.x, u.y = 50.5, 30.5
+		local foe = sim.spawnUnit("infantry", 2, 56.5, 30.5)
+		foe.hp, u.hp = 1e9, 1e9
+		sim.orderMove(1, { u.id }, 62.5, 30.5)
+		run(sim, 20)
+		local d = math.abs(foe.x - u.x)
+		assert(u.x < foe.x and d >= 2.1 - 0.05 and d < 3, `held short of the enemy (gap {d})`)
+	end)
 	test("towns: two infantry take a neutral town in 16 s; a held town lets its owner build round it", function()
 		local sim = newSim({ settlements = { { name = "T", x = 130, y = 45, kind = "town" }, { name = "V", x = 90, y = 45, kind = "village" } } })
 		for _, side in { 1, 2 } do
@@ -700,6 +735,7 @@ if fs.isFile(matchPath) then
 		eq(sim.claimRadius(town), 6 + 12, "townRadius 6 + claim margin 12")
 		eq(sim.canPlace(1, "bunker", cellOf(138, 50)), nil, "inside the town's claim")
 		a.x, a.y, b.x, b.y = 90.5, 45.5, 91.5, 45.5
+		a.post, b.post = nil, nil -- placed there: their post is where they now stand
 		run(sim, 10.1)
 		eq(village.owner, 1)
 		eq(sim.claimRadius(village), 0, "villages claim nothing")

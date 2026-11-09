@@ -88,6 +88,11 @@
 	        the headless check sits in the tick order.
 	UNCONFIRMED (older): new units start with no face direction and an empty shot timer; a dead nation's
 	        trucks are removed; a firing vehicle's hull keeps its heading (turrets not modelled).
+	Idle units (idleThink / holdAtEnemy below): each unit keeps a post (where it was sent, stopped or
+	        arrived). Standing idle, an armed unit chases enemies within movement.leashCells of its post
+	        and walks back once more than half the leash away; a unit walking straight into an enemy it
+	        can hurt holds movement.enemySpaceCells short. APPROX: no seekCover yet, unarmed units are
+	        not slid round enemies, and smoke does not hide chase targets.
 	Engineers can be trained (the HQ lists them) but their building and repair work is not in the slice.
 	Fog: visionFor / nightAmount below; the server filters snapshots per side (Shared.Simulation.Fog).
 	Not in the slice: line of sight (the game's only blockers are settlement buildings), weather, veterancy, smoke, rig damage,
@@ -967,6 +972,7 @@ function Sim.new(deps: Deps)
 		e.spot = { x = x, y = y }
 		e.target = { x = x, y = y } -- destination marker (Bot and UI read it)
 		e.goalCell = cell
+		e.post, e.chasing = cell, nil -- the game's walkTo: the unit's post is where it was sent
 	end
 	self.planTo = planTo
 	planLater = function(e: Entity)
@@ -1093,7 +1099,8 @@ function Sim.new(deps: Deps)
 		for _, id in ids do
 			local e = self.entities[id]
 			if orderable(e, side) then
-				e.target, e.attackId, e.path = nil, nil, nil
+				e.target, e.attackId, e.path, e.chasing = nil, nil, nil, nil
+				e.post = cellAt(e.x, e.y)
 				clearRecon(e)
 				leaveGarrison(e)
 			elseif e and e.side ~= side then
@@ -1642,7 +1649,10 @@ function Sim.new(deps: Deps)
 		local f = math.min(reach * 0.9, minR * num("mortar.backOffShare"))
 		local p = math.sqrt(d2(e.x, e.y, t.x, t.y))
 		if p >= f and p <= reach then
-			e.target, e.path = nil, nil
+			if e.path then
+				e.post = cellAt(e.x, e.y)
+			end
+			e.target, e.path, e.chasing = nil, nil, nil
 			return t
 		end
 		local ax, ay
@@ -1716,7 +1726,10 @@ function Sim.new(deps: Deps)
 									end
 								end
 							else
-								e.target, e.path = nil, nil
+								if e.path then
+									e.post = cellAt(e.x, e.y)
+								end
+								e.target, e.path, e.chasing = nil, nil, nil
 								focus = t
 							end
 						end
@@ -2408,6 +2421,90 @@ function Sim.new(deps: Deps)
 		self.list = keep
 	end
 
+	-- the game's holdAtEnemy: an armed unit that would step within movement.enemySpaceCells of an
+	-- enemy unit it can hurt, moving towards it, stays where it was (it holds and fights there).
+	-- APPROX: unarmed units are not slid round enemies as in the game; they walk on.
+	local function holdAtEnemy(e: Entity, n: number, s: number): boolean
+		local r = num("movement.enemySpaceCells")
+		if r <= 0 or e.inside then
+			return false
+		end
+		local l, c = e.x - n, e.y - s
+		if l * l + c * c < 1e-18 then
+			return false
+		end
+		local key = unitKey(e)
+		if num(key .. ".dps") <= 0 then
+			return false
+		end
+		for _, b in self.list do
+			if b ~= e and b.alive and not b.inside and b.cat == "unit" and b.kind ~= TRUCK and canAttack(e.side, b.side) and b.class ~= "air"
+				and text(unitKey(b) .. ".move") ~= "sea" then
+				local x, y = b.x - n, b.y - s
+				local m = math.sqrt(x * x + y * y)
+				if m >= 1e-6 and (n + l - b.x) ^ 2 + (s + c - b.y) ^ 2 < r * r and l * x / m + c * y / m > 0
+					and vsOf(key, b.class) > 0 then
+					return true
+				end
+			end
+		end
+		return false
+	end
+
+	-- the game's idleThink (every 20 ticks per unit, for armed units standing idle): chase the nearest
+	-- enemy unit within min(sight, movement.chaseCells + range) whose position is within
+	-- movement.leashCells of the unit's post, stopping range x 0.6 cells short; with none, walk back
+	-- to the post once more than leashCells / 2 from it. Chasing keeps the unit idle (its post stays).
+	-- APPROX: foot soldiers do not seek nearby cover (the game's seekCover) yet.
+	local function idleThink(e: Entity)
+		if (e.id + self.ticks) % 20 ~= 0 or e.attackId or e.firing or (e.reconLeft or 0) > 0 or e.garrisonCity then
+			return
+		end
+		local key = unitKey(e)
+		local dps = num(key .. ".dps")
+		if dps <= 0 or text(key .. ".move") == "sea" or text(key .. ".weapon") == "salvo" then
+			return
+		end
+		-- APPROX: a unit with no post yet (fresh, or placed by a test) takes the cell it stands on
+		local post = e.post or cellAt(e.x, e.y)
+		e.post = post
+		local sx, sy = centre(post)
+		local leash = num("movement.leashCells")
+		local range = num(key .. ".range")
+		local reach = math.min(num(key .. ".sight"), num("movement.chaseCells") + range)
+		local best, bestD = nil, reach * reach
+		for _, p in self.list do
+			if p.alive and p.cat == "unit" and p.kind ~= TRUCK and canAttack(e.side, p.side) and vsOf(key, p.class) > 0
+				and d2(p.x, p.y, sx, sy) <= leash * leash then
+				local g = d2(p.x, p.y, e.x, e.y)
+				if g < bestD then
+					best, bestD = p, g
+				end
+			end
+		end
+		if best then
+			if math.sqrt(bestD) > range * 0.8 then
+				local path = pathing.route(cellAt(e.x, e.y), cellAt(best.x, best.y), e.kind)
+				if path and #path > 0 then
+					local keep = math.max(1, #path - math.floor(range * 0.6))
+					local cut = table.move(path, 1, keep, 1, {})
+					local last = cut[#cut]
+					local lx, ly = centre(last)
+					e.path, e.pathIndex, e.stall, e.stallTries = cut, 1, 0, 0
+					e.spot, e.target, e.goalCell = { x = lx, y = ly }, { x = lx, y = ly }, last
+					e.chasing = true
+				end
+			end
+			return
+		end
+		if d2(e.x, e.y, sx, sy) > (leash * 0.5) ^ 2 then
+			planTo(e, post, sx, sy)
+			if e.path then
+				e.chasing = true
+			end
+		end
+	end
+
 	local function packSecOf(e: Entity): number
 		return if text(unitKey(e) .. ".weapon") == "mortar" then num("mortar.packSec") else num("artillery.packSec")
 	end
@@ -2450,10 +2547,15 @@ function Sim.new(deps: Deps)
 				if held then
 					-- packing: stands where it is
 				elseif e.target and e.path then
+					local fromX, fromY, fromIndex = e.x, e.y, e.pathIndex
 					e.moved = pathing.step(e, dt)
+					if e.moved and holdAtEnemy(e, fromX, fromY) then
+						e.x, e.y, e.pathIndex, e.moved = fromX, fromY, fromIndex, false
+					end
 					if e.path and e.pathIndex > #e.path then
-						-- arrive (idle where it stands)
-						e.target, e.path, e.spot = nil, nil, nil
+						-- arrive (idle where it stands; the game's arrive sets its post there)
+						e.target, e.path, e.spot, e.chasing = nil, nil, nil, nil
+						e.post = cellAt(e.x, e.y)
 					end
 				elseif e.target then
 					e.target = nil
@@ -2461,6 +2563,16 @@ function Sim.new(deps: Deps)
 			end
 		end
 		unitsFire(dt)
+		for _, e in self.list do
+			if e.alive and e.cat == "unit" and e.kind ~= TRUCK then
+				-- an idle unit that finds a target while chasing or walking back stops there
+				if e.chasing and e.firing and e.path then
+					e.target, e.path, e.spot, e.chasing = nil, nil, nil, nil
+				elseif not e.path then
+					idleThink(e)
+				end
+			end
+		end
 		-- seconds standing still (artillery sets up before firing): moving resets it, packing holds it
 		for _, e in self.list do
 			if e.alive and e.cat == "unit" and e.stillStep then

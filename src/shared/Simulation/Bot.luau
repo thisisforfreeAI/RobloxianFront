@@ -272,7 +272,8 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 	end
 	local garrisonWanted: () -> number
 	local function idle(e: any): boolean
-		return e.target == nil and e.attackId == nil
+		-- a unit chasing or walking back on its own (the game's idleThink) is still idle
+		return (e.target == nil or e.chasing == true) and e.attackId == nil
 	end
 	local function myRigs(): { any }
 		local out = {}
