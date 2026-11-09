@@ -61,9 +61,10 @@ cover, armour facing, truck ambush, HQ loss eliminates, bot). A 10-minute bot-vs
 | B4 | Trucks | Watch that truck | It follows the road to the rig, waits until it has at least 80 oil (or 160), drives back by road, unloads 3 s and Output shows `delivered side 1 ... oil N`. Hover your rig and press T: another truck goes (idle first, then 40 oil each, max 4 per rig, then a `truckLimit` notice) | not run |
 | B5 | Combat | Right-click an enemy (red) unit with units selected | Your units close in and fire; health bars drop by 8 per hit (6 in forest); dead units vanish | not run |
 | B6 | Interception | Park 3+ infantry near a red truck route | Red trucks lose health (2 per hit) and eventually disappear; Output `convoyLost side 2` | not run |
-| B7 | Bot | Wait 2–5 minutes | Red trains infantry, captures rigs, its trucks run, and later it sends a group at your HQ | not run |
+| B7 | Bot | Wait 2–5 minutes | Output says `side 2 is played by the balanced bot (normal)`. Within a second two red infantry head for the nearest rig while one stays home; red trucks run to its rigs; around minute 2 red trains engineers (they stand idle: their work is not in the slice); after minute 10 red sends larger pushes at your HQ | not run |
 | B8 | Victory | Clear the red infantry, then right-click the red HQ with your group | Red HQ bar drops (3.2 per infantry hit, it shoots back); `HQ DESTROYED`; Output `eliminated side 2`; banner VICTORY (DEFEAT if yours falls) | not run |
 | B9 | Two players | Clients and Servers, 2 players | Output `side 2 handed from the bot to a player`; each player has own oil, trucks and Train button; K probe still refused | not run |
+| B10 | Pathfinding | Select 6 infantry, right-click across a river or behind a forest | Units walk around the obstacle (fords, bridges, roads preferred over long distances) instead of stopping at the bank; the group ends in a rank across its direction of travel; a single unit ends exactly where you clicked; clicking on water does nothing | not run |
 
 Known limits (not failures): no fog (TEMP-001), straight-line movement and trucks drive off-road (TEMP-002),
 placeholder shapes (TEMP-003), bot is a simple script, rigs can't be damaged yet, one unit type (infantry).

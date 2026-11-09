@@ -11,7 +11,7 @@ Last updated: 2026-11-09
 Phase 1. Milestone 1A done (Studio tests 1–7 pass). Pilot sprite REQ-0001 approved. Milestone 1B (gameplay loop) rewritten for WarFront parity and tested outside Studio; Studio tests B1–B9 pending.
 
 ## Verified outside Studio (actually run, Linux container)
-- Lune 0.11.1 `tests/run`: 14 passed, 0 failed (including the 2 that read the GameData generated from your install).
+- Lune 0.11.1 `tests/run`: 42 passed, 0 failed (latest run; earlier note said 14) (including the 2 that read the GameData generated from your install).
 - Rojo 7.4.4 `rojo build` succeeds. All .luau files compile (syntax only).
 - Synthetic atlas: 16 × 120 px frames pack to 960×240 (8×2, no padding); validator passes on dimensions,
   rectangles, direction order, pixel identity, pivot, partial alpha, edge bleed, arrow orientation, manifest.
@@ -34,7 +34,7 @@ Only synthetic or approved new art is tracked under `assets/sprites/`.
 
 ## Temporary items
 - TEMP-001 all units replicated to all clients. No fog of war; no protection against seeing enemy units is claimed.
-- TEMP-002 straight-line unit movement, no pathfinding (trucks already route on roads)
+- TEMP-002 closed: units now plan routes with the game's pathfinding (`Shared.Simulation.Pathing`); `Movement.luau` is no longer used by the match
 - TEMP-003 placeholder unit shapes and colours
 - Atlas test board runs in Studio while `DevFlags.ATLAS_TEST_BOARD` is true
 
@@ -53,11 +53,29 @@ queue and leave rules, road raster and road networks, rig connection, truck rout
 flight, damage with cover, flanking and armour facing, truck damage, HQ loss elimination and the
 annihilation verdict. Every remaining simplification is labelled APPROX or UNCONFIRMED at the top of
 `Sim.luau` (unit pathfinding, truck curve-following and column spacing, spawn spots, RNG sequence).
-The bot is still PROVISIONAL (the game's bot personas are next).
+WarFront's bot is ported for the slice (`Shared.Simulation.Bot`): personas balanced/turtle/warlord and
+difficulty from the game's data, trucks and rig upgrades, HQ training, influence map, home guard, rig
+defence, fall back, rig targets and the HQ assault timer. It skips what the slice lacks (buildings,
+cities, recon, naval...).
+
+Unit pathfinding (2026-11-09) is ported from the game (`Shared.Simulation.Pathing`): per-unit move
+tables (off-road bias 1.6, foot roughness, road pace), the game's A* with its minimum-cost heuristic and
+the "no back" re-search, foot-group ranks (up to 8 wide, 1.8 cells apart, nearest units in front,
+left to right as they stand) or ring slots on rigs, exact click spot for a single unit, per-unit offsets
+off road, corner cutting within 4 cells when the straight line is no slower, wall sliding, and re-plan
+after 6 s stalled (give up after 2 tries). APPROX: each unit plans its own route (the game shares one
+route per group and uses a path guide), no separation push, bridge-deck lanes or column pacing, and
+vehicle steering is not ported (the slice has foot units only). Attack approach re-plans when the
+approach point moves 2 cells or more (APPROX).
+
+30-minute bot-vs-bot on Saddle (balanced v warlord) after pathfinding: units now cross rivers at fords
+and bridges, rigs change hands repeatedly and about 430 infantry die, and HQ pushes get within 12–17
+cells of the enemy HQ, but home guards still beat them and no HQ took damage, so nobody wins. Oil
+still piles up because the bot cannot build barracks or factories yet. CPU: about 7% of real time.
 
 ## Next
 1. You run Studio tests B1–B9.
-2. Then: the game's bot (balanced / turtle / warlord), unit pathfinding, fog of war (server-filtered), more units.
+2. Then: buildings (barracks, factory) so oil gets spent, fog of war (server-filtered), more units; later shared group routes and separation.
 
 ## Open questions
 1. Rights scope: original art, audio, voice; public redistribution of extracted data.

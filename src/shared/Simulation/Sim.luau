@@ -47,14 +47,15 @@
 	            (all its units and buildings die, its rigs turn neutral and empty). The last nation
 	            standing wins (match.victory "annihilation").
 
-	APPROX: unit movement is straight-line (TEMP-002, no pathfinding/formations); trucks follow their
+	APPROX: unit movement follows Pathing (see its header for what is approximate); trucks follow their
 	        route cell by cell without the game's curve-following, column spacing, stalls or enemy holds;
 	        unit spawn spots (door/rally) are simplified; the random numbers (reload jitter) do not
 	        follow the game's seeded sequence; tie order between equally near targets may differ;
 	        rig routes refresh every 10 ticks per rig.
 	UNCONFIRMED: new units start with no face direction and an empty shot timer; a dead nation's
 	        trucks are removed; a firing vehicle's hull keeps its heading (turrets not modelled).
-	Not in the slice: fog (TEMP-001), line of sight, weather, veterancy, smoke, rig damage, upgrades,
+	Engineers can be trained (the HQ lists them) but their building and repair work is not in the slice.
+	Not in the slice: fog (TEMP-001), line of sight, weather, veterancy, smoke, rig damage,
 	        settlements, refineries, rail, events, the real bot.
 ]]
 
@@ -88,8 +89,9 @@ export type MapInfo = {
 
 export type Deps = {
 	rules: Rules,
-	movement: any, -- Shared.Simulation.Movement
+	movement: any?, -- unused since unit pathfinding (kept for older callers)
 	roadsLib: any, -- Shared.Simulation.Roads
+	pathingLib: any, -- Shared.Simulation.Pathing
 	map: MapInfo,
 	starts: { { x: number, y: number } }, -- cell centres
 	rigs: { { x: number, y: number, name: string? } },
@@ -204,6 +206,19 @@ function Sim.new(deps: Deps)
 		return 1 / math.max(0.001, 1 + (num(`terrain.{t}.moveCost`) - 1) * num(`units.{kind}.rough`))
 	end
 	self.paceAt = paceAt
+
+	-- unit route planning and following (the game's routeBy / groupSlots / moveUnit, see Pathing)
+	local legend, seenTerrain = {}, {}
+	for c = 0, W * H - 1 do
+		local t = roads.terrain(c)
+		if t and not seenTerrain[t] then
+			seenTerrain[t] = true
+			table.insert(legend, t)
+		end
+	end
+	local pathing = deps.pathingLib.new(roads, num, text, legend)
+	pathing.paceAt = paceAt
+	self.pathing = pathing
 
 	local function coverAt(c: number): number
 		if c < 0 then
@@ -338,6 +353,32 @@ function Sim.new(deps: Deps)
 	end
 	self.trucksOf = trucksOf
 
+	-- rig output with upgrades (rigs.upgrades.pump / .tank, one level each)
+	function self.pumpRate(rig: Entity): number
+		return num("rigs.oilPerSec") * rig.rich * (if rig.pumpLevel then num("rigs.upgrades.pump.mult") else 1)
+	end
+	function self.tankSize(rig: Entity): number
+		return num("rigs.tank") * (if rig.tankLevel then num("rigs.upgrades.tank.mult") else 1)
+	end
+	-- seconds for one truck round trip on the rig's route (drive both ways, load a full truck, unload)
+	function self.tripTime(rig: Entity): number
+		local route = rig.route
+		if not route or #route == 0 then
+			return math.huge
+		end
+		local l = 0
+		for _, c in route do
+			if roads.isRoad(c) then
+				l += 1 / num(`roads.classes.{Roads.CLASS_NAME[roads.classAt(c)]}.truck`)
+			else
+				l += 1 / math.max(0.05, num("convoys.offRoadShare"))
+			end
+		end
+		return 2 * l / math.max(0.001, num("convoys.speed") * num("trucks.kinds.light.paceShare"))
+			+ num("trucks.kinds.light.capacity") / math.max(0.001, num("trucks.loadPerSec"))
+			+ num("trucks.unloadSec")
+	end
+
 	---------------------------------------------------------------- connections and routes
 
 	local function updateConnections()
@@ -413,14 +454,59 @@ function Sim.new(deps: Deps)
 	end
 
 	-- Each order returns the ids refused because the side does not own them.
+	-- Plans e's route to `cell`, ending on (x, y). No route: the unit stays put (the game's empty path).
+	local function planTo(e: Entity, cell: number, x: number, y: number)
+		local here = cellAt(e.x, e.y)
+		local path = pathing.route(here, cell, e.kind)
+		if not path then
+			e.target, e.path, e.spot = nil, nil, nil
+			return
+		end
+		if #path == 0 then
+			path = { cell }
+		end
+		e.path, e.pathIndex, e.stall, e.stallTries = path, 1, 0, 0
+		e.spot = { x = x, y = y }
+		e.target = { x = x, y = y } -- destination marker (Bot and UI read it)
+		e.goalCell = cell
+	end
+	self.planTo = planTo
+
+	local function onRig(cell: number): boolean
+		local cx, cy = centre(cell)
+		for _, rig in self.rigs do
+			if math.max(math.abs(rig.x - cx), math.abs(rig.y - cy)) < 1.5 then
+				return true
+			end
+		end
+		return false
+	end
+
 	function self.orderMove(side: number, ids: { number }, x: number, y: number): { number }
 		local refused = {}
+		local group = {}
 		for _, id in ids do
 			local e = self.entities[id]
 			if orderable(e, side) then
-				e.target, e.attackId = { x = x, y = y }, nil
+				e.attackId = nil
+				table.insert(group, e)
 			elseif e and e.side ~= side then
 				table.insert(refused, id)
+			end
+		end
+		local cell = cellAt(math.clamp(x, 0, W - 1e-6), math.clamp(y, 0, H - 1e-6))
+		if #group == 1 then
+			planTo(group[1], cell, x, y)
+		elseif #group > 1 then
+			local slots = pathing.groupSlots(group, cell, onRig(cell))
+			for i, e in group do
+				local s = slots[i]
+				if s then
+					local sx, sy = centre(s)
+					planTo(e, s, sx, sy)
+				else
+					e.target, e.path = nil, nil
+				end
 			end
 		end
 		return refused
@@ -431,7 +517,7 @@ function Sim.new(deps: Deps)
 		for _, id in ids do
 			local e = self.entities[id]
 			if orderable(e, side) then
-				e.target, e.attackId = nil, nil
+				e.target, e.attackId, e.path = nil, nil, nil
 			elseif e and e.side ~= side then
 				table.insert(refused, id)
 			end
@@ -448,7 +534,7 @@ function Sim.new(deps: Deps)
 		for _, id in ids do
 			local e = self.entities[id]
 			if orderable(e, side) then
-				e.attackId, e.target = targetId, nil
+				e.attackId, e.target, e.path = targetId, nil, nil
 			elseif e and e.side ~= side then
 				table.insert(refused, id)
 			end
@@ -476,8 +562,8 @@ function Sim.new(deps: Deps)
 		if not s or s.lost or self.winner or not hq then
 			return false, "blocked"
 		end
-		if item ~= "infantry" then
-			return false, "blocked" -- the slice HQ trains infantry only (the game's HQ also lists engineer)
+		if item ~= "infantry" and item ~= "engineer" then
+			return false, "blocked" -- structures.hq.produces = infantry, engineer
 		end
 		if #hq.queue >= num("production.maxQueue") then
 			return false, "queueFull"
@@ -546,6 +632,29 @@ function Sim.new(deps: Deps)
 			s.oil -= cost
 		end
 		newTruck(rig)
+		return true, nil
+	end
+
+	-- Rig upgrades: "pump" or "tank", one level each, paid up front.
+	function self.upgradeRig(side: number, rigId: number, kind: string): (boolean, string?)
+		local rig = self.entities[rigId]
+		if not rig or rig.kind ~= "rig" or rig.side ~= side or (kind ~= "pump" and kind ~= "tank") then
+			return false, "notOwned"
+		end
+		if (kind == "pump" and rig.pumpLevel) or (kind == "tank" and rig.tankLevel) then
+			return false, "maxLevel"
+		end
+		local cost = num(`rigs.upgrades.{kind}.cost`)
+		local s = self.sides[side]
+		if s.oil < cost then
+			return false, "oil"
+		end
+		s.oil -= cost
+		if kind == "pump" then
+			rig.pumpLevel = 1
+		else
+			rig.tankLevel = 1
+		end
 		return true, nil
 	end
 
@@ -662,6 +771,9 @@ function Sim.new(deps: Deps)
 		if t.hp <= 0 and t.alive then
 			t.alive = false
 			local rig = self.entities[t.from]
+			if rig then
+				rig.truckLostAt = self.time
+			end
 			event({ type = "convoyLost", id = t.id, side = t.side, oil = t.payload, by = by })
 			if rig and rig.side == t.side and trucksOf(rig.id) == 0 then
 				rig.noTrucks = true
@@ -827,9 +939,17 @@ function Sim.new(deps: Deps)
 							if dist > range then
 								-- APPROX of the game's attack think: close to attackRangeShare of range
 								local k = 1 - (range * num("combat.attackRangeShare")) / dist
-								e.target = { x = e.x + (t.x - e.x) * k, y = e.y + (t.y - e.y) * k }
+								-- APPROX: re-plan only when the approach point moves 2+ cells
+								local ax, ay = e.x + (t.x - e.x) * k, e.y + (t.y - e.y) * k
+								local ac = cellAt(ax, ay)
+								local g = e.goalCell
+								if not e.path or not g or ac < 0 or math.max(math.abs(ac % W - g % W), math.abs(ac // W - g // W)) >= 2 then
+									if ac >= 0 then
+										planTo(e, ac, ax, ay)
+									end
+								end
 							else
-								e.target = nil
+								e.target, e.path = nil, nil
 								focus = t
 							end
 						end
@@ -948,7 +1068,7 @@ function Sim.new(deps: Deps)
 			-- pumping
 			rig.rate = 0
 			if rig.side > 0 and alive(rig.side) and self.time - rig.takenAt >= num("rigs.takeoverSec") then
-				local cap = num("rigs.tank")
+				local cap = self.tankSize(rig)
 				if rig.tank >= cap then
 					if not rig.full then
 						rig.full = true
@@ -956,7 +1076,7 @@ function Sim.new(deps: Deps)
 					end
 				else
 					rig.full = false
-					rig.rate = num("rigs.oilPerSec") * rig.rich
+					rig.rate = self.pumpRate(rig)
 					rig.tank = math.min(cap, rig.tank + rig.rate * dt)
 				end
 			end
@@ -1191,13 +1311,6 @@ function Sim.new(deps: Deps)
 		self.list = keep
 	end
 
-	local moveCtx = {
-		speedOf = function(kind: string): number
-			return num(`units.{kind}.speed`)
-		end,
-		paceAt = paceAt,
-	}
-
 	function self.step(dt: number)
 		if self.winner then
 			return
@@ -1213,7 +1326,16 @@ function Sim.new(deps: Deps)
 		for _, e in self.list do
 			if e.alive and e.cat == "unit" and e.kind ~= TRUCK then
 				e.px, e.py, e.firing = e.x, e.y, false
-				e.moved = deps.movement.step(e, dt, moveCtx)
+				e.moved = false
+				if e.target and e.path then
+					e.moved = pathing.step(e, dt)
+					if e.path and e.pathIndex > #e.path then
+						-- arrive (idle where it stands)
+						e.target, e.path, e.spot = nil, nil, nil
+					end
+				elseif e.target then
+					e.target = nil
+				end
 			end
 		end
 		unitsFire(dt)

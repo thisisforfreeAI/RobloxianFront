@@ -68,6 +68,20 @@ vm.runInContext('with(__p){' + consts.join('') + defaults.src + scaler.src + hel
   ';this.__d=' + defaults.name + ';this.__s=' + scaler.name + ';}', ctx);
 const cfg = ctx.__s(ctx.__d(), CELL_SCALE);
 
+// Built-in bot personas (a constant next to the bot code, not part of the defaults function):
+// exported as bots.personaDefaults.<id>.<field> so the port reads them from generated data.
+{
+  const m = /[,; ]([\w$]+)=\{balanced:\{id:"balanced"/.exec(js);
+  if (!m) throw new Error('bot personas not found');
+  const src = balanced(m.index + m[0].indexOf('{'));
+  const personas = vm.runInNewContext('(' + src + ')');
+  cfg.bots.personaDefaults = {};
+  for (const [id, p] of Object.entries(personas)) {
+    cfg.bots.personaDefaults[id] = {};
+    for (const [k, v] of Object.entries(p)) if (typeof v === 'number' || (typeof v === 'string' && k === 'id')) cfg.bots.personaDefaults[id][k] = v;
+  }
+}
+
 const flat = [];
 (function walk(o, p) {
   for (const [key, v] of Object.entries(o)) {

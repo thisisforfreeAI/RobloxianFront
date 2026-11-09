@@ -31,6 +31,7 @@ local Rules = require("../src/shared/Config/Rules")
 local MapCodec = require("../src/shared/Maps/MapCodec")
 local Protocol = require("../src/shared/Protocol/Protocol")
 local Movement = require("../src/shared/Simulation/Movement")
+local Pathing = require("../src/shared/Simulation/Pathing")
 
 print("Rng / ValueNoise (vectors produced by WarFront's own JS)")
 test("rng matches original for 4 seeds", function()
@@ -219,9 +220,10 @@ if fs.isFile(matchPath) then
 			rules = Rules.new(rulesData) :: any,
 			movement = Movement,
 			roadsLib = Roads,
+			pathingLib = Pathing,
 			map = {
 				width = W, height = H,
-				terrainAt = function(c)
+				terrainAt = o.terrainAt or function(c)
 					local x = c % W
 					return if x >= 100 and x <= 102 then "forest" else "plains"
 				end,
@@ -550,12 +552,143 @@ if fs.isFile(matchPath) then
 		eq(rig.tank, 0)
 	end)
 
-	test("bot captures a rig and trains infantry within 5 minutes", function()
+	-- a river along x = 80 with one ford at y = 11 (no roads)
+	local function riverSim()
+		return newSim({
+			roads = {},
+			terrainAt = function(c)
+				local x, y = c % W, c // W
+				return if x == 80 and y ~= 11 then "river" else "plains"
+			end,
+		})
+	end
+	test("pathing: a move across a river finds the ford instead of stopping at the bank", function()
+		local sim = riverSim()
+		local u = sim.spawnUnit("infantry", 1, 70.5, 40.5)
+		sim.orderMove(1, { u.id }, 90.25, 40.75)
+		local crossedAt = nil
+		for _ = 1, 20 * 120 do
+			sim.step(0.05)
+			if not crossedAt and u.x >= 81 then
+				crossedAt = math.floor(u.y)
+			end
+			if not u.target then
+				break
+			end
+		end
+		eq(crossedAt, 11, "crossed at the ford")
+		assert(u.target == nil, "arrived")
+		assert(math.abs(u.x - 90.25) < 1e-6 and math.abs(u.y - 40.75) < 1e-6, `ends on the exact spot, got {u.x},{u.y}`)
+	end)
+	test("pathing: a goal in the river is refused and the unit stays put", function()
+		local sim = riverSim()
+		local u = sim.spawnUnit("infantry", 1, 70.5, 40.5)
+		sim.orderMove(1, { u.id }, 80.5, 40.5)
+		assert(u.target == nil and u.path == nil, "no route")
+		sim.step(0.05)
+		eq(u.x, 70.5)
+	end)
+	test("pathing: a group stands in one rank 1.8 cells apart across its travel", function()
+		local sim = newSim({ roads = {} })
+		local group = {}
+		for i = 1, 6 do
+			table.insert(group, sim.spawnUnit("infantry", 1, 20.5, 40.5 + i * 0.3))
+		end
+		sim.orderMove(1, ids(group), 40.5, 42.5)
+		local cells = {}
+		for _, e in group do
+			local c = sim.roads.cellAt(e.target.x, e.target.y)
+			assert(not cells[c], "slots are distinct")
+			cells[c] = true
+		end
+		run(sim, 20)
+		local xs, ys = {}, {}
+		for _, e in group do
+			assert(e.target == nil, "all arrived")
+			table.insert(xs, math.floor(e.x))
+			table.insert(ys, math.floor(e.y))
+		end
+		table.sort(ys)
+		for i = 2, #xs do
+			assert(math.abs(xs[i] - xs[1]) <= 1, "one rank (same column, give or take rounding)")
+		end
+		assert(ys[#ys] - ys[1] >= 7 and ys[#ys] - ys[1] <= 11, `rank spans about 5 x 1.8 cells, got {ys[#ys] - ys[1]}`)
+	end)
+	test("pathing: road cells are preferred for long moves (off-road bias 1.6)", function()
 		local sim = newSim()
-		local bot = Bot.new(sim, 2)
-		run(sim, 300, { bot })
-		assert(#units(sim, 2, "rig") >= 1, "bot owns no rig")
-		assert(#units(sim, 2, "infantry") > 3 or sim.winner ~= nil, "bot did not train")
+		local u = sim.spawnUnit("infantry", 1, 20.5, 33.5)
+		sim.orderMove(1, { u.id }, 90.5, 33.5)
+		local onRoad = 0
+		for _, c in u.path do
+			if sim.roads.isRoad(c) then
+				onRoad += 1
+			end
+		end
+		assert(onRoad > 40, `most of the route is on the highway, got {onRoad} road cells`)
+	end)
+	test("bot personas come from the game's data; warlord earns 1.6x and thinks faster", function()
+		local sim = newSim()
+		local b = Bot.new(sim, 2, "turtle")
+		eq(b.persona.attackMargin, 2.1)
+		eq(b.persona.home, 0.4)
+		eq(sim.sides[2].oilMult, 1)
+		local sim2 = newSim()
+		local w = Bot.new(sim2, 2, "warlord")
+		eq(w.persona.attackMargin, 1.05)
+		near(sim2.sides[2].oilMult, 1.6, "warlord oil edge")
+		near(Bot.new(newSim(), 2, "nonsense").persona.attackMargin, 1.5, "unknown persona falls back to balanced")
+	end)
+
+	test("bot sends its 3 start infantry to the nearest neutral rig as a pair and keeps one home", function()
+		local sim = newSim()
+		local b = Bot.new(sim, 2, "balanced")
+		run(sim, 1, { b }) -- first think at 0.87 s
+		local sent = 0
+		for _, t in b.orders do
+			eq(t.kind, "rig")
+			eq(sim.entities[t.id].x, 130.5, "nearest rig")
+			sent += 1
+		end
+		eq(sent, 2, "need 20 -> two infantry (worth 30 each), the third stays home")
+		eq(#sim.hqOf(2).queue, 1, "and it trains infantry")
+	end)
+
+	test("bot gets a truck onto its rig and trains an engineer once its army is 4", function()
+		local sim = newSim()
+		local b = Bot.new(sim, 2, "balanced")
+		run(sim, 90, { b })
+		local rig = rigAt(sim, 130)
+		eq(rig.side, 2, "captured")
+		assert(sim.trucksOf(rig.id) >= 1, "truck on the rig")
+		local eng = #units(sim, 2, "engineer")
+		local queued = 0
+		for _, item in sim.hqOf(2).queue do
+			if item == "engineer" then
+				queued += 1
+			end
+		end
+		assert(eng + queued >= 1, "engineer trained or queued")
+	end)
+
+	test("bot vs bot for 15 minutes: both expand, trucks deliver, nobody stalls", function()
+		local sim = newSim({ rigs = { { x = 50, y = 30 }, { x = 130, y = 30 }, { x = 90, y = 10 }, { x = 90, y = 50 } } })
+		local b1, b2 = Bot.new(sim, 1, "balanced"), Bot.new(sim, 2, "warlord")
+		local delivered = { 0, 0 }
+		for _ = 1, 20 * 900 do
+			b1.step(0.05)
+			b2.step(0.05)
+			sim.step(0.05)
+			for _, ev in sim.takeEvents() do
+				if ev.type == "delivered" then
+					delivered[ev.side] += ev.oil
+				end
+			end
+			if sim.winner then
+				break
+			end
+		end
+		assert(delivered[1] > 0 and delivered[2] > 0, `deliveries {delivered[1]} {delivered[2]}`)
+		assert(#units(sim, 1, "rig") + #units(sim, 2, "rig") >= 2 or sim.winner, "rigs taken")
 	end)
 else
 	print("  skip  RulesMatch.luau not generated")

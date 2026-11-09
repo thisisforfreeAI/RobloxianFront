@@ -4,7 +4,7 @@
 	Clients only send intents (Protocol); everything here runs on the server.
 	Sides: the first player gets side 1, the second side 2, later players spectate.
 	The simulation runs on WarFront's match rules (GameData/RulesMatch: runtime defaults at cell scale 3).
-	PROVISIONAL: while side 2 has no player, a bot (Shared.Simulation.Bot) plays it.
+	While side 2 has no player, WarFront's bot (Shared.Simulation.Bot) plays it with BOT_PERSONA.
 ]]
 
 local Players = game:GetService("Players")
@@ -15,6 +15,7 @@ local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Rules = require(Shared.Config.Rules)
 local MapCodec = require(Shared.Maps.MapCodec)
 local Movement = require(Shared.Simulation.Movement)
+local Pathing = require(Shared.Simulation.Pathing)
 local Roads = require(Shared.Simulation.Roads)
 local Sim = require(Shared.Simulation.Sim)
 local Bot = require(Shared.Simulation.Bot)
@@ -26,6 +27,10 @@ local Locked = require(GameData.Locked)
 
 local MatchService = {}
 
+-- Bot persona: "balanced", "turtle" or "warlord"; level: "easy", "normal" or "hard".
+-- UNCONFIRMED which persona WarFront's lobby gives a new bot slot; balanced is the game's fallback.
+local BOT_PERSONA = "balanced"
+local BOT_LEVEL = "normal"
 local SNAPSHOT_EVERY = 2 -- 20 Hz sim, 10 Hz snapshots
 local STATE_EVERY = 10 -- 2 Hz private state
 
@@ -42,10 +47,11 @@ local function updateBots()
 		taken[s] = true
 	end
 	if not taken[2] and not bots[2] then
-		bots[2] = Bot.new(sim, 2)
-		print("[Match] side 2 is played by the bot (PROVISIONAL) until a second player joins")
+		bots[2] = Bot.new(sim, 2, BOT_PERSONA, BOT_LEVEL)
+		print(`[Match] side 2 is played by the {BOT_PERSONA} bot ({BOT_LEVEL}) until a second player joins`)
 	elseif taken[2] and bots[2] then
 		bots[2] = nil
+		sim.sides[2].oilMult = 1 -- a player's nation has no difficulty or persona oil edge
 		print("[Match] side 2 handed from the bot to a player")
 	end
 end
@@ -149,6 +155,7 @@ function MatchService.start(mapModule: string)
 		rules = rules :: any,
 		movement = Movement,
 		roadsLib = Roads,
+		pathingLib = Pathing,
 		map = {
 			width = map.width,
 			height = map.height,
