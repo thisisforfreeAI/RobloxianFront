@@ -714,6 +714,26 @@ if fs.isFile(matchPath) then
 		eq(town.owner, 2)
 		eq(sim.canPlace(1, "bunker", cellOf(138, 50)), "outsideBase")
 	end)
+	test("bot takes a neutral town near home after bots.cityAfter (90 s)", function()
+		local sim = newSim({ settlements = { { name = "T", x = 30, y = 45, kind = "town" } } })
+		local bot = Bot.new(sim, 1, "balanced")
+		run(sim, 89, { bot })
+		eq(sim.settlements[1].owner, 0, "not before cityAfter")
+		local sent = false
+		for _ = 1, 20 do
+			run(sim, 10, { bot })
+			for _, t in bot.orders do
+				if t.kind == "city" then
+					sent = true
+				end
+			end
+			if sim.settlements[1].owner == 1 then
+				break
+			end
+		end
+		assert(sent, "the bot sent units to the town")
+		eq(sim.settlements[1].owner, 1, "taken")
+	end)
 	test("defences: a bunker goes up in 10 s, then fires on enemy infantry in its 16.5 cell range", function()
 		local sim = newSim()
 		for _, side in { 1, 2 } do

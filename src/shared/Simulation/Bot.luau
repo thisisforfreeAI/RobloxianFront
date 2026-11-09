@@ -31,13 +31,15 @@
 	            and rigs under capture get enough units to answer the threat.
 	  attack    after bots.assaultAfter: a push on the cheapest enemy HQ when strong enough, or with
 	            bots.pushMinForce once the push timer runs out (needs bots.assaultPool idle units);
-	            otherwise the best-scoring rig (neutral rigs only before bots.graceSec).
+	            otherwise the best-scoring rig (neutral rigs only before bots.graceSec) or, after
+	            bots.cityAfter, settlement (cityValue x (0.5 + defence) for neutral ones, scored down by
+	            distance from its army and from home; at most cityHeld / maxOccupied x (0.5 + defence)).
 	Unit worth = hp / 100 x dps / 8 x 30. Influence map: blocks of 6 x cell scale, reach 14 x cell scale.
 
 	Intel: like the game's bots (intel.fog and bots.fog are on) it sees only with its own vision and
 	remembers what it saw (see the intel section); an unseen enemy HQ counts at least
 	bots.unknownHqDefence and an unseen rig bots.unknownDefence. Not in the slice, so skipped: SAM, radar, night ops, artillery base, naval yard,
-	forward HQ, engineers' work, drones, rocket barrages, cities and the capital, bridges, rail, naval,
+	forward HQ, engineers' work, drones, rocket barrages, garrisons and the capital, bridges, rail, naval,
 	events, sabotage.
 	APPROX: the bot's random numbers are not the game's sequence; held-truck rescues are skipped
 	(trucks are never held by enemies in the slice). UNCONFIRMED: which persona a lobby slot defaults to
@@ -148,6 +150,7 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 		units = {} :: { [number]: { kind: string, owner: number, x: number, y: number, t: number } },
 		structures = {} :: { [number]: { kind: string, owner: number, cell: number, hp: number, built: number, t: number } },
 		rigs = {} :: { [number]: number },
+		cities = {} :: { [number]: number }, -- settlement id -> owner last seen (0 = neutral)
 	}
 	self.intel = intel
 	local fogged = sim.fogOn() and rules:has("bots.fog") and rules:flag("bots.fog")
@@ -201,6 +204,11 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 				end
 			end
 		end
+		for _, st in sim.settlements do
+			if seen(st.cell) then
+				intel.cities[st.id] = st.owner
+			end
+		end
 	end
 	-- the game's uf: was the block around (x, y) seen within bots.staleSec?
 	local function fresh(x: number, y: number): boolean
@@ -221,6 +229,27 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 			n = r.side
 		end
 		return if n > 0 then n else -1
+	end
+	-- the game's Mk: a settlement's owner as the bot knows it (-1 = neutral or never seen)
+	local function cityOwner(st: any): number
+		if st.owner == side then
+			return side
+		end
+		local n = intel.cities[st.id]
+		if n == nil then
+			return -1
+		end
+		if n == side then
+			n = st.owner
+		end
+		return if n > 0 then n else -1
+	end
+	-- an order's target: settlements by their own id, everything else by entity id
+	local function orderTarget(t: { kind: string, id: number }): any
+		if t.kind == "city" then
+			return sim.settlements[t.id]
+		end
+		return sim.entities[t.id]
 	end
 
 	local function isArmy(e: any): boolean
@@ -393,6 +422,14 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 	end
 
 	local function targetValid(t: { kind: string, id: number }): boolean
+		if t.kind == "city" then
+			local st = sim.settlements[t.id]
+			if not st then
+				return false
+			end
+			local o = cityOwner(st)
+			return o ~= side and (o < 0 or canAttack(side, o))
+		end
 		local e = sim.entities[t.id]
 		if not e or not e.alive then
 			return false
@@ -831,8 +868,9 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 		end
 		for id, t in self.orders do
 			local u = sim.entities[id]
-			local target = sim.entities[t.id]
-			if u and target and idle(u) and hypot(u.x - target.x, u.y - target.y) > radius then
+			local target = orderTarget(t)
+			local near = if t.kind == "city" and target then target.radius else radius
+			if u and target and idle(u) and hypot(u.x - target.x, u.y - target.y) > near then
 				local n = self.resent[id] or 0
 				if n >= 3 then
 					self.orders[id] = nil
@@ -984,8 +1022,75 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 				end
 			end
 		end
+		-- settlements (not capitals) after bots.cityAfter: neutral ones while the bot holds fewer than
+		-- floor(cityHeld x (0.5 + defence)) and has fewer than max(1, floor(maxOccupied x (0.5 +
+		-- defence))) without a garrison; enemy ones after the grace when not massing. APPROX: no
+		-- garrisons in the slice, so every held settlement counts as ungarrisoned and is defended by
+		-- the units near it only.
+		local targetedCities, nTargeted = {}, 0
+		for _, t in self.orders do
+			if t.kind == "city" and not targetedCities[t.id] then
+				targetedCities[t.id] = true
+				nTargeted += 1
+			end
+		end
+		local function mayTake(enemy: boolean): boolean
+			local held = 0
+			for _, st in sim.settlements do
+				if st.owner == side and st.kind ~= "capital" then
+					held += 1
+				end
+			end
+			local l = math.floor(num("bots.cityHeld") * (0.5 + persona.defence))
+			local c = math.max(1, math.floor(num("bots.maxOccupied") * (0.5 + persona.defence)))
+			return held + nTargeted < l and (enemy or held + nTargeted < c)
+		end
+		local takeNeutral = sim.time >= num("bots.cityAfter") and mayTake(false)
+		local takeEnemy = sim.time >= num("bots.cityAfter") and afterGrace and not massing and mayTake(true)
+		if takeNeutral or takeEnemy then
+			local homes = {}
+			for _, r in myRigs() do
+				table.insert(homes, { x = r.x, y = r.y })
+			end
+			local hq = sim.hqOf(side)
+			if hq then
+				local W = sim.roads.width
+				table.insert(homes, { x = hq.cell % W + 0.5, y = hq.cell // W + 0.5 })
+			end
+			local homeCells = scaled(num("bots.cityHomeCells"))
+			for _, st in sim.settlements do
+				local t = { kind = "city", id = st.id }
+				if not targetedCities[st.id] and st.kind ~= "capital" and not avoided(t) then
+					local owner = cityOwner(st)
+					local ok = owner ~= side and (if owner < 0 then takeNeutral else takeEnemy and canAttack(side, owner))
+					if ok then
+						local k = enemyNear(st.x, st.y, st.radius * 2)
+						if not fresh(st.x, st.y) and (owner >= 0 or sim.time >= num("bots.neutralTrustSec")) then
+							k = math.max(k, num("bots.unknownDefence"))
+						end
+						local x = if owner >= 0 then marginH() else num("bots.margin")
+						if force >= k * x then
+							local c = approach(cx, cy, st.x, st.y, st.radius * 2)
+							if c <= force * num("bots.influence.approachMax") then
+								local hd = 1 + hypot(st.x - cx, st.y - cy) / scaled(15)
+								local o = math.huge
+								for _, h in homes do
+									o = math.min(o, hypot(st.x - h.x, st.y - h.y))
+								end
+								local far = 1 + (if o < math.huge then o else homeCells * 4) / homeCells
+								local value = num(`bots.cityValue.{st.kind}`) * (if owner < 0 then 0.5 + persona.defence else 1)
+								local score = value / (hd * hd) / far / (1 + k / 400) / (1 + c / num("bots.influence.approachSoft"))
+								if not pick or score > pick.score then
+									pick = { kind = "city", id = st.id, x = st.x, y = st.y, need = math.max(k * x, 20), score = score }
+								end
+							end
+						end
+					end
+				end
+			end
+		end
 		if pick then
-			dispatch(pool, { kind = "rig", id = pick.id }, pick.x, pick.y, pick.need)
+			dispatch(pool, { kind = pick.kind or "rig", id = pick.id }, pick.x, pick.y, pick.need)
 		end
 	end
 

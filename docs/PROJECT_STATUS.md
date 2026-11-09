@@ -11,7 +11,7 @@ Last updated: 2026-11-09
 Phase 1. Milestone 1A done (Studio tests 1–7 pass). Pilot sprite REQ-0001 approved. Milestone 1B (gameplay loop) rewritten for WarFront parity and tested outside Studio; Studio tests B1–B9 pending.
 
 ## Verified outside Studio (actually run, Linux container)
-- Lune 0.11.1 `tests/run`: 61 passed, 0 failed (latest run) (including the 2 that read the GameData generated from your install).
+- Lune 0.11.1 `tests/run`: 62 passed, 0 failed (latest run) (including the 2 that read the GameData generated from your install).
 - Rojo 7.4.4 `rojo build` succeeds. All .luau files compile (syntax only).
 - Synthetic atlas: 16 × 120 px frames pack to 960×240 (8×2, no padding); validator passes on dimensions,
   rectangles, direction order, pixel identity, pivot, partial alpha, edge bleed, arrow orientation, manifest.
@@ -138,8 +138,10 @@ A held town, city or capital claims territory you can build in: its urban radius
 fast, then it turns neutral with their capture started; the owner's units there stop that. Captured
 rigs already allowed building round them (now covered by a test). Not in the slice yet: garrisons
 (units inside, fortified/secured status and its benefits), city traits, forward training, settlement
-damage, and the bot's city-taking (bots.city*): bot units only take settlements they happen to stand
-in. With fog, a settlement you don't see shows the owner last seen there and no capture progress (as rigs
+damage. The bot now goes for towns as the game's does (after 90 s, by value, distance and defence,
+capped by bots.cityHeld / maxOccupied; no garrisons, so every held town counts as ungarrisoned).
+Bot-vs-bot on Saddle with towns: balanced v warlord, warlord at 15:19 (it held 3 towns); balanced v
+balanced, side 1 at 29:18 (4 towns). With fog, a settlement you don't see shows the owner last seen there and no capture progress (as rigs
 do; APPROX of the game's viewer).
 
 ## Next
