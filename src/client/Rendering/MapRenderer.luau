@@ -67,8 +67,8 @@ local function buildImageGround(map: MapCodec.DecodedMap, ground: Part): boolean
 	end
 	image:WritePixelsBuffer(Vector2.zero, Vector2.new(map.width, map.height), pixels)
 
-	-- Top face: GUI x runs along +X and GUI y (down) along +Z, so row 0 is the map's north edge.
-	-- VERIFY IN STUDIO (renderer check 3): if the map shows mirrored, flip with ImageLabel.Rotation/ImageRectSize.
+	-- The ground part is turned by World.TOP_GUI_YAW, so GUI x runs east (+X) and GUI y south (+Z):
+	-- row 0 is the map's north edge. Studio test 2b compares this with the Part ground.
 	local gui = Instance.new("SurfaceGui")
 	gui.Face = Enum.NormalId.Top
 	gui.SizingMode = Enum.SurfaceGuiSizingMode.FixedSize
@@ -160,8 +160,9 @@ function MapRenderer.build(map: MapCodec.DecodedMap): Folder
 	-- The ground is the only queryable part: selection raycasts hit it and nothing else.
 	local ground = newPart({
 		Name = "Ground",
-		Size = Vector3.new(map.width * S, 1, map.height * S),
-		Position = Vector3.new(map.width * S / 2, World.GROUND_Y - 0.5, map.height * S / 2),
+		-- Turned by TOP_GUI_YAW so the terrain image's x runs east and y runs south; local X/Z swap.
+		Size = Vector3.new(map.height * S, 1, map.width * S),
+		CFrame = CFrame.new(map.width * S / 2, World.GROUND_Y - 0.5, map.height * S / 2) * CFrame.Angles(0, World.TOP_GUI_YAW, 0),
 		Color = Color3.fromRGB(70, 80, 60),
 		CanQuery = true,
 		Parent = folder,

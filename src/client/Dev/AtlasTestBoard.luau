@@ -110,7 +110,7 @@ function AtlasTestBoard.start(center: Vector2) -- center in map cells
 	folder.Name = "AtlasTestBoard"
 	folder.Parent = workspace
 
-	local guiYaw = 0 -- extra quad rotation if the SurfaceGui up axis is not world -Z (G key)
+	local guiYaw = -World.TOP_GUI_YAW -- quads are turned by -guiYaw = TOP_GUI_YAW; G adds quarter turns
 	local ring: { { quad: Part, pos: Vector3, angle: number } } = {}
 	local cx, cy = center.X, center.Y
 	local origin = World.toWorld(cx, cy, Y)
@@ -124,13 +124,13 @@ function AtlasTestBoard.start(center: Vector2) -- center in map cells
 		local tip = World.toWorld(cx + math.cos(angle) * (RING_CELLS + 2.2), cy + math.sin(angle) * (RING_CELLS + 2.2), 0.1)
 		local base = World.toWorld(cx, cy, 0.1)
 		local from = base + (tip - base).Unit * 4
-		neon(folder, Vector3.new(0.15, 0.05, (tip - from).Magnitude), CFrame.lookAt((from + tip) / 2, tip), Color3.new(1, 1, 1))
-		neon(folder, Vector3.new(0.1, 0.5, 0.5), CFrame.new(pos + Vector3.new(0, 0.05, 0)) * CFrame.Angles(0, 0, math.rad(90)), Color3.fromRGB(255, 230, 0), Enum.PartType.Cylinder)
+		neon(folder, Vector3.new(0.4, 0.05, (tip - from).Magnitude), CFrame.lookAt((from + tip) / 2, tip), Color3.new(1, 1, 1))
+		neon(folder, Vector3.new(0.1, 1.2, 1.2), CFrame.new(pos - Vector3.new(0, 0.1, 0)) * CFrame.Angles(0, 0, math.rad(90)), Color3.fromRGB(255, 230, 0), Enum.PartType.Cylinder)
 		table.insert(ring, { quad = quad, pos = pos, angle = angle })
 	end
 
 	local spinner, spinLabel = sprite(folder, content)
-	local needle = neon(folder, Vector3.new(0.15, 0.05, 2.6 * S), CFrame.new(origin), Color3.fromRGB(255, 230, 0))
+	local needle = neon(folder, Vector3.new(0.4, 0.05, 2.6 * S), CFrame.new(origin), Color3.fromRGB(255, 230, 0))
 	local useResidual = true
 	local heading = 0
 

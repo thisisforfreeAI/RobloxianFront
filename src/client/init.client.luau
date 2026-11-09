@@ -31,6 +31,11 @@ do
 	SelectionController.start(info.side, function(payload)
 		intent:FireServer(payload)
 	end)
+	if DevFlags.OWNERSHIP_PROBE then
+		require(script.Dev.OwnershipProbe).start(info.side, UnitRenderer.each, function(payload)
+			intent:FireServer(payload)
+		end)
+	end
 	if DevFlags.ATLAS_TEST_BOARD then
 		local start = map.data.starts[info.side] or map.data.starts[1]
 		local cy = math.max(16, start.y - 30) -- north of the start, inside the map

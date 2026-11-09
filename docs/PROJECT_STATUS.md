@@ -5,11 +5,10 @@ Last updated: 2026-11-09
 ## Locations
 - Original game (read-only): `A:\SteamLibrary\steamapps\common\WarFront Demo`
 - Project / local repo: `C:\Users\thato\OneDrive\Desktop\RobloxianFront`
-- GitHub: https://github.com/thisisforfreeAI/RobloxianFront (public, empty as of 2026-11-09)
+- GitHub: https://github.com/thisisforfreeAI/RobloxianFront (public; first commit 4142c4e pushed 2026-11-09)
 
 ## Phase
-Phase 1, milestone 1A (Rojo foundation, interactive renderer, synthetic sprite pipeline). Written and checked
-outside Studio. **Waiting on the Studio tests in `docs/STUDIO_TESTS.md` before any new scope.**
+Phase 1, milestone 1A done: Studio tests 1–7 pass (2b, Part-ground comparison, optional). Pilot sprite request REQ-0001 open.
 
 ## Verified outside Studio (actually run, Linux container)
 - Lune 0.11.1 `tests/run`: 14 passed, 0 failed (including the 2 that read the GameData generated from your install).
@@ -18,13 +17,15 @@ outside Studio. **Waiting on the Studio tests in `docs/STUDIO_TESTS.md` before a
   rectangles, direction order, pixel identity, pivot, partial alpha, edge bleed, arrow orientation, manifest.
   A deliberately swapped frame is caught.
 
-## Studio results
-None yet. See `docs/STUDIO_TESTS.md`.
+## Studio results (2026-11-09, see docs/STUDIO_TESTS.md)
+- Pass: Rojo connect (after matching plugin 7.4.4), camera, selection/movement, server/client startup.
+- Atlas board: pixels, frame rectangles, direction order, pivot, transparency pass in Roblox.
+- Found and fixed: Top-face SurfaceGui drawings were a quarter turn anticlockwise (sprites) and the ground
+  was turned and stretched. Fix: `World.TOP_GUI_YAW`; re-test passed.
+- Two clients: the server refuses orders for the other side's units (test 7). No fog of war yet (TEMP-001).
 
 ## Not verified
-- Anything in Roblox Studio. Type checking (no luau-analyze/selene here).
-- SurfaceGui Top-face orientation for the ground and sprites (tests 2b and 6).
-- `ImageRectOffset` on an EditableImage-backed ImageLabel (test 6).
+- Test 2b (optional). Type checking. Performance at 100/250/500 units (renderer benchmark).
 
 ## Public repo boundary
 Git-ignored and generated locally: `src/shared/GameData/` (RulesData, UnitCatalog, Locked, Maps).
@@ -39,8 +40,8 @@ Only synthetic or approved new art is tracked under `assets/sprites/`.
 - Atlas test board runs in Studio while `DevFlags.ATLAS_TEST_BOARD` is true
 
 ## Next
-1. You run the Studio tests and paste the results.
-2. If the atlas board passes: one pilot sprite request for an asset that needs new artwork.
+1. REQ-0001: you give the prompt to ChatGPT and drop the PNG in assets/sprites/incoming/REQ-0001/.
+2. Claude validates, rotates, packs and shows it on the test board.
 3. Milestone 1B (HQ, oil, combat) per `docs/private/FIRST_SLICE.md`.
 
 ## Open questions

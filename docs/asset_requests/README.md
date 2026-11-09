@@ -3,8 +3,8 @@
 Roles: **ChatGPT** draws the artwork from a request. **Deterministic tools** (`tools/asset_pipeline/`)
 package it. **Claude** validates and integrates it. The developer carries files between the two chats.
 
-Nothing is requested yet. The first (pilot) request goes out only after the Studio atlas test board passes
-(docs/STUDIO_TESTS.md, test 6), and only for an asset that really needs new artwork.
+Open: REQ-0001 (scout car, pilot). Vehicles are requested as ONE east-facing top-down image; `rotate_frames.py`
+makes the 16 directions, the same way the original game turns mod art.
 
 ## Folders
 
@@ -62,6 +62,7 @@ A local PNG is not a Roblox asset: ids stay null until uploaded.
 
 ```
 python tools/asset_pipeline/synth_frames.py                       # synthetic test frames only
+python tools/asset_pipeline/rotate_frames.py <east.png> --id <assetId> --rev <n>   # 16 directions from one image
 python tools/asset_pipeline/pack_atlas.py <source_dir> --luau-name <Name> [--padding N --extrude] [--dev-pixels]
 python tools/asset_pipeline/validate_atlas.py assets/sprites/runtime/<assetId>/r<rev>/p<padding>
 ```

@@ -112,6 +112,88 @@
         ],
         "moderation": null
       }
+    },
+    {
+      "assetId": "unit_scout_car",
+      "requestId": "REQ-0001",
+      "revision": 1,
+      "kind": "vehicle",
+      "status": "requested",
+      "synthetic": false,
+      "description": "Pilot: scout car, one east-facing image rotated into 16 directions.",
+      "source": {
+        "type": "chatgpt",
+        "reference": "docs/asset_requests/REQ-0001.md",
+        "originalAsset": null,
+        "path": null
+      },
+      "rights": {
+        "status": "unresolved",
+        "notes": "New art made for the project; confirm before approval.",
+        "publicRepoAllowed": null
+      },
+      "frame": {
+        "width": 120,
+        "height": 120
+      },
+      "directions": {
+        "count": 16,
+        "order": "east-clockwise",
+        "stepDegrees": 22.5
+      },
+      "animations": [
+        {
+          "name": "idle",
+          "frames": 1,
+          "frameMs": null,
+          "loop": true
+        }
+      ],
+      "pivot": {
+        "x": 60,
+        "y": 60,
+        "convention": "frame-pixels-top-left"
+      },
+      "atlas": {
+        "chosenLayout": "p0",
+        "layouts": [
+          {
+            "id": "p0",
+            "columns": 8,
+            "rows": 2,
+            "padding": 0,
+            "extruded": false,
+            "width": 960,
+            "height": 240,
+            "pages": [
+              {
+                "page": 0,
+                "path": null,
+                "robloxAssetId": null
+              }
+            ],
+            "frameRects": null
+          }
+        ]
+      },
+      "outputs": {
+        "sourceDir": null,
+        "runtimeDir": null,
+        "luauModule": null
+      },
+      "approval": {
+        "state": "pending",
+        "approvedBy": null,
+        "approvedAt": null,
+        "studioCheck": null
+      },
+      "roblox": {
+        "uploaded": false,
+        "assetIds": [
+          null
+        ],
+        "moderation": null
+      }
     }
   ],
   "schema": "assets.schema.json",
