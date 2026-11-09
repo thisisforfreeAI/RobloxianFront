@@ -11,7 +11,7 @@ Last updated: 2026-11-09
 Phase 1. Milestone 1A done (Studio tests 1–7 pass). Pilot sprite REQ-0001 approved. Milestone 1B (gameplay loop) rewritten for WarFront parity and tested outside Studio; Studio tests B1–B9 pending.
 
 ## Verified outside Studio (actually run, Linux container)
-- Lune 0.11.1 `tests/run`: 42 passed, 0 failed (latest run; earlier note said 14) (including the 2 that read the GameData generated from your install).
+- Lune 0.11.1 `tests/run`: 48 passed, 0 failed (latest run) (including the 2 that read the GameData generated from your install).
 - Rojo 7.4.4 `rojo build` succeeds. All .luau files compile (syntax only).
 - Synthetic atlas: 16 × 120 px frames pack to 960×240 (8×2, no padding); validator passes on dimensions,
   rectangles, direction order, pixel identity, pivot, partial alpha, edge bleed, arrow orientation, manifest.
@@ -68,14 +68,32 @@ route per group and uses a path guide), no separation push, bridge-deck lanes or
 vehicle steering is not ported (the slice has foot units only). Attack approach re-plans when the
 approach point moves 2 cells or more (APPROX).
 
-30-minute bot-vs-bot on Saddle (balanced v warlord) after pathfinding: units now cross rivers at fords
-and bridges, rigs change hands repeatedly and about 430 infantry die, and HQ pushes get within 12–17
-cells of the enemy HQ, but home guards still beat them and no HQ took damage, so nobody wins. Oil
-still piles up because the bot cannot build barracks or factories yet. CPU: about 7% of real time.
+Buildings (2026-11-09, `Sim.luau` header lists every rule): barracks and factory are placed with the
+game's full placement check (terrain, road clearance, rig pad, spacing, the seal check, territory,
+enemy gap, requirements, oil), go up over 15 s / 22 s, block their 3 x 3 footprint (the HQ blocks its
+5 x 5 too, trucks may still enter it), repair after 5 s untouched, stop working below half health, and
+train from their own queues (barracks: infantry, AT; factory: tank, IFV). Territory
+(`Shared.Simulation.Territory`) is the game's painting: structures reach buildRadius x 1.6, rigs 12
+cells (30 when a building of theirs stands within 36), wobbly edges from the game's noise, split by deep
+water. An HQ lost while an active factory stands gives 120 s before elimination (the command truck that
+rebuilds an HQ is not in the slice). The bot follows the game's build order (barracks after 15 s,
+factory after 200 s at 3.5 oil/s income, a second barracks after 420 s at 6/s, a second factory after
+600 s at 7/s; bunker and radar steps are passed over), places with the game's 120-try search, keeps
+the facility's cost in reserve while it saves for one, and trains with the game's producer rules
+(barracks: AT 30%, else infantry while foot units are under half the army; factory: tank 45%, IFV 30%,
+the artillery/rocket 25% trains nothing in the slice). The client has build buttons (B/F), a placement
+ghost tinted by your territory, building blocks with build progress, and per-building training (click
+a building, Q/E).
+
+Bot-vs-bot on Saddle now ends: balanced v warlord, warlord wins at 11:52; turtle v warlord, warlord
+wins at 11:04; balanced v turtle, balanced wins at 20:42; balanced v balanced, side 1 wins at 26:46.
+CPU: about 4–6% of real time. Lune: 48 tests pass (6 new for buildings and territory).
 
 ## Next
-1. You run Studio tests B1–B9.
-2. Then: buildings (barracks, factory) so oil gets spent, fog of war (server-filtered), more units; later shared group routes and separation.
+1. You run Studio tests B1–B14 (B11–B14 are new: building, training from buildings, bot building,
+   blocking).
+2. Then: fog of war (server-filtered), more units (mortar, artillery, scout) and defences (bunker, AT
+   gun), engineers' repair work, vehicle steering; later shared group routes and separation.
 
 ## Open questions
 1. Rights scope: original art, audio, voice; public redistribution of extracted data.

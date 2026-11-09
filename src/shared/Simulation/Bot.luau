@@ -26,7 +26,7 @@
 	Unit worth = hp / 100 x dps / 8 x 30. Influence map: blocks of 6 x cell scale, reach 14 x cell scale.
 
 	The bot sees every enemy unit because the slice has no fog of war (the game does the same with fog
-	off). Not in the slice, so skipped: buildings (barracks, factory, bunkers...), engineers' work,
+	off). Not in the slice, so skipped: buildings other than barracks and factory, engineers' work,
 	recon, drones, artillery, cities and the capital, bridges, rail, naval, events, sabotage.
 	APPROX: the bot's random numbers are not the game's sequence; held-truck rescues are skipped
 	(trucks are never held by enemies in the slice). UNCONFIRMED: which persona a lobby slot defaults to
@@ -55,10 +55,12 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 	local diff = {
 		think = num(`skirmish.difficulty.{lvl}.think`),
 		margin = num(`skirmish.difficulty.{lvl}.margin`),
+		buildDelay = num(`skirmish.difficulty.{lvl}.buildDelay`),
 	}
 	if pid == "warlord" then
 		diff.think *= num("bots.warlordEdge.think")
 		diff.margin *= num("bots.warlordEdge.margin")
+		diff.buildDelay *= num("bots.warlordEdge.buildDelay")
 	end
 	-- the nation's oil multiplier: handicap (middle = x1) x difficulty oil, and x warlordEdge.oil for a
 	-- warlord (the game applies that edge when crediting oil)
@@ -83,6 +85,8 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 		covering = {} :: { [string]: number },
 		nextPush = -1,
 		lastEngineer = -999,
+		lastScout = -999,
+		lastBuild = -99,
 		inf = nil :: any,
 	}
 
@@ -373,33 +377,174 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 
 	---------------------------------------------------------------- training (Bst, HQ only in the slice)
 
-	local function training()
+	---------------------------------------------------------------- building (Dst, Vst)
+
+	-- the game's build order (bots Pst): type, after (s x buildDelay), minimum income (oil/s)
+	local BUILD_ORDER = {
+		{ type = "barracks", after = 15, minIncome = 0 },
+		{ type = "factory", after = 200, minIncome = 3.5 },
+		{ type = "bunker", after = 260, minIncome = 3.5 },
+		{ type = "barracks", after = 420, minIncome = 6 },
+		{ type = "radar", after = 480, minIncome = 6 },
+		{ type = "factory", after = 600, minIncome = 7 },
+	}
+	local function countOf(kind: string): number
+		local n = 0
+		for _, e in sim.list do
+			if e.alive and e.side == side and e.cat == "structure" and e.kind == kind then
+				n += 1
+			end
+		end
+		return n
+	end
+	local function income(): number
+		local n = 0
+		for _, r in sim.rigs do
+			if r.side == side and r.connected and (r.rate or 0) > 0 then
+				n += r.rate
+			end
+		end
+		return n
+	end
+
+	-- Dst: what to build next. APPROX: kinds the slice cannot place (bunker, radar, SAM, night ops,
+	-- artillery base, naval yard, forward HQ, guard posts) are passed over.
+	local function plan(): any
 		local hq = sim.hqOf(side)
-		if not hq or #hq.queue >= 2 then
+		if not hq then
+			return nil
+		end
+		local W = sim.roads.width
+		local seen: { [string]: number } = {}
+		local inc = income()
+		for _, g in BUILD_ORDER do
+			seen[g.type] = (seen[g.type] or 0) + 1
+			if countOf(g.type) < seen[g.type] then
+				if sim.time < g.after * diff.buildDelay or inc < g.minIncome then
+					break
+				end
+				if sim.PLACEABLE[g.type] then
+					return {
+						type = g.type,
+						near = { x = hq.cell % W + 0.5, y = hq.cell // W + 0.5 },
+						reach = num("structures.hq.buildRadius"),
+					}
+				end
+			end
+		end
+		return nil
+	end
+
+	-- Vst: up to 120 random points in the nation's base sources; a facility takes the valid spot
+	-- nearest the HQ (plus up to 3 cells x cell scale of noise).
+	local function placeBuilding(p: any)
+		if not p then
 			return
 		end
+		local cost = num(`structures.{p.type}.cost`)
+		if sim.sides[side].oil < cost or sim.time - self.lastBuild < 4 then
+			return
+		end
+		local W, H = sim.roads.width, sim.roads.height
+		local sources = sim.baseSources(side)
+		local hq = sim.hqOf(side)
+		local cx = if hq then hq.cell % W + 0.5 else p.near.x
+		local cy = if hq then hq.cell // W + 0.5 else p.near.y
+		local scale = num("match.cellScale")
+		local best, bestScore = -1, math.huge
+		for _ = 1, 120 do
+			local f = sources[math.floor(rand() * #sources) + 1]
+			if not f then
+				break
+			end
+			local ang = rand() * math.pi * 2
+			local g = math.sqrt(rand()) * f.r
+			local m, y = f.x + math.cos(ang) * g, f.y + math.sin(ang) * g
+			if hypot(m - p.near.x, y - p.near.y) <= p.reach then
+				local w = math.floor(y) * W + math.floor(m)
+				if m >= 0 and y >= 0 and m < W and y < H and sim.territoryAt(w) == side and not sim.canPlace(side, p.type, w) then
+					local score = hypot(m - cx, y - cy) + rand() * 3 * scale
+					if score < bestScore then
+						best, bestScore = w, score
+					end
+				end
+			end
+		end
+		if best >= 0 and sim.placeStructure(side, p.type, best) then
+			self.lastBuild = sim.time
+		end
+	end
+
+	---------------------------------------------------------------- training (Bst)
+
+	local PRIORITY = { factory = 1, barracks = 2, hq = 3 }
+	local function training(p: any)
 		local counts: { [string]: number } = {}
 		for _, e in sim.list do
 			if e.alive and e.side == side and e.cat == "unit" and e.kind ~= "truck" then
 				counts[e.kind] = (counts[e.kind] or 0) + 1
 			end
 		end
-		for _, item in hq.queue do
-			counts[item] = (counts[item] or 0) + 1
+		local producers = {}
+		for _, st in sim.list do
+			if st.alive and st.side == side and st.cat == "structure" and st.queue then
+				for _, item in st.queue do
+					counts[item] = (counts[item] or 0) + 1
+				end
+				if #st.queue < 2 and not sim.inactiveReason(st) and PRIORITY[st.kind] then
+					table.insert(producers, st)
+				end
+			end
+		end
+		local function c(k: string): number
+			return counts[k] or 0
 		end
 		local h = #army()
-		-- the game: engineer, else infantry while there is no barracks or the army is under 8;
-		-- the slice has no barracks, so infantry
-		local item = "infantry"
-		if h >= 4 and (counts.engineer or 0) < num("bots.engineers") and sim.time - self.lastEngineer >= num("bots.engineerEverySec") then
-			item = "engineer"
+		local reserve = 0
+		if p and sim.deps.rules:text(`structures.{p.type}.kind`) == "facility" then
+			reserve = num(`structures.{p.type}.cost`) * num("bots.buildReserve")
 		end
-		local reserve = 0 -- no buildings or navy to save for in the slice
-		if sim.sides[side].oil - num(`units.{item}.cost`) < reserve then
-			return
+		local hasFactory = sim.hasBuilding(side, "factory", true)
+		local hasBarracks = sim.hasBuilding(side, "barracks", true)
+		local position = {}
+		for i, st in producers do
+			position[st] = i
 		end
-		if sim.orderProduce(side, item) and item == "engineer" then
-			self.lastEngineer = sim.time
+		table.sort(producers, function(a, b)
+			if PRIORITY[a.kind] ~= PRIORITY[b.kind] then
+				return PRIORITY[a.kind] < PRIORITY[b.kind]
+			end
+			return position[a] < position[b]
+		end)
+		for _, st in producers do
+			local item: string? = nil
+			local k = rand()
+			local footShort = not hasFactory or c("infantry") + c("at") + c("mortar") < h * 0.5
+			if st.kind == "hq" then
+				if h >= 4 and c("engineer") < num("bots.engineers") and sim.time - self.lastEngineer >= num("bots.engineerEverySec") then
+					item = "engineer"
+				elseif not hasBarracks or h < 8 then
+					item = "infantry"
+				end
+			elseif st.kind == "barracks" then
+				if footShort then
+					-- APPROX: the slice has no mortars, so the mortar share trains infantry
+					item = if k < 0.3 then "at" else "infantry"
+				end
+			elseif st.kind == "factory" then
+				-- APPROX: scouts are not in the slice, so the game's scout pick (army >= bots.scoutArmy, fewer
+				-- than round(army x bots.scoutShare) scouts, every bots.scoutEverySec) is skipped and the
+				-- factory makes its usual pick; artillery and rocket picks train nothing.
+				item = if k < 0.45 then "tank" elseif k < 0.75 then "ifv" else nil
+			end
+			if item and sim.sides[side].oil - num(`units.{item}.cost`) >= reserve then
+				if sim.orderProduce(side, item, st.id) then
+					counts[item] = c(item) + 1
+					if item == "engineer" then
+						self.lastEngineer = sim.time
+					end
+				end
+			end
 		end
 	end
 
@@ -681,13 +826,15 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 
 	local function think()
 		local s = sim.sides[side]
-		if not s or s.lost or not sim.hqOf(side) then
+		if not s or s.lost then
 			return
 		end
 		self.inf = buildInfluence()
+		local p = plan()
 		local saving = trucks()
 		if not saving then
-			training()
+			placeBuilding(p)
+			training(p)
 		end
 		fallBack()
 		local pool = idleArmy()

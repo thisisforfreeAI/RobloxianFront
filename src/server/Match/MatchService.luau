@@ -16,6 +16,9 @@ local Rules = require(Shared.Config.Rules)
 local MapCodec = require(Shared.Maps.MapCodec)
 local Movement = require(Shared.Simulation.Movement)
 local Pathing = require(Shared.Simulation.Pathing)
+local Territory = require(Shared.Simulation.Territory)
+local ValueNoise = require(Shared.Utilities.ValueNoise)
+local Rng = require(Shared.Utilities.Rng)
 local Roads = require(Shared.Simulation.Roads)
 local Sim = require(Shared.Simulation.Sim)
 local Bot = require(Shared.Simulation.Bot)
@@ -79,8 +82,13 @@ local function onIntent(player: Player, raw: any)
 			warn(`[Match] attack from {player.Name} refused: {why}`)
 		end
 	elseif i.kind == "produce" then
-		local ok, why = sim.orderProduce(side, i.item)
+		local ok, why = sim.orderProduce(side, i.item, i.structureId)
 		if not ok then
+			Net.sendState(player, { notice = why })
+		end
+	elseif i.kind == "build" then
+		local id, why = sim.placeStructure(side, i.structure, i.y * map.width + i.x)
+		if not id then
 			Net.sendState(player, { notice = why })
 		end
 	elseif i.kind == "truck" then
@@ -115,10 +123,35 @@ local function snapshot()
 		if e.cat == "unit" then
 			table.insert(units, { e.id, e.kind, e.side, e.x, e.y, e.heading, e.hp, e.maxHp })
 		else
-			table.insert(structures, { e.id, e.kind, e.side, e.x, e.y, e.hp, e.maxHp, e.capSide or 0, e.capProgress or 0, e.store or 0 })
+			table.insert(structures, { e.id, e.kind, e.side, e.x, e.y, e.hp, e.maxHp, e.capSide or 0, e.capProgress or 0, e.store or 0, e.built or 1 })
 		end
 	end
 	Net.broadcastSnapshot(tick, units, structures)
+end
+
+-- Own territory as row runs { y, x0, x1, ... } (sent only when it changes): the client tints the
+-- placement ghost with it; the server still checks every placement.
+local sentTerritory: { [Player]: string } = {}
+local function territoryRuns(side: number): { number }
+	local owners = sim.territoryOwners()
+	local w, h = map.width, map.height
+	local runs = {}
+	for y = 0, h - 1 do
+		local x = 0
+		while x < w do
+			if owners[y * w + x + 1] == side then
+				local x0 = x
+				while x + 1 < w and owners[y * w + x + 2] == side do
+					x += 1
+				end
+				table.insert(runs, y)
+				table.insert(runs, x0)
+				table.insert(runs, x)
+			end
+			x += 1
+		end
+	end
+	return runs
 end
 
 local function privateState()
@@ -132,6 +165,19 @@ local function privateState()
 			payload.queueLeft = sim.queueLeft(side)
 			payload.trucksIdle = s.trucksIdle
 			payload.lost = s.lost
+			local producers = {}
+			for _, e in sim.list do
+				if e.alive and e.side == side and e.cat == "structure" and e.queue then
+					table.insert(producers, { id = e.id, kind = e.kind, queue = #e.queue, left = sim.queueLeft(side, e.id), built = e.built })
+				end
+			end
+			payload.producers = producers
+			local runs = territoryRuns(side)
+			local key = table.concat(runs, ",")
+			if sentTerritory[player] ~= key then
+				sentTerritory[player] = key
+				payload.territory = runs
+			end
 		end
 		Net.sendState(player, payload)
 	end
@@ -156,6 +202,9 @@ function MatchService.start(mapModule: string)
 		movement = Movement,
 		roadsLib = Roads,
 		pathingLib = Pathing,
+		territoryLib = Territory,
+		valueNoise = ValueNoise,
+		rng = Rng,
 		map = {
 			width = map.width,
 			height = map.height,
@@ -192,6 +241,7 @@ function MatchService.start(mapModule: string)
 	updateBots()
 	Players.PlayerRemoving:Connect(function(p)
 		sideOf[p] = nil
+		sentTerritory[p] = nil
 		updateBots()
 	end)
 
@@ -211,6 +261,10 @@ function MatchService.start(mapModule: string)
 					print(`[Match] {ev.type} side {ev.side}{if ev.id then " id " .. ev.id else ""}{if ev.oil then " oil " .. math.floor(ev.oil) else ""}`)
 				elseif ev.type == "destroyed" and ev.kind == "hq" then
 					print(`[Match] HQ of side {ev.side} destroyed`)
+				elseif ev.type == "buildPlaced" or ev.type == "built" then
+					print(`[Match] {ev.type} {ev.kind} side {ev.side} id {ev.id}`)
+				elseif ev.type == "hqLostRebuild" then
+					print(`[Match] side {ev.side} lost its HQ but keeps a factory: {ev.sec} s to rehouse (no command truck in the slice)`)
 				end
 			end
 			if tick % SNAPSHOT_EVERY == 0 then

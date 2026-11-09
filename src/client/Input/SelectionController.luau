@@ -2,7 +2,8 @@
 --[[
 	SelectionController: RTS selection and orders.
 	Left click: select own unit (Shift adds/toggles). Left drag: box select (Shift adds).
-	Right click on an enemy unit or HQ: attack order. Right click on the ground: move order. X: stop. Esc: clear.
+	Left click on one of your buildings (HQ, barracks, factory): pick it as the producer for the HUD.
+	Right click on an enemy unit or building: attack order. Right click on the ground: move order. X: stop. Esc: clear.
 	T with the cursor on one of your rigs: send a truck to it.
 	Trucks drive themselves and cannot be selected.
 	The client only proposes; the server re-checks ownership and the target.
@@ -63,7 +64,25 @@ local function send(sendIntent: (any) -> (), kind: string, extra: { [string]: an
 	end
 end
 
-function SelectionController.start(mySide: number, sendIntent: (any) -> ())
+local PRODUCERS = { hq = true, barracks = true, factory = true }
+
+local function structureUnder(mouse: Vector2, accept: (StructureRenderer.View) -> boolean): StructureRenderer.View?
+	local best, bestDist = nil, 40
+	for _, v in StructureRenderer.each() do
+		if accept(v) then
+			local p, on = workspace.CurrentCamera:WorldToViewportPoint(World.toWorld(v.x, v.y, 1))
+			local d = (Vector2.new(p.X, p.Y) - mouse).Magnitude
+			if on and d < bestDist then
+				best, bestDist = v, d
+			end
+		end
+	end
+	return best
+end
+
+-- opts.busy(): true while a building is being placed (clicks belong to the placement);
+-- opts.onProducer(id, kind): a building was picked as the producer (nil = back to the HQ).
+function SelectionController.start(mySide: number, sendIntent: (any) -> (), opts: { busy: () -> boolean, onProducer: (number?, string?) -> () })
 	local gui = Instance.new("ScreenGui")
 	gui.Name = "WarFrontSelection"
 	gui.IgnoreGuiInset = true
@@ -107,6 +126,13 @@ function SelectionController.start(mySide: number, sendIntent: (any) -> ())
 			end
 			if best then
 				selected[best] = if additive then not selected[best] or nil else true
+			else
+				local st = structureUnder(b, function(v)
+					return v.side == mySide and PRODUCERS[v.kind] == true
+				end)
+				if st then
+					opts.onProducer(st.id, st.kind)
+				end
 			end
 		else
 			local minV, maxV = a:Min(b), a:Max(b)
@@ -124,6 +150,10 @@ function SelectionController.start(mySide: number, sendIntent: (any) -> ())
 
 	UserInputService.InputBegan:Connect(function(input, processed)
 		if processed then
+			return
+		end
+		local isMouse = input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.MouseButton2
+		if isMouse and opts.busy() then
 			return
 		end
 		if input.UserInputType == Enum.UserInputType.MouseButton1 then
@@ -145,7 +175,7 @@ function SelectionController.start(mySide: number, sendIntent: (any) -> ())
 				end
 			end
 			for id, v in StructureRenderer.each() do
-				if v.kind == "hq" and v.side ~= mySide and v.side ~= 0 then
+				if PRODUCERS[v.kind] and v.side ~= mySide and v.side ~= 0 then
 					local p, on = workspace.CurrentCamera:WorldToViewportPoint(World.toWorld(v.x, v.y, 1))
 					local d = (Vector2.new(p.X, p.Y) - mouse).Magnitude
 					if on and d < math.max(bestDist, 40) then
@@ -183,6 +213,7 @@ function SelectionController.start(mySide: number, sendIntent: (any) -> ())
 		elseif input.KeyCode == Enum.KeyCode.Escape then
 			table.clear(selected)
 			refresh()
+			opts.onProducer(nil, nil)
 		end
 	end)
 

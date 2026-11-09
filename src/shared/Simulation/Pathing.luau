@@ -189,7 +189,7 @@ function Pathing.new(roads: any, num: (string) -> number, text: (string) -> stri
 				if da ~= db then
 					return da < db
 				end
-				return false
+				return a < b -- the game's sort is stable over cells listed in ascending order
 			end)
 			for _, c in ring do
 				if #out < n then

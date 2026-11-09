@@ -32,6 +32,7 @@ local MapCodec = require("../src/shared/Maps/MapCodec")
 local Protocol = require("../src/shared/Protocol/Protocol")
 local Movement = require("../src/shared/Simulation/Movement")
 local Pathing = require("../src/shared/Simulation/Pathing")
+local Territory = require("../src/shared/Simulation/Territory")
 
 print("Rng / ValueNoise (vectors produced by WarFront's own JS)")
 test("rng matches original for 4 seeds", function()
@@ -221,6 +222,9 @@ if fs.isFile(matchPath) then
 			movement = Movement,
 			roadsLib = Roads,
 			pathingLib = Pathing,
+			territoryLib = Territory,
+			valueNoise = ValueNoise,
+			rng = Rng,
 			map = {
 				width = W, height = H,
 				terrainAt = o.terrainAt or function(c)
@@ -552,6 +556,122 @@ if fs.isFile(matchPath) then
 		eq(rig.tank, 0)
 	end)
 
+	-- buildings: cells are y * 180 + x on the 180 x 60 test map (HQs at (10, 30) and (170, 30))
+	local function cellOf(x: number, y: number): number
+		return y * W + x
+	end
+	local function structuresOf(sim, side, kind)
+		local out = {}
+		for _, e in sim.list do
+			if e.alive and e.side == side and e.kind == kind then
+				table.insert(out, e)
+			end
+		end
+		return out
+	end
+	test("territory: the HQ paints buildRadius x reachShare (27 x 1.6 cells), rigs their pad", function()
+		local sim = newSim()
+		eq(sim.territoryAt(cellOf(10, 30)), 1)
+		eq(sim.territoryAt(cellOf(52, 30)), 1, "42 cells out is inside 43.2")
+		eq(sim.territoryAt(cellOf(70, 30)), -1, "beyond r x (1 + wobble 0.3) is never painted")
+		eq(sim.territoryAt(cellOf(170, 30)), 2)
+		local rig = sim.rigs[2] -- (130, 30)
+		rig.side = 1
+		eq(sim.territoryAt(cellOf(130, 37)), 1, "an unjoined rig paints rigPad 12; the nearer source wins")
+	end)
+	test("buildings: a barracks costs 170, blocks its 3x3 footprint and is built in 15 s", function()
+		local sim = newSim()
+		local c = cellOf(20, 42)
+		eq(sim.canPlace(1, "barracks", c), nil)
+		local id = sim.placeStructure(1, "barracks", c)
+		assert(id, "placed")
+		eq(sim.sides[1].oil, 600 - 170)
+		local b = sim.entities[id]
+		eq(b.built, 0)
+		assert(not sim.roads.passable(cellOf(21, 43)) and sim.roads.passable(cellOf(22, 43)), "footprint radius 1")
+		eq(sim.inactiveReason(b), "building")
+		run(sim, 14.9)
+		assert(b.built < 1, "not yet")
+		run(sim, 0.2)
+		eq(b.built, 1)
+		local done = false
+		for _, ev in sim.takeEvents() do
+			if ev.type == "built" and ev.id == id then
+				done = true
+			end
+		end
+		assert(done, "built event")
+	end)
+	test("placement refusals in the game's order: onRoad, spacing, onRig, outsideBase, requires, oil", function()
+		local sim = newSim()
+		eq(sim.canPlace(1, "barracks", cellOf(20, 32)), "onRoad", "within footprint + road clearance 1 + pad 1 of the highway")
+		eq(sim.canPlace(1, "barracks", cellOf(13, 33)), "spacing", "Chebyshev 3 from the HQ (1 + 2)")
+		eq(sim.canPlace(1, "barracks", cellOf(48, 34)), "onRig", "within 1 + padCells 3 of the rig at (50, 30)")
+		eq(sim.canPlace(1, "barracks", cellOf(100, 45)), "outsideBase")
+		eq(sim.canPlace(1, "factory", cellOf(20, 42)), "requires", "a factory needs a built barracks")
+		eq(sim.canPlace(1, "hq", cellOf(20, 42)), "blocked")
+		sim.sides[1].oil = 100
+		eq(sim.canPlace(1, "barracks", cellOf(20, 42)), "oil")
+	end)
+	test("production: barracks train infantry and AT, factories tanks; the HQ cannot train AT", function()
+		local sim = newSim()
+		sim.sides[1].oil = 5000
+		local b = sim.placeStructure(1, "barracks", cellOf(20, 42)) :: number
+		run(sim, 15.1)
+		local f = sim.placeStructure(1, "factory", cellOf(26, 42)) :: number
+		assert(f, "factory placed once the barracks stands")
+		eq(select(2, sim.orderProduce(1, "at")), "blocked", "HQ")
+		eq(select(2, sim.orderProduce(1, "tank", b)), "blocked", "barracks")
+		eq(select(2, sim.orderProduce(1, "tank", f)), "notOperational", "still building")
+		run(sim, 22)
+		assert(sim.orderProduce(1, "at", b))
+		assert(sim.orderProduce(1, "tank", f))
+		run(sim, 16.1)
+		eq(#units(sim, 1, "at"), 1)
+		eq(#units(sim, 1, "tank"), 1)
+		-- a facility under half health stops working and does not self-repair
+		local fac = sim.entities[f]
+		fac.hp = fac.maxHp * 0.4
+		eq(select(2, sim.orderProduce(1, "tank", f)), "notOperational")
+		run(sim, 10)
+		eq(fac.hp, fac.maxHp * 0.4)
+	end)
+	test("HQ loss with an active factory: the nation stays in for hqLoss.graceSec (120 s)", function()
+		local sim = newSim()
+		sim.sides[2].oil = 5000
+		local hq2 = sim.hqOf(2)
+		sim.placeStructure(2, "barracks", cellOf(160, 42))
+		run(sim, 15.1)
+		assert(sim.placeStructure(2, "factory", cellOf(166, 42)))
+		run(sim, 22.1)
+		assert(sim.hasBuilding(2, "factory", true))
+		hq2.hp = 5
+		for _, u in units(sim, 2, "infantry") do
+			u.alive = false
+		end
+		for _, u in units(sim, 1, "infantry") do
+			u.x, u.y = 160, 30.5
+		end
+		run(sim, 5)
+		assert(not hq2.alive, "HQ down")
+		assert(not sim.sides[2].lost, "rehouse grace")
+		run(sim, 110)
+		assert(not sim.sides[2].lost, "still within 120 s")
+		run(sim, 10)
+		assert(sim.sides[2].lost, "out when the grace runs out (no command truck in the slice)")
+	end)
+	test("bot builds a barracks early, then a factory, and trains from them", function()
+		local sim = newSim()
+		local bot = Bot.new(sim, 1, "balanced")
+		run(sim, 600, { bot })
+		assert(#structuresOf(sim, 1, "barracks") >= 1, "barracks")
+		local trained = 0
+		for _, k in { "at", "tank", "ifv" } do
+			trained += #units(sim, 1, k)
+		end
+		assert(#structuresOf(sim, 1, "factory") >= 1 or trained > 0, "factory or units from buildings")
+	end)
+
 	-- a river along x = 80 with one ford at y = 11 (no roads)
 	local function riverSim()
 		return newSim({
@@ -580,13 +700,12 @@ if fs.isFile(matchPath) then
 		assert(u.target == nil, "arrived")
 		assert(math.abs(u.x - 90.25) < 1e-6 and math.abs(u.y - 40.75) < 1e-6, `ends on the exact spot, got {u.x},{u.y}`)
 	end)
-	test("pathing: a goal in the river is refused and the unit stays put", function()
+	test("pathing: a goal in the river sends the unit to the nearest bank cell (ring slots)", function()
 		local sim = riverSim()
 		local u = sim.spawnUnit("infantry", 1, 70.5, 40.5)
 		sim.orderMove(1, { u.id }, 80.5, 40.5)
-		assert(u.target == nil and u.path == nil, "no route")
-		sim.step(0.05)
-		eq(u.x, 70.5)
+		assert(u.target ~= nil, "a slot was found")
+		eq(sim.roads.cellAt(u.target.x, u.target.y), 40 * 180 + 79, "the bank cell on the unit's side (first in ring order)")
 	end)
 	test("pathing: a group stands in one rank 1.8 cells apart across its travel", function()
 		local sim = newSim({ roads = {} })

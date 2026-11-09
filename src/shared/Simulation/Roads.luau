@@ -221,8 +221,61 @@ function Roads.build(cfg: Config)
 	function self.classAt(c: number): number
 		return buffer.readu8(class, c)
 	end
+	-- buildings block their footprint (the game's blocked flags)
+	local blocked = buffer.create(n)
+	local buildingAt: { [number]: number } = {}
+	local groundEpoch = 0
 	function self.passable(c: number): boolean
-		return pass[c + 1] or buffer.readu8(road, c) == 1
+		return buffer.readu8(blocked, c) == 0 and (pass[c + 1] or buffer.readu8(road, c) == 1)
+	end
+	-- id >= 0 marks the cell as covered by that building, -1 clears it
+	function self.setBlocked(c: number, id: number)
+		buffer.writeu8(blocked, c, if id >= 0 then 1 else 0)
+		buildingAt[c] = if id >= 0 then id else nil
+		groundEpoch += 1
+	end
+	function self.buildingAt(c: number): number
+		return buildingAt[c] or -1
+	end
+	function self.groundEpoch(): number
+		return groundEpoch
+	end
+	-- 4-connected pieces of passable ground (the game's landPieces), -1 for impassable
+	local landPiece: { number }? = nil
+	local landFor = -1
+	function self.landPieces(): { number }
+		if landPiece and landFor == groundEpoch then
+			return landPiece
+		end
+		local a = table.create(n, -1)
+		local stack = table.create(n)
+		local id = 0
+		for l = 0, n - 1 do
+			if a[l + 1] < 0 and self.passable(l) then
+				local top = 1
+				stack[1] = l
+				a[l + 1] = id
+				while top > 0 do
+					local hc = stack[top]
+					top -= 1
+					local u = hc % w
+					local function try(k: number)
+						if a[k + 1] < 0 and self.passable(k) then
+							a[k + 1] = id
+							top += 1
+							stack[top] = k
+						end
+					end
+					if u > 0 then try(hc - 1) end
+					if u < w - 1 then try(hc + 1) end
+					if hc >= w then try(hc - w) end
+					if hc < n - w then try(hc + w) end
+				end
+				id += 1
+			end
+		end
+		landPiece, landFor = a, groundEpoch
+		return a
 	end
 	function self.terrain(c: number): string
 		return terrain[c + 1]
@@ -262,8 +315,10 @@ function Roads.build(cfg: Config)
 		local gx, gy = fromCell % w, fromCell // w
 		local tx, ty = toCell % w, toCell // w
 		local reach = cfg.offRoadReach
+		local goalBuilding = buildingAt[toCell]
 		return function(v: number): number
-			if not self.passable(v) then
+			-- the cells of the building at the goal (the HQ yard) stay open to its trucks
+			if not self.passable(v) and not (goalBuilding ~= nil and buildingAt[v] == goalBuilding) then
 				return math.huge
 			end
 			if buffer.readu8(road, v) == 1 then

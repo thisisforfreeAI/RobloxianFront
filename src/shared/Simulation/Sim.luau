@@ -13,8 +13,24 @@
 
 	Economy     nations start with match.startOil and trucks.startIdle idle light trucks. A built HQ
 	            trickles rigs.hqOil per second (x the nation's oil multiplier).
-	Production  paid up front (units.<k>.cost), units.<k>.buildSec each, production.maxQueue,
-	            match.unitCap counts units plus queued.
+	Production  per producer (HQ, barracks, factory; units.<k>.from), paid up front (units.<k>.cost),
+	            units.<k>.buildSec each, production.maxQueue, match.unitCap counts units plus every
+	            queue. Refusals in the game's order: blocked, notOperational, requires, queueFull,
+	            unitCap, oil. Slice units: infantry, engineer (HQ); infantry, AT (barracks); tank, IFV
+	            (factory).
+	Buildings   barracks and factory (the game's placeStructure). Placement check in the game's order:
+	            footprint inside the map and on buildable terrain ("terrain"), no road within the
+	            footprint + max(1, round(footprint x roadClearShare)) + roadClearPad ("onRoad"), no rig
+	            within footprint + rigs.padCells ("onRig"), no structure within the two footprints +
+	            production.spacing ("spacing"), does not cut the passable ground around it
+	            ("sealsWay", the game's seal check), every footprint cell in own territory
+	            ("outsideBase", see Territory), no enemy structure within build.enemyGap + footprint
+	            and no enemy rig within that + rigs.radius ("nearEnemy"), requirements built
+	            ("requires"), oil. Paid at once; goes up over structures.<k>.buildSec; the footprint
+	            (production.footprint.<kind> cells round the centre) blocks movement from placement on
+	            (HQs too), except that trucks may enter their own HQ's yard. A facility below
+	            production.damagedBelow of its hp stops working and does not repair itself; otherwise
+	            buildings repair production.repairPerSec of hp per second 5 s after the last hit.
 	Rigs        capture weight = sum over units within rigs.radius with dps > 0 (not air or sea) of
 	            max(0.25, units.<k>.capture). One pressing side captures at
 	            max(minPace, min(1, weight / need)) / captureSec per second; any rival present
@@ -43,20 +59,26 @@
 	            x terrain cover (1 - cover, or flank rules when hit from behind combat.flankDeg)
 	            x armour facing (armoured targets). Structure hit = dps x reloadSec x vs.structure.
 	            Truck hit = dps x reloadSec x vs.armour. The HQ shoots too.
-	HQ loss     a nation whose HQ dies with no factory and no command vehicle is eliminated at once
-	            (all its units and buildings die, its rigs turn neutral and empty). The last nation
-	            standing wins (match.victory "annihilation").
+	HQ loss     a nation whose HQ dies with no active factory is eliminated at once (all its units and
+	            buildings die, its rigs turn neutral and empty); with one it has hqLoss.graceSec to
+	            rehouse. The command truck that does that is not in the slice, so the nation is out
+	            when the grace runs out. The last nation standing wins (match.victory "annihilation").
 
 	APPROX: unit movement follows Pathing (see its header for what is approximate); trucks follow their
 	        route cell by cell without the game's curve-following, column spacing, stalls or enemy holds;
 	        unit spawn spots (door/rally) are simplified; the random numbers (reload jitter) do not
 	        follow the game's seeded sequence; tie order between equally near targets may differ;
-	        rig routes refresh every 10 ticks per rig.
-	UNCONFIRMED: new units start with no face direction and an empty shot timer; a dead nation's
+	        rig routes refresh every 10 ticks per rig; units caught inside a new footprint step to the
+	        nearest free cell centre; vehicles (tank, IFV) follow paths like foot units (no drive model,
+	        acceleration or turning).
+	UNCONFIRMED: the territory edge noise uses the map's seed (the game uses its match seed); where
+	        the headless check sits in the tick order.
+	UNCONFIRMED (older): new units start with no face direction and an empty shot timer; a dead nation's
 	        trucks are removed; a firing vehicle's hull keeps its heading (turrets not modelled).
 	Engineers can be trained (the HQ lists them) but their building and repair work is not in the slice.
 	Not in the slice: fog (TEMP-001), line of sight, weather, veterancy, smoke, rig damage,
-	        settlements, refineries, rail, events, the real bot.
+	        settlements, refineries, rail, events, defences (bunker, AT gun, SAM, radar), mortars,
+	        artillery, rockets, scouts, the command truck, power lines and dams.
 ]]
 
 local Sim = {}
@@ -92,6 +114,9 @@ export type Deps = {
 	movement: any?, -- unused since unit pathfinding (kept for older callers)
 	roadsLib: any, -- Shared.Simulation.Roads
 	pathingLib: any, -- Shared.Simulation.Pathing
+	territoryLib: any, -- Shared.Simulation.Territory
+	valueNoise: any, -- Shared.Utilities.ValueNoise
+	rng: any, -- Shared.Utilities.Rng
 	map: MapInfo,
 	starts: { { x: number, y: number } }, -- cell centres
 	rigs: { { x: number, y: number, name: string? } },
@@ -146,6 +171,7 @@ function Sim.new(deps: Deps)
 	end
 
 	local seed = deps.seed or 1
+	local matchSeed = seed
 	local function rand(): number -- APPROX: not the game's sequence
 		seed = (seed * 1103515245 + 12345) % 2147483648
 		return seed / 2147483648
@@ -259,11 +285,11 @@ function Sim.new(deps: Deps)
 		local hq = add({
 			kind = "hq", cat = "structure", class = "structure", side = side, x = s.x, y = s.y,
 			cell = cellAt(s.x, s.y), heading = 0, hp = hpHq, maxHp = hpHq, shotTimer = 0, alive = true,
-			queue = {}, queueProgress = 0,
+			queue = {}, queueProgress = 0, built = 1, lastHitAt = -99,
 		})
 		self.sides[side] = {
 			oil = num("match.startOil"), hqId = hq.id, lost = false, trucksIdle = num("trucks.startIdle"),
-			oilMult = 1, oilEarned = 0,
+			oilMult = 1, oilEarned = 0, headlessSince = nil,
 		}
 	end
 	local rigList: { Entity } = {}
@@ -307,11 +333,12 @@ function Sim.new(deps: Deps)
 	self.rigs = rigList
 
 	local centerX, centerY = W / 2, H / 2
-	-- APPROX: produced units appear production.rallyCells beyond the HQ footprint towards the map centre.
+	-- APPROX: produced units appear production.rallyCells beyond the footprint towards the map centre.
 	local function rallyPoint(hq: Entity, slot: number): (number, number)
 		local dx, dy = centerX - hq.x, centerY - hq.y
 		local d = math.max(1e-6, math.sqrt(dx * dx + dy * dy))
-		local cells = hqFoot + num("production.rallyCells")
+		local foot = if hq.kind == "hq" then hqFoot else num("production.footprint.facility")
+		local cells = foot + num("production.rallyCells")
 		local px, py = -dy / d, dx / d
 		local spread = ((slot % 5) - 2) * 1.2
 		return hq.x + dx / d * cells + px * spread, hq.y + dy / d * cells + py * spread
@@ -340,6 +367,380 @@ function Sim.new(deps: Deps)
 	end
 	local function canAttack(a: number, b: number): boolean
 		return a ~= b and a > 0 and b > 0
+	end
+
+
+	---------------------------------------------------------------- structures and territory
+
+	-- The kinds the slice lets a nation place, and the units each producer may train in the slice.
+	local PLACEABLE = { barracks = true, factory = true }
+	local SLICE_UNITS = { infantry = true, engineer = true, at = true, tank = true, ifv = true }
+	self.PLACEABLE = PLACEABLE
+
+	local function footprintOf(kind: string): number
+		if kind == "hq" then
+			return hqFoot
+		end
+		local k = text(`structures.{kind}.kind`)
+		return num(if k == "defence" then "production.footprint.defence" else "production.footprint.facility")
+	end
+	self.footprintOf = footprintOf
+
+	local function footprintCells(cell: number, r: number): { number }
+		local a, b = cell % W, cell // W
+		local out = {}
+		for y = math.max(0, b - r), math.min(H - 1, b + r) do
+			for x = math.max(0, a - r), math.min(W - 1, a + r) do
+				table.insert(out, y * W + x)
+			end
+		end
+		return out
+	end
+
+	local function isStructure(e: Entity): boolean
+		return e.cat == "structure" and e.kind ~= "rig"
+	end
+
+	-- Nearest free point for a unit caught inside a new footprint (APPROX of the game's aUe).
+	local function freePointNear(x: number, y: number): (number, number)
+		local cx, cy = math.floor(x), math.floor(y)
+		for rr = 1, 24 do
+			local bestC, bestD = -1, math.huge
+			for yy = cy - rr, cy + rr do
+				for xx = cx - rr, cx + rr do
+					if math.max(math.abs(xx - cx), math.abs(yy - cy)) == rr and xx >= 0 and yy >= 0 and xx < W and yy < H then
+						local c = yy * W + xx
+						local d = (xx + 0.5 - x) ^ 2 + (yy + 0.5 - y) ^ 2
+						if roads.passable(c) and d < bestD then
+							bestC, bestD = c, d
+						end
+					end
+				end
+			end
+			if bestC >= 0 then
+				return bestC % W + 0.5, bestC // W + 0.5
+			end
+		end
+		return x, y
+	end
+
+	local planLater: (Entity) -> () = function(_e: Entity) end
+	local eliminateRef: (number, number) -> () = function(_s: number, _b: number) end
+
+	-- Block or free a structure's footprint (the game's tUe / YB): units standing inside step out
+	-- (RY) and units whose route crosses it re-plan (HY).
+	local function setFootprint(st: Entity, on: boolean)
+		local cells = footprintCells(st.cell, footprintOf(st.kind))
+		local set = {}
+		for _, c in cells do
+			if on then
+				roads.setBlocked(c, st.id)
+				set[c] = true
+			elseif roads.buildingAt(c) == st.id then
+				roads.setBlocked(c, -1)
+			end
+		end
+		if not on then
+			return
+		end
+		for _, e in self.list do
+			if e.alive and e.cat == "unit" and e.kind ~= TRUCK then
+				local c = cellAt(e.x, e.y)
+				if c >= 0 and set[c] then
+					e.x, e.y = freePointNear(e.x, e.y)
+					e.px, e.py = e.x, e.y
+					if e.path then
+						planLater(e)
+					end
+				elseif e.path and e.pathIndex then
+					for i = e.pathIndex, #e.path do
+						if set[e.path[i]] then
+							planLater(e)
+							break
+						end
+					end
+				end
+			end
+		end
+	end
+
+	for _, s in self.sides do
+		setFootprint(self.entities[s.hqId], true)
+	end
+
+	-- territory (where a nation may build), see Territory
+	local territory = deps.territoryLib.new({
+		width = W,
+		height = H,
+		isDeep = function(c: number): boolean
+			return roads.terrain(c) == "deep"
+		end,
+		isRoad = roads.isRoad,
+		roadWalls = r:has("territory.roadWalls") and r:flag("territory.roadWalls"),
+		wobble = num("territory.edgeWobble"),
+		grain = num("territory.edgeGrain"),
+		noise = deps.valueNoise.new(deps.rng.new(bit32.bxor(matchSeed, 20973))),
+	})
+	local function builtStructure(st: Entity): boolean
+		return st.alive and isStructure(st) and st.built >= 1
+	end
+	local function baseSources(only: number?): { any }
+		local out = {}
+		for _, st in self.list do
+			if builtStructure(st) and alive(st.side) and (only == nil or st.side == only) then
+				table.insert(out, {
+					nation = st.side, x = st.cell % W + 0.5, y = st.cell // W + 0.5, structure = st.id,
+					r = num(`structures.{st.kind}.buildRadius`) * num("territory.reachShare"),
+				})
+			end
+		end
+		local join = num("territory.rigJoin") ^ 2
+		for _, rig in rigList do
+			if rig.side > 0 and (only == nil or rig.side == only) then
+				local joined = false
+				for _, st in self.list do
+					if builtStructure(st) and st.side == rig.side
+						and (st.cell % W + 0.5 - rig.x) ^ 2 + (st.cell // W + 0.5 - rig.y) ^ 2 <= join then
+						joined = true
+						break
+					end
+				end
+				table.insert(out, {
+					nation = rig.side, x = rig.x, y = rig.y, rig = rig.id,
+					r = if joined then num("territory.rigReach") else num("territory.rigPad"),
+				})
+			end
+		end
+		return out
+	end
+	self.baseSources = baseSources
+	local function territoryAt(c: number): number
+		if c < 0 or c >= W * H then
+			return -1
+		end
+		return territory.update(baseSources())[c + 1]
+	end
+	self.territoryAt = territoryAt
+	function self.territoryOwners(): { number }
+		return territory.update(baseSources())
+	end
+
+	local function hasBuilding(side: number, kind: string, active: boolean?): boolean
+		for _, st in self.list do
+			if builtStructure(st) and st.side == side and st.kind == kind then
+				if not active or not self.inactiveReason(st) then
+					return true
+				end
+			end
+		end
+		return false
+	end
+	self.hasBuilding = hasBuilding
+
+	function self.inactiveReason(st: Entity): string?
+		if st.built < 1 then
+			return "building"
+		end
+		if text(`structures.{st.kind}.kind`) == "facility" and st.hp < st.maxHp * num("production.damagedBelow") then
+			return "damaged"
+		end
+		return nil
+	end
+
+	-- the game's rUe: would this footprint split the passable ground around it?
+	local function sealsWay(cell: number, a: number): boolean
+		local look = num("production.sealLook")
+		if not (look > 0) then
+			return false
+		end
+		local rx, iy = cell % W, cell // W
+		local function inFoot(v: number, b: number): boolean
+			return math.abs(v - rx) <= a and math.abs(b - iy) <= a
+		end
+		local function closed(v: number, b: number): boolean
+			return inFoot(v, b) and not roads.isRoad(b * W + v)
+		end
+		local u = {}
+		local function d(v: number, b: number)
+			if v < 0 or b < 0 or v >= W or b >= H then
+				table.insert(u, -1)
+				return
+			end
+			local k = b * W + v
+			table.insert(u, if roads.passable(k) then k else -1)
+		end
+		local f = a + 1
+		for v = rx - f, rx + f - 1 do d(v, iy - f) end
+		for v = iy - f, iy + f - 1 do d(rx + f, v) end
+		for v = rx + f, rx - f + 1, -1 do d(v, iy + f) end
+		for v = iy + f, iy - f + 1, -1 do d(rx - f, v) end
+		local p = 0
+		for v = 1, #u do
+			local prev = u[(v - 2) % #u + 1]
+			if u[v] >= 0 and prev < 0 then
+				p += 1
+			end
+		end
+		if p <= 1 then
+			return false
+		end
+		local g = roads.landPieces()
+		local keys, piece = {}, {}
+		for _, v in u do
+			if v >= 0 and piece[v] == nil then
+				piece[v] = g[v + 1]
+				table.insert(keys, v)
+			end
+		end
+		local done = {}
+		for _, v in keys do
+			if not done[v] then
+				local b = piece[v]
+				local k = 0
+				for _, c in keys do
+					if piece[c] == b and not done[c] then
+						k += 1
+					end
+				end
+				local seen = { [v] = true }
+				local size = 1
+				local x = { v }
+				local C = 1
+				while C <= #x and k > 0 and size <= look do
+					local M = x[C]
+					if piece[M] == b and not done[M] then
+						done[M] = true
+						k -= 1
+					end
+					local S = M % W
+					local Y = (M - S) // W
+					local function A(P: number, Q: number)
+						if P < 0 or Q < 0 or P >= W or Q >= H then
+							return
+						end
+						local O = Q * W + P
+						if seen[O] or not roads.passable(O) or closed(P, Q) then
+							return
+						end
+						seen[O] = true
+						size += 1
+						table.insert(x, O)
+					end
+					A(S - 1, Y)
+					A(S + 1, Y)
+					A(S, Y - 1)
+					A(S, Y + 1)
+					C += 1
+				end
+				if k > 0 then
+					return true
+				end
+			end
+		end
+		return false
+	end
+
+	-- the game's placeProblem (road clearance and seal checks on)
+	local function placeProblem(cell: number, kind: string): string?
+		if cell < 0 or cell >= W * H then
+			return "blocked"
+		end
+		local a = footprintOf(kind)
+		local rx, iy = cell % W, cell // W
+		if rx - a < 0 or iy - a < 0 or rx + a >= W or iy + a >= H then
+			return "terrain"
+		end
+		for _, c in footprintCells(cell, a) do
+			local key = `terrain.{roads.terrain(c)}.buildable`
+			if not (r:has(key) and r:flag(key)) then
+				return "terrain"
+			end
+		end
+		local clear = math.max(1, math.floor(a * num("production.roadClearShare") + 0.5)) + num("production.roadClearPad")
+		for _, c in footprintCells(cell, clear) do
+			if roads.isRoad(c) then
+				return "onRoad"
+			end
+		end
+		local pad = a + num("rigs.padCells")
+		for _, rig in rigList do
+			if math.abs(rig.x - (rx + 0.5)) <= pad + 0.5 and math.abs(rig.y - (iy + 0.5)) <= pad + 0.5 then
+				return "onRig"
+			end
+		end
+		for _, st in self.list do
+			if st.alive and isStructure(st) then
+				local l = a + footprintOf(st.kind) + num("production.spacing")
+				if math.abs(st.cell % W - rx) <= l and math.abs(st.cell // W - iy) <= l then
+					return "spacing"
+				end
+			end
+		end
+		if sealsWay(cell, a) then
+			return "sealsWay"
+		end
+		return nil
+	end
+	self.placeProblem = placeProblem
+
+	-- the game's canPlace, in its order
+	function self.canPlace(side: number, kind: string, cell: number): string?
+		if not PLACEABLE[kind] or not alive(side) or self.winner then
+			return "blocked"
+		end
+		local why = placeProblem(cell, kind)
+		if why then
+			return why
+		end
+		local a = footprintOf(kind)
+		local owners = territory.update(baseSources())
+		for _, c in footprintCells(cell, a) do
+			if owners[c + 1] ~= side then
+				return "outsideBase"
+			end
+		end
+		local x, y = cell % W + 0.5, cell // W + 0.5
+		local l = num("build.enemyGap") + a
+		for _, st in self.list do
+			if st.alive and isStructure(st) and st.side ~= side
+				and (st.cell % W + 0.5 - x) ^ 2 + (st.cell // W + 0.5 - y) ^ 2 <= l * l then
+				return "nearEnemy"
+			end
+		end
+		local rr = l + num("rigs.radius")
+		for _, rig in rigList do
+			if rig.side > 0 and rig.side ~= side and (rig.x - x) ^ 2 + (rig.y - y) ^ 2 <= rr * rr then
+				return "nearEnemy"
+			end
+		end
+		local req = r.data[`structures.{kind}.requires`] :: { string }?
+		for _, k in req or {} do
+			if not hasBuilding(side, k) then
+				return "requires"
+			end
+		end
+		if self.sides[side].oil < num(`structures.{kind}.cost`) then
+			return "oil"
+		end
+		return nil
+	end
+
+	-- the game's placeStructure: pay, then the building goes up over buildSec
+	function self.placeStructure(side: number, kind: string, cell: number): (number?, string?)
+		local why = self.canPlace(side, kind, cell)
+		if why then
+			return nil, why
+		end
+		self.sides[side].oil -= num(`structures.{kind}.cost`)
+		local hp = num(`structures.{kind}.hp`)
+		local st = add({
+			kind = kind, cat = "structure", class = "structure", side = side, x = cell % W + 0.5,
+			y = cell // W + 0.5, cell = cell, heading = 0, hp = hp, maxHp = hp, shotTimer = 0, alive = true,
+			queue = {}, queueProgress = 0, built = 0, lastHitAt = -99,
+		})
+		setFootprint(st, true)
+		event({ type = "buildPlaced", id = st.id, kind = kind, side = side })
+		return st.id, nil
 	end
 
 	local function trucksOf(rigId: number): number
@@ -471,6 +872,19 @@ function Sim.new(deps: Deps)
 		e.goalCell = cell
 	end
 	self.planTo = planTo
+	planLater = function(e: Entity)
+		local goal = e.goalCell
+		if not goal then
+			return
+		end
+		if roads.passable(goal) then
+			local sp = e.spot or { x = goal % W + 0.5, y = goal // W + 0.5 }
+			planTo(e, goal, sp.x, sp.y)
+		else
+			local fx, fy = freePointNear(goal % W + 0.5, goal // W + 0.5)
+			planTo(e, cellAt(fx, fy), fx, fy)
+		end
+	end
 
 	local function onRig(cell: number): boolean
 		local cx, cy = centre(cell)
@@ -495,9 +909,9 @@ function Sim.new(deps: Deps)
 			end
 		end
 		local cell = cellAt(math.clamp(x, 0, W - 1e-6), math.clamp(y, 0, H - 1e-6))
-		if #group == 1 then
+		if #group == 1 and cell >= 0 and roads.passable(cell) then
 			planTo(group[1], cell, x, y)
-		elseif #group > 1 then
+		elseif #group >= 1 then
 			local slots = pathing.groupSlots(group, cell, onRig(cell))
 			for i, e in group do
 				local s = slots[i]
@@ -548,7 +962,7 @@ function Sim.new(deps: Deps)
 			if e.alive and e.side == side then
 				if e.cat == "unit" and e.kind ~= TRUCK then
 					n += 1
-				elseif e.queue and e.kind == "hq" then
+				elseif e.queue and isStructure(e) then
 					n += #e.queue
 				end
 			end
@@ -556,27 +970,47 @@ function Sim.new(deps: Deps)
 		return n
 	end
 
-	function self.orderProduce(side: number, item: string): (boolean, string?)
+	-- the game's canProduce for a producer, in its order (slice: only SLICE_UNITS)
+	local function canProduce(st: Entity, item: string): string?
+		local from = r.data[`units.{item}.from`] :: { string }?
+		if not SLICE_UNITS[item] or not from or not table.find(from, st.kind) then
+			return "blocked"
+		end
+		if self.inactiveReason(st) then
+			return "notOperational"
+		end
+		local req = r.data[`units.{item}.requires`] :: { string }?
+		for _, k in req or {} do
+			if not hasBuilding(st.side, k, true) then
+				return "requires"
+			end
+		end
+		if #st.queue >= num("production.maxQueue") then
+			return "queueFull"
+		end
+		if unitsAndQueued(st.side) >= num("match.unitCap") then
+			return "unitCap"
+		end
+		if self.sides[st.side].oil < num(`units.{item}.cost`) then
+			return "oil"
+		end
+		return nil
+	end
+	self.canProduce = canProduce
+
+	-- Queue a unit at a producer (structureId), or at the HQ when none is given.
+	function self.orderProduce(side: number, item: string, structureId: number?): (boolean, string?)
 		local s = self.sides[side]
-		local hq = hqOf(side)
-		if not s or s.lost or self.winner or not hq then
+		local st = if structureId then self.entities[structureId] else hqOf(side)
+		if not s or s.lost or self.winner or not st or not st.alive or st.side ~= side or not isStructure(st) then
 			return false, "blocked"
 		end
-		if item ~= "infantry" and item ~= "engineer" then
-			return false, "blocked" -- structures.hq.produces = infantry, engineer
+		local why = canProduce(st, item)
+		if why then
+			return false, why
 		end
-		if #hq.queue >= num("production.maxQueue") then
-			return false, "queueFull"
-		end
-		if unitsAndQueued(side) >= num("match.unitCap") then
-			return false, "unitCap"
-		end
-		local cost = num(`units.{item}.cost`)
-		if s.oil < cost then
-			return false, "oil"
-		end
-		s.oil -= cost
-		table.insert(hq.queue, item)
+		s.oil -= num(`units.{item}.cost`)
+		table.insert(st.queue, item)
 		return true, nil
 	end
 
@@ -661,6 +1095,7 @@ function Sim.new(deps: Deps)
 	---------------------------------------------------------------- elimination and damage
 
 	local function eliminate(side: number, by: number)
+		-- (also reached through eliminateRef by checkHeadless)
 		local s = self.sides[side]
 		if not s or s.lost then
 			return
@@ -669,8 +1104,9 @@ function Sim.new(deps: Deps)
 		for _, e in self.list do
 			if e.alive and e.side == side and e.kind ~= "rig" then
 				e.alive, e.hp = false, 0
-				if e.kind == "hq" then
+				if isStructure(e) then
 					e.queue = {}
+					setFootprint(e, false)
 				end
 			end
 		end
@@ -682,20 +1118,27 @@ function Sim.new(deps: Deps)
 		end
 		event({ type = "eliminated", side = side, by = by })
 	end
+	eliminateRef = eliminate
 
 	local function hitStructure(by: number, st: Entity, damage: number)
 		if not st.alive then
 			return
 		end
 		st.hp -= damage
+		st.lastHitAt = self.time
 		if st.hp > 0 then
 			return
 		end
 		st.alive, st.hp = false, 0
+		setFootprint(st, false)
 		event({ type = "destroyed", id = st.id, kind = st.kind, side = st.side, by = by })
 		if st.kind == "hq" then
-			-- the slice has no factory and no command vehicle, so the nation cannot rehouse
-			eliminate(st.side, by)
+			-- an active factory lets the nation rehouse within hqLoss.graceSec, else it is out
+			if hasBuilding(st.side, "factory", true) then
+				event({ type = "hqLostRebuild", side = st.side, sec = num("hqLoss.graceSec") })
+			else
+				eliminate(st.side, by)
+			end
 		end
 	end
 
@@ -1243,29 +1686,66 @@ function Sim.new(deps: Deps)
 
 	---------------------------------------------------------------- production, economy, verdict
 
+	-- the game's updateStructures: construction, repair, then the head of each production queue
 	local function production(dt: number)
-		for side in self.sides do
-			local hq = hqOf(side)
-			if hq and #hq.queue > 0 then
-				local item = hq.queue[1]
-				hq.queueProgress += dt / math.max(0.01, num(`units.{item}.buildSec`))
-				if hq.queueProgress >= 1 then
-					hq.queueProgress = 0
-					table.remove(hq.queue, 1)
-					local x, y = rallyPoint(hq, self.nextId)
-					local u = self.spawnUnit(item, side, x, y)
-					event({ type = "unitReady", id = u.id, side = side, kind = item })
+		for _, st in self.list do
+			if st.alive and isStructure(st) then
+				if st.built < 1 then
+					st.built = math.min(1, st.built + dt / math.max(0.01, num(`structures.{st.kind}.buildSec`)))
+					if st.built >= 1 then
+						event({ type = "built", id = st.id, kind = st.kind, side = st.side })
+					end
+				else
+					local why = self.inactiveReason(st)
+					if st.kind ~= "hq" and st.hp < st.maxHp and self.time - st.lastHitAt > 5 and why ~= "damaged" then
+						st.hp = math.min(st.maxHp, st.hp + st.maxHp * num("production.repairPerSec") * dt)
+					end
+					if #st.queue > 0 and not why then
+						local item = st.queue[1]
+						st.queueProgress += dt / math.max(0.01, num(`units.{item}.buildSec`))
+						if st.queueProgress >= 1 then
+							st.queueProgress = 0
+							table.remove(st.queue, 1)
+							local x, y = rallyPoint(st, self.nextId)
+							if not roads.passable(cellAt(x, y)) then
+								x, y = freePointNear(x, y)
+							end
+							local u = self.spawnUnit(item, st.side, x, y)
+							event({ type = "unitReady", id = u.id, side = st.side, kind = item, from = st.id })
+						end
+					end
 				end
 			end
 		end
 	end
 
-	function self.queueLeft(side: number): number?
-		local hq = hqOf(side)
-		if not hq or #hq.queue == 0 then
+	-- seconds left on the head of a producer's queue (the HQ when none is given)
+	function self.queueLeft(side: number, structureId: number?): number?
+		local st = if structureId then self.entities[structureId] else hqOf(side)
+		if not st or not st.alive or not st.queue or #st.queue == 0 then
 			return nil
 		end
-		return (1 - hq.queueProgress) * math.max(0.01, num(`units.{hq.queue[1]}.buildSec`))
+		return (1 - st.queueProgress) * math.max(0.01, num(`units.{st.queue[1]}.buildSec`))
+	end
+
+	-- the game's checkHeadless: a nation without an HQ that may rehouse (an active factory) has
+	-- hqLoss.graceSec; without one it is out at once. (The command truck that rebuilds an HQ is not in
+	-- the slice, so a headless nation is out when the grace runs out.)
+	local function checkHeadless()
+		for side, s in self.sides do
+			if not s.lost then
+				if hqOf(side) then
+					s.headlessSince = nil
+				elseif not hasBuilding(side, "factory", true) then
+					eliminateRef(side, -1)
+				else
+					s.headlessSince = s.headlessSince or self.time
+					if self.time - s.headlessSince > num("hqLoss.graceSec") then
+						eliminateRef(side, -1)
+					end
+				end
+			end
+		end
 	end
 
 	local function hqTrickle(dt: number)
@@ -1321,6 +1801,7 @@ function Sim.new(deps: Deps)
 			updateConnections()
 		end
 		production(dt)
+		checkHeadless()
 		landStrikes()
 		structuresFire(dt)
 		for _, e in self.list do

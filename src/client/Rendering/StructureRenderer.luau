@@ -3,6 +3,8 @@
 	StructureRenderer: live state of HQs and oil rigs from server snapshots, drawn over the static map.
 	  HQ: health bar; a dark slab when destroyed.
 	  Rig: ring in the owner's colour (none while neutral), capture progress bar, stored oil.
+	  Barracks / factory: a 3 x 3 cell block in the owner's colour (pale while being built), with its
+	  name, build progress or health. Removed when destroyed.
 	PLACEHOLDER visuals (TEMP-003).
 ]]
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -11,7 +13,11 @@ local World = require(ReplicatedStorage:WaitForChild("Shared").Config.World)
 
 local StructureRenderer = {}
 
-export type View = { id: number, kind: string, side: number, x: number, y: number, anchor: Part, ring: Part?, bar: Frame, barBack: Frame, text: TextLabel, seen: number }
+export type View = { id: number, kind: string, side: number, x: number, y: number, anchor: Part, ring: Part?, block: Part?, bar: Frame, barBack: Frame, text: TextLabel, seen: number, built: number }
+
+local NAMES = { barracks = "Barracks", factory = "War Factory" }
+-- footprint radius in cells (production.footprint.facility = 1, so 3 x 3)
+local FOOT = 1
 
 local S = World.STUDS_PER_CELL
 local SIDE_COLOR = { [1] = Color3.fromRGB(70, 130, 230), [2] = Color3.fromRGB(220, 80, 70) }
@@ -32,6 +38,11 @@ local function create(id: number, kind: string, x: number, y: number): View
 	local pos = World.toWorld(x, y, 0.3)
 	local anchor = part(Vector3.new(0.2, 0.2, 0.2), CFrame.new(pos), Color3.new(), 1)
 	local ring: Part? = nil
+	local block: Part? = nil
+	if NAMES[kind] then
+		local size = (FOOT * 2 + 1) * S - 0.4
+		block = part(Vector3.new(size, 2.2, size), CFrame.new(World.toWorld(x, y, 1.1)), Color3.new(0.7, 0.7, 0.7), 0)
+	end
 	if kind == "rig" then
 		local r = 1.6 * S + 0.6
 		ring = part(Vector3.new(0.12, r * 2, r * 2), CFrame.new(pos) * CFrame.Angles(0, 0, math.rad(90)), Color3.new(1, 1, 1), 1)
@@ -62,7 +73,7 @@ local function create(id: number, kind: string, x: number, y: number): View
 	bar.BorderSizePixel = 0
 	bar.Parent = barBack
 	gui.Parent = anchor
-	return { id = id, kind = kind, side = 0, x = x, y = y, anchor = anchor, ring = ring, bar = bar, barBack = barBack, text = text, seen = 0 }
+	return { id = id, kind = kind, side = 0, x = x, y = y, anchor = anchor, ring = ring, block = block, bar = bar, barBack = barBack, text = text, seen = 0, built = 1 }
 end
 
 function StructureRenderer.start()
@@ -71,21 +82,36 @@ function StructureRenderer.start()
 	folder.Parent = workspace
 end
 
--- structures: { id, kind, side, x, y, hp, maxHp, capSide, capProgress, store }
+-- structures: { id, kind, side, x, y, hp, maxHp, capSide, capProgress, store, built }
 function StructureRenderer.apply(tick: number, structures: { any })
 	if tick <= lastTick then
 		return
 	end
 	lastTick = tick
 	for _, st in structures do
-		local id, kind, side, x, y, hp, maxHp, capSide, capProgress, store = table.unpack(st)
+		local id, kind, side, x, y, hp, maxHp, capSide, capProgress, store, built = table.unpack(st)
 		local v = views[id]
 		if not v then
 			v = create(id, kind, x, y)
 			views[id] = v
 		end
-		v.side, v.seen = side, tick
-		if kind == "hq" then
+		v.side, v.seen, v.built = side, tick, built or 1
+		if v.block then
+			local block = v.block :: Part
+			local color = SIDE_COLOR[side] or Color3.new(0.7, 0.7, 0.7)
+			local b = built or 1
+			block.Color = if b < 1 then color:Lerp(Color3.new(1, 1, 1), 0.55) else color:Lerp(Color3.new(0, 0, 0), 0.15)
+			block.Transparency = if b < 1 then 0.35 else 0
+			if b < 1 then
+				v.text.Text = `{NAMES[kind]} {math.floor(b * 100)}%`
+				v.bar.Size = UDim2.fromScale(math.clamp(b, 0, 1), 1)
+				v.bar.BackgroundColor3 = Color3.fromRGB(230, 230, 230)
+			else
+				v.text.Text = `{NAMES[kind]} {math.floor(hp)}/{maxHp}`
+				v.bar.Size = UDim2.fromScale(math.clamp(hp / maxHp, 0, 1), 1)
+				v.bar.BackgroundColor3 = color
+			end
+		elseif kind == "hq" then
 			local frac = math.clamp(hp / maxHp, 0, 1)
 			v.text.Text = `HQ {math.floor(hp)}/{maxHp}`
 			v.bar.Size = UDim2.fromScale(frac, 1)
@@ -111,6 +137,15 @@ function StructureRenderer.apply(tick: number, structures: { any })
 				v.text.Text = "HQ DESTROYED"
 				v.bar.Size = UDim2.fromScale(0, 1)
 				part(Vector3.new(5 * S, 2.4, 5 * S), CFrame.new(World.toWorld(v.x, v.y, 1.1)), Color3.fromRGB(30, 30, 30), 0)
+			end
+			if v.block then
+				(v.block :: Part):Destroy()
+			end
+			if v.kind ~= "hq" then -- a lost HQ keeps its "HQ DESTROYED" label over the slab
+				v.anchor:Destroy()
+				if v.ring then
+					(v.ring :: Part):Destroy()
+				end
 			end
 			views[id] = nil
 		end

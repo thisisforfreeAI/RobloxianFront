@@ -11,6 +11,7 @@ local UnitRenderer = require(script.Rendering.UnitRenderer)
 local StructureRenderer = require(script.Rendering.StructureRenderer)
 local CameraController = require(script.Camera.CameraController)
 local SelectionController = require(script.Input.SelectionController)
+local BuildController = require(script.Input.BuildController)
 local Hud = require(script.UI.Hud)
 local DevFlags = require(script.Dev.DevFlags)
 
@@ -30,15 +31,26 @@ do
 	CameraController.start(map.width, map.height, map.data.starts[info.side] or map.data.starts[1])
 	UnitRenderer.start()
 	StructureRenderer.start()
-	Hud.start(info, function()
-		intent:FireServer({ kind = "produce", item = "infantry" })
-	end)
+	local function send(payload: any)
+		intent:FireServer(payload)
+	end
+	BuildController.start(map.width, send)
+	Hud.start(info, {
+		produce = function(item: string, structureId: number?)
+			send({ kind = "produce", item = item, structureId = structureId })
+		end,
+		build = BuildController.begin,
+	})
 	stateEvent.OnClientEvent:Connect(function(state)
 		Hud.update(state, info.side)
+		if state.territory then
+			BuildController.setTerritory(state.territory)
+		end
 	end)
-	SelectionController.start(info.side, function(payload)
-		intent:FireServer(payload)
-	end)
+	SelectionController.start(info.side, send, {
+		busy = BuildController.busy,
+		onProducer = Hud.selectProducer,
+	})
 	if DevFlags.OWNERSHIP_PROBE then
 		require(script.Dev.OwnershipProbe).start(info.side, UnitRenderer.each, function(payload)
 			intent:FireServer(payload)

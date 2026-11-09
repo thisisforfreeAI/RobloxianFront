@@ -31,7 +31,7 @@ function Net.init(onIntent: (Player, any) -> (), onJoin: (Player) -> { [string]:
 	intent.OnServerEvent:Connect(onIntent)
 end
 
--- units: { id, kind, side, x, y, heading, hp, maxHp }; structures: { id, kind, side, x, y, hp, maxHp, capSide, capProgress, store }
+-- units: { id, kind, side, x, y, heading, hp, maxHp }; structures: { id, kind, side, x, y, hp, maxHp, capSide, capProgress, store, built }
 function Net.broadcastSnapshot(tick: number, units: { any }, structures: { any })
 	snapshot:FireAllClients(tick, units, structures)
 end

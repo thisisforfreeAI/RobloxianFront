@@ -12,16 +12,19 @@ Protocol.SNAPSHOT = "Snapshot" -- RemoteEvent, server -> client (10 Hz)
 Protocol.JOIN = "Join" -- RemoteFunction, client -> server, returns { map, side, width, height }
 Protocol.STATE = "State" -- RemoteEvent, server -> one client (2 Hz): own oil, HQ queue, match result
 
-Protocol.PRODUCIBLE = { infantry = true } -- milestone 1B: the HQ trains infantry only
+-- Units the slice can train (the server checks which producer may train what) and buildings it can place.
+Protocol.PRODUCIBLE = { infantry = true, engineer = true, at = true, tank = true, ifv = true }
+Protocol.BUILDABLE = { barracks = true, factory = true }
 
 Protocol.MAX_UNITS_PER_ORDER = 64
 
 export type MoveIntent = { kind: "move", unitIds: { number }, x: number, y: number }
 export type StopIntent = { kind: "stop", unitIds: { number } }
 export type AttackIntent = { kind: "attack", unitIds: { number }, targetId: number }
-export type ProduceIntent = { kind: "produce", item: string }
+export type ProduceIntent = { kind: "produce", item: string, structureId: number? } -- no id = the HQ
+export type BuildIntent = { kind: "build", structure: string, x: number, y: number } -- footprint centre cell
 export type TruckIntent = { kind: "truck", rigId: number } -- send an idle truck to a rig, or buy one
-export type Intent = MoveIntent | StopIntent | AttackIntent | ProduceIntent | TruckIntent
+export type Intent = MoveIntent | StopIntent | AttackIntent | ProduceIntent | TruckIntent | BuildIntent
 
 local function finite(n: any): boolean
 	return type(n) == "number" and n == n and n ~= math.huge and n ~= -math.huge
@@ -59,7 +62,22 @@ function Protocol.parse(raw: any, mapWidth: number, mapHeight: number): (Intent?
 		if type(raw.item) ~= "string" or not Protocol.PRODUCIBLE[raw.item] then
 			return nil, "cannot produce that"
 		end
-		return { kind = "produce", item = raw.item }, nil
+		if raw.structureId ~= nil and (not finite(raw.structureId) or raw.structureId % 1 ~= 0) then
+			return nil, "structureId must be an integer"
+		end
+		return { kind = "produce", item = raw.item, structureId = raw.structureId }, nil
+	end
+	if raw.kind == "build" then
+		if type(raw.structure) ~= "string" or not Protocol.BUILDABLE[raw.structure] then
+			return nil, "cannot build that"
+		end
+		if not finite(raw.x) or not finite(raw.y) or raw.x % 1 ~= 0 or raw.y % 1 ~= 0 then
+			return nil, "cell must be integers"
+		end
+		if raw.x < 0 or raw.y < 0 or raw.x >= mapWidth or raw.y >= mapHeight then
+			return nil, "cell outside the map"
+		end
+		return { kind = "build", structure = raw.structure, x = raw.x, y = raw.y }, nil
 	end
 	if raw.kind == "truck" then
 		if not finite(raw.rigId) or raw.rigId % 1 ~= 0 then
