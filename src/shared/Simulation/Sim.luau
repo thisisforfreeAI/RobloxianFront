@@ -91,7 +91,8 @@
 	Idle units (idleThink / holdAtEnemy below): each unit keeps a post (where it was sent, stopped or
 	        arrived). Standing idle, an armed unit chases enemies within movement.leashCells of its post
 	        and walks back once more than half the leash away; a unit walking straight into an enemy it
-	        can hurt holds movement.enemySpaceCells short. APPROX: no seekCover yet, unarmed units are
+	        can hurt holds movement.enemySpaceCells short. Idle foot soldiers step into better cover
+	        nearby when an enemy is in range (seekCover). APPROX: unarmed units are
 	        not slid round enemies, and smoke does not hide chase targets.
 	Engineers can be trained (the HQ lists them) but their building and repair work is not in the slice.
 	Fog: visionFor / nightAmount below; the server filters snapshots per side (Shared.Simulation.Fog).
@@ -2421,6 +2422,7 @@ function Sim.new(deps: Deps)
 		self.list = keep
 	end
 
+	local seekCover: (Entity, string) -> boolean
 	-- the game's holdAtEnemy: an armed unit that would step within movement.enemySpaceCells of an
 	-- enemy unit it can hurt, moving towards it, stays where it was (it holds and fights there).
 	-- APPROX: unarmed units are not slid round enemies as in the game; they walk on.
@@ -2451,23 +2453,107 @@ function Sim.new(deps: Deps)
 		return false
 	end
 
+	-- the game's seekCover: with an enemy it can hurt within range, an idle foot soldier looks up to
+	-- cover.seekCells round it for a free passable cell (no structure, no comrade's cover cell) with at
+	-- least cover.minGain more cover than where it stands (best cover, then nearest), that keeps the
+	-- nearest such enemy between enemySpaceCells and range x cover.rangeShare away and lies within
+	-- leashCells of its post; a route of at most 3 x seekCells cells takes it there and makes it its post.
+	-- APPROX: comrades' cover cells are gathered by distance, not the game's bucket squares.
+	function seekCover(e: Entity, key: string): boolean
+		local a = cellAt(e.x, e.y)
+		local seek = num("cover.seekCells")
+		if a < 0 or seek <= 0 then
+			return false
+		end
+		local range = num(key .. ".range")
+		local reach = math.max(range, seek + num("movement.separationCells"))
+		local taken: { [number]: boolean } = {}
+		local foe, foeD = nil, range * range
+		for _, o in self.list do
+			if o ~= e and o.alive and o.cat == "unit" and o.kind ~= TRUCK then
+				local g = d2(o.x, o.y, e.x, e.y)
+				if o.side == e.side then
+					if o.coverCell and g <= reach * reach * 2 then
+						taken[o.coverCell] = true
+					end
+				elseif canAttack(e.side, o.side) and o.class ~= "air" and text(unitKey(o) .. ".move") ~= "sea"
+					and vsOf(key, o.class) > 0 and g <= foeD then
+					foe, foeD = o, g
+				end
+			end
+		end
+		if not foe then
+			return false
+		end
+		local far, near, leash = range * num("cover.rangeShare"), num("movement.enemySpaceCells"), num("movement.leashCells")
+		local px, py = centre(e.post or a)
+		local ax, ay = a % W, a // W
+		local v = math.ceil(seek)
+		local best, bestCover, bestA = -1, coverAt(a) + num("cover.minGain") - 1e-9, math.huge
+		for dy = -v, v do
+			for dx = -v, v do
+				local A = dx * dx + dy * dy
+				local cx, cy = ax + dx, ay + dy
+				if A > 0 and A <= seek * seek and cx >= 0 and cy >= 0 and cx < W and cy < H then
+					local o = cy * W + cx
+					if roads.passable(o) and not taken[o] then
+						local cv = coverAt(o)
+						if not (cv < bestCover or (cv == bestCover and A >= bestA)) then
+							local tx, ty = cx + 0.5, cy + 0.5
+							local B = d2(foe.x, foe.y, tx, ty)
+							if B <= far * far and B >= near * near and d2(px, py, tx, ty) <= leash * leash then
+								best, bestCover, bestA = o, cv, A
+							end
+						end
+					end
+				end
+			end
+		end
+		if best < 0 then
+			return false
+		end
+		local path = pathing.route(a, best, e.kind)
+		if not path or #path == 0 or #path > v * 3 then
+			return false
+		end
+		local bx, by = centre(best)
+		e.path, e.pathIndex, e.stall, e.stallTries = path, 1, 0, 0
+		e.spot, e.target, e.goalCell = { x = bx, y = by }, { x = bx, y = by }, best
+		e.still, e.post, e.coverCell, e.chasing = 0, best, best, nil
+		return true
+	end
+
 	-- the game's idleThink (every 20 ticks per unit, for armed units standing idle): chase the nearest
 	-- enemy unit within min(sight, movement.chaseCells + range) whose position is within
 	-- movement.leashCells of the unit's post, stopping range x 0.6 cells short; with none, walk back
 	-- to the post once more than leashCells / 2 from it. Chasing keeps the unit idle (its post stays).
-	-- APPROX: foot soldiers do not seek nearby cover (the game's seekCover) yet.
+	-- Before that, every round(cover.seekSec x tickHz) ticks an idle armed foot soldier (not artillery)
+	-- may step into better cover (seekCover).
 	local function idleThink(e: Entity)
-		if (e.id + self.ticks) % 20 ~= 0 or e.attackId or e.firing or (e.reconLeft or 0) > 0 or e.garrisonCity then
+		if e.garrisonCity or text(unitKey(e) .. ".move") == "sea" then
 			return
+		end
+		-- a unit that left its cover cell no longer holds it
+		if e.coverCell and e.coverCell ~= cellAt(e.x, e.y) then
+			e.coverCell = nil
 		end
 		local key = unitKey(e)
 		local dps = num(key .. ".dps")
-		if dps <= 0 or text(key .. ".move") == "sea" or text(key .. ".weapon") == "salvo" then
-			return
-		end
 		-- APPROX: a unit with no post yet (fresh, or placed by a test) takes the cell it stands on
 		local post = e.post or cellAt(e.x, e.y)
 		e.post = post
+		if text(key .. ".move") == "foot" and not e.attackId and dps > 0 and text(key .. ".nato") ~= "artillery" then
+			local every = math.max(1, math.floor(num("cover.seekSec") * num("match.tickHz") + 0.5))
+			if (e.id + self.ticks) % every == 0 and seekCover(e, key) then
+				return
+			end
+		end
+		if (e.id + self.ticks) % 20 ~= 0 or e.attackId or e.firing or (e.reconLeft or 0) > 0 then
+			return
+		end
+		if dps <= 0 or text(key .. ".weapon") == "salvo" then
+			return
+		end
 		local sx, sy = centre(post)
 		local leash = num("movement.leashCells")
 		local range = num(key .. ".range")

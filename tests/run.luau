@@ -717,6 +717,26 @@ if fs.isFile(matchPath) then
 		local d = math.abs(foe.x - u.x)
 		assert(u.x < foe.x and d >= 2.1 - 0.05 and d < 3, `held short of the enemy (gap {d})`)
 	end)
+	test("seekCover: an idle infantryman under fire steps into the nearest forest and makes it his post", function()
+		local sim = newSim()
+		local u = units(sim, 1, "infantry")[1]
+		clearUnits(sim, { u })
+		u.x, u.y, u.post = 96.5, 30.5, nil
+		local foe = sim.spawnUnit("infantry", 2, 110.5, 30.5)
+		foe.hp, u.hp = 1e9, 1e9
+		run(sim, 8)
+		eq(math.floor(u.x), 100, "nearest forest cell (forest x 100-102, cover 0.25)")
+		eq(math.floor(u.y), 30)
+		eq(u.coverCell, u.post, "the cover cell is its post")
+		assert(not u.path, "settled")
+		-- no enemy in range: a fresh unit stays in the open
+		local sim2 = newSim()
+		local w = units(sim2, 1, "infantry")[1]
+		clearUnits(sim2, { w })
+		w.x, w.y, w.post = 96.5, 30.5, nil
+		run(sim2, 8)
+		eq(math.floor(w.x), 96, "no enemy, no cover seeking")
+	end)
 	test("towns: two infantry take a neutral town in 16 s; a held town lets its owner build round it", function()
 		local sim = newSim({ settlements = { { name = "T", x = 130, y = 45, kind = "town" }, { name = "V", x = 90, y = 45, kind = "village" } } })
 		for _, side in { 1, 2 } do

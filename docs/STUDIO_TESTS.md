@@ -80,6 +80,7 @@ cover, armour facing, truck ambush, HQ loss eliminates, bot). A 10-minute bot-vs
 | B24 | Towns | Walk 2+ infantry into a town (named grey disc) and wait | "capturing N%" in blue, then a blue ring after about 16 s; press K and the ghost turns green round the town, so you can place a bunker there. A village gives no territory | not run |
 | B25 | Garrison | Hold a town, select 3 infantry, put the cursor on the town and press H | They show INSIDE at the town's centre; the tag reads `fortified 1/3` ... `secured 3/3`; a move order brings a man out; red units standing in a garrisoned town do not wear its hold down | not run |
 | B26 | Idle units | Move 3 infantry somewhere and let a red group walk close (within ~18 cells) | Your men chase until they can shoot, then stop; after the fight they walk back to where you sent them; units ordered straight at an enemy stop a couple of cells short instead of walking through it | not run |
+| B27 | Seek cover | Park 3 infantry in the open a few cells from a forest or town, then let red units come into range | Your men step into the forest/town cells nearby (each a different cell) and fight from there; with no enemy around they stay in the open | not run |
 
 Known limits (not failures): no fog (TEMP-001), straight-line movement and trucks drive off-road (TEMP-002),
 placeholder shapes (TEMP-003), bot is a simple script, rigs can't be damaged yet, one unit type (infantry).
