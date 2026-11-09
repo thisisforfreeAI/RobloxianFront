@@ -1,0 +1,217 @@
+{
+  "assetId": "syn_vehicle_arrow",
+  "revision": 1,
+  "synthetic": true,
+  "frameWidth": 120,
+  "frameHeight": 120,
+  "padding": 0,
+  "extruded": false,
+  "columns": 8,
+  "pivot": {
+    "x": 60,
+    "y": 60,
+    "convention": "pixels from the frame's top-left, y down"
+  },
+  "directions": {
+    "count": 16,
+    "zero": "east",
+    "winding": "clockwise",
+    "stepDegrees": 22.5,
+    "angleSource": "atan2(dy, dx), pixel y down"
+  },
+  "animations": [
+    {
+      "name": "idle",
+      "frames": 1,
+      "frameMs": null,
+      "loop": true
+    }
+  ],
+  "pages": [
+    {
+      "page": 0,
+      "file": "atlas_p0.png",
+      "width": 960,
+      "height": 240
+    }
+  ],
+  "frames": [
+    {
+      "animation": "idle",
+      "frame": 0,
+      "direction": 0,
+      "page": 0,
+      "x": 0,
+      "y": 0,
+      "w": 120,
+      "h": 120,
+      "source": "dir_00.png"
+    },
+    {
+      "animation": "idle",
+      "frame": 0,
+      "direction": 1,
+      "page": 0,
+      "x": 120,
+      "y": 0,
+      "w": 120,
+      "h": 120,
+      "source": "dir_01.png"
+    },
+    {
+      "animation": "idle",
+      "frame": 0,
+      "direction": 2,
+      "page": 0,
+      "x": 240,
+      "y": 0,
+      "w": 120,
+      "h": 120,
+      "source": "dir_02.png"
+    },
+    {
+      "animation": "idle",
+      "frame": 0,
+      "direction": 3,
+      "page": 0,
+      "x": 360,
+      "y": 0,
+      "w": 120,
+      "h": 120,
+      "source": "dir_03.png"
+    },
+    {
+      "animation": "idle",
+      "frame": 0,
+      "direction": 4,
+      "page": 0,
+      "x": 480,
+      "y": 0,
+      "w": 120,
+      "h": 120,
+      "source": "dir_04.png"
+    },
+    {
+      "animation": "idle",
+      "frame": 0,
+      "direction": 5,
+      "page": 0,
+      "x": 600,
+      "y": 0,
+      "w": 120,
+      "h": 120,
+      "source": "dir_05.png"
+    },
+    {
+      "animation": "idle",
+      "frame": 0,
+      "direction": 6,
+      "page": 0,
+      "x": 720,
+      "y": 0,
+      "w": 120,
+      "h": 120,
+      "source": "dir_06.png"
+    },
+    {
+      "animation": "idle",
+      "frame": 0,
+      "direction": 7,
+      "page": 0,
+      "x": 840,
+      "y": 0,
+      "w": 120,
+      "h": 120,
+      "source": "dir_07.png"
+    },
+    {
+      "animation": "idle",
+      "frame": 0,
+      "direction": 8,
+      "page": 0,
+      "x": 0,
+      "y": 120,
+      "w": 120,
+      "h": 120,
+      "source": "dir_08.png"
+    },
+    {
+      "animation": "idle",
+      "frame": 0,
+      "direction": 9,
+      "page": 0,
+      "x": 120,
+      "y": 120,
+      "w": 120,
+      "h": 120,
+      "source": "dir_09.png"
+    },
+    {
+      "animation": "idle",
+      "frame": 0,
+      "direction": 10,
+      "page": 0,
+      "x": 240,
+      "y": 120,
+      "w": 120,
+      "h": 120,
+      "source": "dir_10.png"
+    },
+    {
+      "animation": "idle",
+      "frame": 0,
+      "direction": 11,
+      "page": 0,
+      "x": 360,
+      "y": 120,
+      "w": 120,
+      "h": 120,
+      "source": "dir_11.png"
+    },
+    {
+      "animation": "idle",
+      "frame": 0,
+      "direction": 12,
+      "page": 0,
+      "x": 480,
+      "y": 120,
+      "w": 120,
+      "h": 120,
+      "source": "dir_12.png"
+    },
+    {
+      "animation": "idle",
+      "frame": 0,
+      "direction": 13,
+      "page": 0,
+      "x": 600,
+      "y": 120,
+      "w": 120,
+      "h": 120,
+      "source": "dir_13.png"
+    },
+    {
+      "animation": "idle",
+      "frame": 0,
+      "direction": 14,
+      "page": 0,
+      "x": 720,
+      "y": 120,
+      "w": 120,
+      "h": 120,
+      "source": "dir_14.png"
+    },
+    {
+      "animation": "idle",
+      "frame": 0,
+      "direction": 15,
+      "page": 0,
+      "x": 840,
+      "y": 120,
+      "w": 120,
+      "h": 120,
+      "source": "dir_15.png"
+    }
+  ],
+  "sourceDir": "assets/sprites/source/synthetic/syn_vehicle_arrow/r1"
+}

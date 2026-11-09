@@ -1,0 +1,37 @@
+# --- WarFront-derived data: generated locally from your own install, never committed ---
+# The repository is public and the rights scope for original game material is unresolved.
+src/shared/GameData/
+# Audit reports quote the game's files and tables: kept local/private, not in the public repo.
+docs/private/
+/extracted/
+/assets/original/
+
+# Build output and local tools
+*.rbxl
+*.rbxlx
+*.rbxm
+*.rbxmx
+!tests/fixtures/*.rbxmx
+/build/
+/.tools/
+sourcemap.json
+
+# OS / editor
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+*.lock.tmp
+
+# --- Sprite pipeline: only synthetic or approved new art is committed ---
+/assets/sprites/incoming/*
+!/assets/sprites/incoming/.gitkeep
+/assets/sprites/source/*
+!/assets/sprites/source/synthetic/
+/assets/sprites/runtime/*
+!/assets/sprites/runtime/syn_*/
+# Files set aside instead of deleted (deletion not authorised); review and delete by hand.
+/_to_delete/
+
+__pycache__/
+*.pyc

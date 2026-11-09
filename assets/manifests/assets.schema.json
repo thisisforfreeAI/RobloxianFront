@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "assets.schema.json",
+  "title": "RobloxianFront asset manifest",
+  "description": "One entry per asset revision. Every key below is required; unknown values are null, never guessed.",
+  "type": "object",
+  "required": ["schemaVersion", "statusFlow", "coordinateConvention", "directionConvention", "assets"],
+  "properties": {
+    "schemaVersion": { "const": 2 },
+    "assets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["assetId", "requestId", "revision", "kind", "status", "source", "rights", "frame", "directions",
+                     "animations", "pivot", "atlas", "outputs", "approval", "roblox"],
+        "properties": {
+          "assetId": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$", "description": "Stable id, never reused." },
+          "requestId": { "type": ["string", "null"], "pattern": "^REQ-[0-9]{4}$", "description": "docs/asset_requests/REQ-nnnn.md, null for synthetic or pre-existing assets." },
+          "revision": { "type": "integer", "minimum": 1, "description": "Bumped on every delivered change; files live under r<revision>/." },
+          "kind": { "enum": ["vehicle", "infantry", "building", "effect", "ui", "icon", "terrain", "other"] },
+          "status": { "enum": ["requested", "in production", "delivered", "validated", "approved", "integrated", "rejected", "superseded"] },
+          "synthetic": { "type": "boolean" },
+          "description": { "type": ["string", "null"] },
+          "source": {
+            "type": "object", "required": ["type", "reference", "originalAsset", "path"],
+            "properties": {
+              "type": { "enum": ["synthetic", "chatgpt", "original-game", "other"] },
+              "reference": { "type": ["string", "null"], "description": "Prompt, request file, or tool that produced it." },
+              "originalAsset": { "type": ["string", "null"], "description": "Path inside app.asar this replaces or matches (local reference only; never commit the original)." },
+              "path": { "type": ["string", "null"], "description": "Source frames folder (assets/sprites/source/...). Never edited by packing." }
+            }
+          },
+          "rights": {
+            "type": "object", "required": ["status", "notes", "publicRepoAllowed"],
+            "properties": {
+              "status": { "enum": ["unresolved", "cleared-synthetic", "cleared-new-art", "cleared-original", "denied"] },
+              "notes": { "type": ["string", "null"] },
+              "publicRepoAllowed": { "type": ["boolean", "null"] }
+            }
+          },
+          "frame": {
+            "type": "object", "required": ["width", "height"],
+            "properties": { "width": { "type": ["integer", "null"] }, "height": { "type": ["integer", "null"] } }
+          },
+          "directions": {
+            "type": "object", "required": ["count", "order", "stepDegrees"],
+            "properties": {
+              "count": { "type": ["integer", "null"] },
+              "order": { "enum": ["east-clockwise", null] },
+              "stepDegrees": { "type": ["number", "null"] }
+            }
+          },
+          "animations": {
+            "type": "array",
+            "items": {
+              "type": "object", "required": ["name", "frames", "frameMs", "loop"],
+              "properties": {
+                "name": { "type": "string" }, "frames": { "type": ["integer", "null"] },
+                "frameMs": { "type": ["number", "null"] }, "loop": { "type": ["boolean", "null"] }
+              }
+            }
+          },
+          "pivot": {
+            "type": "object", "required": ["x", "y", "convention"],
+            "properties": { "x": { "type": ["number", "null"] }, "y": { "type": ["number", "null"] }, "convention": { "const": "frame-pixels-top-left" } }
+          },
+          "atlas": {
+            "type": "object", "required": ["chosenLayout", "layouts"],
+            "properties": {
+              "chosenLayout": { "type": ["string", "null"] },
+              "layouts": {
+                "type": "array",
+                "items": {
+                  "type": "object", "required": ["id", "columns", "rows", "padding", "extruded", "width", "height", "pages", "frameRects"],
+                  "properties": {
+                    "pages": { "type": "array", "items": { "type": "object", "required": ["page", "path", "robloxAssetId"] } },
+                    "frameRects": { "type": ["string", "null"], "description": "atlas.json written by pack_atlas.py: page, x, y, w, h per (animation, frame, direction)." }
+                  }
+                }
+              }
+            }
+          },
+          "outputs": {
+            "type": "object", "required": ["sourceDir", "runtimeDir", "luauModule"],
+            "properties": { "sourceDir": { "type": ["string", "null"] }, "runtimeDir": { "type": ["string", "null"] }, "luauModule": { "type": ["string", "null"] } }
+          },
+          "approval": {
+            "type": "object", "required": ["state", "approvedBy", "approvedAt", "studioCheck"],
+            "properties": {
+              "state": { "enum": ["pending", "validated-offline", "studio-verified", "approved", "rejected"] },
+              "approvedBy": { "type": ["string", "null"] }, "approvedAt": { "type": ["string", "null"] },
+              "studioCheck": { "type": ["string", "null"], "description": "Date and result of the Studio test board check." }
+            }
+          },
+          "roblox": {
+            "type": "object", "required": ["uploaded", "assetIds", "moderation"],
+            "properties": {
+              "uploaded": { "type": "boolean" },
+              "assetIds": { "type": "array", "items": { "type": ["integer", "null"] }, "description": "One per atlas page of the chosen layout." },
+              "moderation": { "type": ["string", "null"] }
+            }
+          }
+        }
+      }
+    }
+  }
+}

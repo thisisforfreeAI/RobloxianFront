@@ -1,0 +1,126 @@
+{
+  "assetId": "syn_vehicle_arrow",
+  "revision": 1,
+  "synthetic": true,
+  "frameWidth": 120,
+  "frameHeight": 120,
+  "pivot": {
+    "x": 60,
+    "y": 60,
+    "convention": "pixels from the frame's top-left, y down"
+  },
+  "directions": {
+    "count": 16,
+    "zero": "east",
+    "winding": "clockwise",
+    "stepDegrees": 22.5,
+    "angleSource": "atan2(dy, dx), pixel y down"
+  },
+  "transparentGutterPx": 2,
+  "animations": [
+    {
+      "name": "idle",
+      "frames": 1,
+      "frameMs": null,
+      "loop": true
+    }
+  ],
+  "frames": [
+    {
+      "direction": 0,
+      "animation": "idle",
+      "frame": 0,
+      "file": "dir_00.png"
+    },
+    {
+      "direction": 1,
+      "animation": "idle",
+      "frame": 0,
+      "file": "dir_01.png"
+    },
+    {
+      "direction": 2,
+      "animation": "idle",
+      "frame": 0,
+      "file": "dir_02.png"
+    },
+    {
+      "direction": 3,
+      "animation": "idle",
+      "frame": 0,
+      "file": "dir_03.png"
+    },
+    {
+      "direction": 4,
+      "animation": "idle",
+      "frame": 0,
+      "file": "dir_04.png"
+    },
+    {
+      "direction": 5,
+      "animation": "idle",
+      "frame": 0,
+      "file": "dir_05.png"
+    },
+    {
+      "direction": 6,
+      "animation": "idle",
+      "frame": 0,
+      "file": "dir_06.png"
+    },
+    {
+      "direction": 7,
+      "animation": "idle",
+      "frame": 0,
+      "file": "dir_07.png"
+    },
+    {
+      "direction": 8,
+      "animation": "idle",
+      "frame": 0,
+      "file": "dir_08.png"
+    },
+    {
+      "direction": 9,
+      "animation": "idle",
+      "frame": 0,
+      "file": "dir_09.png"
+    },
+    {
+      "direction": 10,
+      "animation": "idle",
+      "frame": 0,
+      "file": "dir_10.png"
+    },
+    {
+      "direction": 11,
+      "animation": "idle",
+      "frame": 0,
+      "file": "dir_11.png"
+    },
+    {
+      "direction": 12,
+      "animation": "idle",
+      "frame": 0,
+      "file": "dir_12.png"
+    },
+    {
+      "direction": 13,
+      "animation": "idle",
+      "frame": 0,
+      "file": "dir_13.png"
+    },
+    {
+      "direction": 14,
+      "animation": "idle",
+      "frame": 0,
+      "file": "dir_14.png"
+    },
+    {
+      "direction": 15,
+      "animation": "idle",
+      "frame": 0,
+      "file": "dir_15.png"
+    }
+  ]
+}
