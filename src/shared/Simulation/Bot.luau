@@ -25,8 +25,9 @@
 	            otherwise the best-scoring rig (neutral rigs only before bots.graceSec).
 	Unit worth = hp / 100 x dps / 8 x 30. Influence map: blocks of 6 x cell scale, reach 14 x cell scale.
 
-	The bot sees every enemy unit because the slice has no fog of war (the game does the same with fog
-	off). Not in the slice, so skipped: buildings other than barracks and factory, engineers' work,
+	Intel: like the game's bots (intel.fog and bots.fog are on) it sees only with its own vision and
+	remembers what it saw (see the intel section); an unseen enemy HQ counts at least
+	bots.unknownHqDefence and an unseen rig bots.unknownDefence. Not in the slice, so skipped: buildings other than barracks and factory, engineers' work,
 	recon, drones, artillery, cities and the capital, bridges, rail, naval, events, sabotage.
 	APPROX: the bot's random numbers are not the game's sequence; held-truck rescues are skipped
 	(trucks are never held by enemies in the slice). UNCONFIRMED: which persona a lobby slot defaults to
@@ -122,6 +123,96 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 		local vs = math.max(num(`structures.{kind}.vs.soft`), num(`structures.{kind}.vs.armour`), 0.3)
 		return hp / 100 * (dps * vs / 8) * 30
 	end
+
+	---------------------------------------------------------------- intel (the game's bot intel, eQe)
+
+	-- The game's bots play with fog (intel.fog and bots.fog): each think they look with their own
+	-- vision and remember enemy units for intel.unitIntelSec, enemy buildings until seen gone (an
+	-- enemy HQ is always known), rig owners as last seen, and when each 8 x 8 cell block was last seen.
+	local MW, MH = sim.roads.width, sim.roads.height
+	local IB = 8
+	local ibw = math.ceil(MW / IB)
+	local intel = {
+		vis = table.create(MW * MH, 0) :: { number },
+		seenAt = table.create(ibw * math.ceil(MH / IB), -math.huge) :: { number },
+		units = {} :: { [number]: { kind: string, owner: number, x: number, y: number, t: number } },
+		structures = {} :: { [number]: { kind: string, owner: number, cell: number, hp: number, built: number, t: number } },
+		rigs = {} :: { [number]: number },
+	}
+	self.intel = intel
+	local fogged = sim.fogOn() and rules:has("bots.fog") and rules:flag("bots.fog")
+	local function updateIntel()
+		local now = sim.time
+		local vis = intel.vis
+		if fogged then
+			sim.visionFor(side, vis)
+		else
+			for i = 1, MW * MH do
+				vis[i] = 2
+			end
+		end
+		for f = 0, MW * MH - 1 do
+			if vis[f + 1] == 2 then
+				intel.seenAt[(f // MW // IB) * ibw + (f % MW) // IB + 1] = now
+			end
+		end
+		local function seen(c: number): boolean
+			return c >= 0 and vis[c + 1] == 2
+		end
+		local now_ = {}
+		for _, e in sim.list do
+			if e.alive and e.cat == "unit" and e.kind ~= "truck" and canAttack(side, e.side) then
+				if seen(sim.roads.cellAt(e.x, e.y)) then
+					intel.units[e.id] = { kind = e.kind, owner = e.side, x = e.x, y = e.y, t = now }
+					now_[e.id] = true
+				end
+			end
+		end
+		local keep = num("intel.unitIntelSec")
+		for id, p in intel.units do
+			if not now_[id] and (now - p.t > keep or seen(sim.roads.cellAt(p.x, p.y))) then
+				intel.units[id] = nil
+			end
+		end
+		for id, p in intel.structures do
+			local e = sim.entities[id]
+			if (not e or not e.alive) and seen(p.cell) then
+				intel.structures[id] = nil
+			end
+		end
+		for _, e in sim.list do
+			if e.alive and e.cat == "structure" then
+				if e.kind == "rig" then
+					if seen(e.cell) then
+						intel.rigs[e.id] = e.side
+					end
+				elseif e.side ~= side and (seen(e.cell) or e.kind == "hq") then
+					intel.structures[e.id] = { kind = e.kind, owner = e.side, cell = e.cell, hp = e.hp, built = e.built or 1, t = now }
+				end
+			end
+		end
+	end
+	-- the game's uf: was the block around (x, y) seen within bots.staleSec?
+	local function fresh(x: number, y: number): boolean
+		local bx = math.clamp(math.floor(x / IB), 0, ibw - 1)
+		local by = math.clamp(math.floor(y / IB), 0, math.ceil(MH / IB) - 1)
+		return sim.time - intel.seenAt[by * ibw + bx + 1] <= num("bots.staleSec")
+	end
+	-- the game's M4: a rig's owner as the bot knows it (-1 = neutral or never seen)
+	local function rigOwner(r: any): number
+		if r.side == side then
+			return side
+		end
+		local n = intel.rigs[r.id]
+		if n == nil then
+			return -1
+		end
+		if n == side then
+			n = r.side
+		end
+		return if n > 0 then n else -1
+	end
+
 	local function isArmy(e: any): boolean
 		if not e.alive or e.cat ~= "unit" or e.kind == "truck" then
 			return false
@@ -192,15 +283,22 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 				local usable = text(k .. ".armour") ~= "air" and text(k .. ".move") ~= "sea"
 				if e.side == side and usable and num(k .. ".dps") > 0 then
 					add(inf.mine, e.x, e.y, unitWorth(e.kind) * math.clamp(e.hp / math.max(1, e.maxHp), 0, 1))
-				elseif canAttack(side, e.side) and usable then
-					add(inf.threat, e.x, e.y, unitWorth(e.kind)) -- seen now: no memory discount
 				end
-			elseif e.alive and e.cat == "structure" and e.kind ~= "rig" then
-				if e.side == side then
-					add(inf.mine, e.x, e.y, structureWorth(e.kind, e.hp))
-				elseif canAttack(side, e.side) then
-					add(inf.threat, e.x, e.y, structureWorth(e.kind, e.hp))
-				end
+			elseif e.alive and e.cat == "structure" and e.kind ~= "rig" and e.side == side and (e.built or 1) >= 1 then
+				add(inf.mine, e.x, e.y, structureWorth(e.kind, e.hp))
+			end
+		end
+		-- threat: what the bot knows (remembered units count memoryShare once older than memorySec)
+		local memSec, memShare = num("bots.influence.memorySec"), num("bots.influence.memoryShare")
+		for _, u in intel.units do
+			local k = `units.{u.kind}`
+			if canAttack(side, u.owner) and text(k .. ".armour") ~= "air" and text(k .. ".move") ~= "sea" then
+				add(inf.threat, u.x, u.y, unitWorth(u.kind) * (if sim.time - u.t > memSec then memShare else 1))
+			end
+		end
+		for _, st in intel.structures do
+			if canAttack(side, st.owner) then
+				add(inf.threat, st.cell % MW + 0.5, st.cell // MW + 0.5, structureWorth(st.kind, st.hp))
 			end
 		end
 		return inf
@@ -230,21 +328,18 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 		end
 		return c
 	end
-	-- enemy strength near a point (H5)
+	-- enemy strength near a point, from intel (H5): remembered units and known buildings
 	local function enemyNear(x: number, y: number, radius: number): number
 		local r2 = radius * radius
 		local total = 0
-		for _, e in sim.list do
-			if e.alive and canAttack(side, e.side) then
-				if e.cat == "unit" and e.kind ~= "truck" then
-					if (e.x - x) ^ 2 + (e.y - y) ^ 2 <= r2 then
-						total += unitWorth(e.kind)
-					end
-				elseif e.cat == "structure" and e.kind ~= "rig" then
-					if (e.x - x) ^ 2 + (e.y - y) ^ 2 <= r2 then
-						total += structureWorth(e.kind, e.hp)
-					end
-				end
+		for _, u in intel.units do
+			if canAttack(side, u.owner) and (u.x - x) ^ 2 + (u.y - y) ^ 2 <= r2 then
+				total += unitWorth(u.kind)
+			end
+		end
+		for _, st in intel.structures do
+			if canAttack(side, st.owner) and (st.cell % MW + 0.5 - x) ^ 2 + (st.cell // MW + 0.5 - y) ^ 2 <= r2 then
+				total += structureWorth(st.kind, st.hp)
 			end
 		end
 		return total
@@ -293,7 +388,8 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 			return false
 		end
 		if t.kind == "rig" then
-			return e.side ~= side and (e.side <= 0 or canAttack(side, e.side))
+			local o = rigOwner(e)
+			return o ~= side and (o < 0 or canAttack(side, o))
 		end
 		return canAttack(side, e.side)
 	end
@@ -770,7 +866,11 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 			for _, hq in enemyStructures() do
 				if hq.kind == "hq" and not avoided({ kind = "structure", id = hq.id }) then
 					local radius = num("structures.hq.buildRadius")
-					local m = enemyNear(hq.x, hq.y, radius) + structureWorth(hq.kind, hq.hp) * num("bots.hqWorthShare")
+					local m = enemyNear(hq.x, hq.y, radius)
+					if not fresh(hq.x, hq.y) then
+						m = math.max(m, num("bots.unknownHqDefence"))
+					end
+					m += structureWorth(hq.kind, hq.hp) * num("bots.hqWorthShare")
 					local need = m * marginH()
 					local cost = need + approach(cx, cy, hq.x, hq.y, radius)
 					local d = hypot(hq.x - cx, hq.y - cy)
@@ -799,11 +899,14 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 		local pick = nil
 		local radius3 = num("rigs.radius") * 3
 		for _, r in sim.rigs do
-			local owner = if r.side > 0 then r.side else -1
+			local owner = rigOwner(r)
 			local skip = owner == side or targetedRigs[r.id] or avoided({ kind = "rig", id = r.id })
 				or (owner >= 0 and (massing or not afterGrace or not canAttack(side, owner)))
 			if not skip then
 				local k = enemyNear(r.x, r.y, radius3)
+				if not fresh(r.x, r.y) and (owner >= 0 or sim.time >= num("bots.neutralTrustSec")) then
+					k = math.max(k, num("bots.unknownDefence"))
+				end
 				local x = if owner >= 0 then marginH() else num("bots.margin")
 				if force >= k * x then
 					local c = approach(cx, cy, r.x, r.y, radius3)
@@ -829,6 +932,7 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 		if not s or s.lost then
 			return
 		end
+		updateIntel()
 		self.inf = buildInfluence()
 		local p = plan()
 		local saving = trucks()

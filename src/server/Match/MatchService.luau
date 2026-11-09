@@ -17,6 +17,7 @@ local MapCodec = require(Shared.Maps.MapCodec)
 local Movement = require(Shared.Simulation.Movement)
 local Pathing = require(Shared.Simulation.Pathing)
 local Territory = require(Shared.Simulation.Territory)
+local Fog = require(Shared.Simulation.Fog)
 local ValueNoise = require(Shared.Utilities.ValueNoise)
 local Rng = require(Shared.Utilities.Rng)
 local Roads = require(Shared.Simulation.Roads)
@@ -116,17 +117,75 @@ local function assignSide(player: Player): { [string]: any }
 	return { map = map.data.id, side = existing, width = map.width, height = map.height }
 end
 
-local function snapshot()
-	-- TEMP-001: everyone receives every unit. Fog-filtered snapshots come with fog of war.
+-- Fog of war: each player side gets its own viewer (Shared.Simulation.Fog) and only what it sees.
+-- Spectators (side 0) see everything.
+local viewers: { [number]: any } = {}
+local sentVision: { [Player]: string } = {}
+
+local function structureRow(e: any, owner: number, details: boolean): { any }
+	return {
+		e.id, e.kind, owner, e.x, e.y, e.hp, e.maxHp,
+		if details then e.capSide or 0 else 0,
+		if details then e.capProgress or 0 else 0,
+		if details then e.store or 0 else 0,
+		e.built or 1, 0,
+	}
+end
+
+local function viewFor(side: number): ({ any }, { any }, { number }?)
+	local viewer = if side > 0 then viewers[side] else nil
+	if side > 0 and not viewer then
+		viewer = Fog.newViewer(sim, side)
+		viewers[side] = viewer
+	end
+	if viewer then
+		viewer.update()
+	end
 	local units, structures = table.create(64), table.create(24)
+	local listed = {}
 	for _, e in sim.list do
 		if e.cat == "unit" then
-			table.insert(units, { e.id, e.kind, e.side, e.x, e.y, e.heading, e.hp, e.maxHp })
+			if not viewer or viewer.unitVisible(e) then
+				table.insert(units, { e.id, e.kind, e.side, e.x, e.y, e.heading, e.hp, e.maxHp })
+			end
+		elseif e.kind == "rig" then
+			local seen = not viewer or e.side == side or viewer.visibleAt(e.x, e.y)
+			table.insert(structures, structureRow(e, if viewer then viewer.rigOwner(e) else e.side, seen))
 		else
-			table.insert(structures, { e.id, e.kind, e.side, e.x, e.y, e.hp, e.maxHp, e.capSide or 0, e.capProgress or 0, e.store or 0, e.built or 1 })
+			local state = if viewer then viewer.structureState(e) else "seen"
+			if state == "seen" then
+				table.insert(structures, structureRow(e, e.side, true))
+				listed[e.id] = true
+			end
 		end
 	end
-	Net.broadcastSnapshot(tick, units, structures)
+	if viewer then
+		-- buildings remembered from earlier sightings (the last kind and owner seen; health unknown)
+		for id, info in viewer.lastSeen do
+			if not listed[id] then
+				table.insert(structures, { id, info.kind, info.side, info.x, info.y, 1, 1, 0, 0, 0, 1, 1 })
+			end
+		end
+	end
+	return units, structures, if viewer then viewer.runs() else nil
+end
+
+local function snapshot()
+	local bySide: { [number]: any } = {}
+	for player, side in sideOf do
+		local v = bySide[side]
+		if not v then
+			local units, structures, runs = viewFor(side)
+			v = { units = units, structures = structures, runs = runs, key = if runs then table.concat(runs, ",") else "all" }
+			bySide[side] = v
+		end
+		local vision = nil
+		if sentVision[player] ~= v.key then
+			sentVision[player] = v.key
+			vision = v.runs or {}
+		end
+		Net.sendSnapshot(player, tick, v.units, v.structures, vision, side == 0 or not sim.fogOn())
+	end
 end
 
 -- Own territory as row runs { y, x0, x1, ... } (sent only when it changes): the client tints the
@@ -242,6 +301,7 @@ function MatchService.start(mapModule: string)
 	Players.PlayerRemoving:Connect(function(p)
 		sideOf[p] = nil
 		sentTerritory[p] = nil
+		sentVision[p] = nil
 		updateBots()
 	end)
 

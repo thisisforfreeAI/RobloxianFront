@@ -11,7 +11,7 @@ Last updated: 2026-11-09
 Phase 1. Milestone 1A done (Studio tests 1–7 pass). Pilot sprite REQ-0001 approved. Milestone 1B (gameplay loop) rewritten for WarFront parity and tested outside Studio; Studio tests B1–B9 pending.
 
 ## Verified outside Studio (actually run, Linux container)
-- Lune 0.11.1 `tests/run`: 48 passed, 0 failed (latest run) (including the 2 that read the GameData generated from your install).
+- Lune 0.11.1 `tests/run`: 51 passed, 0 failed (latest run) (including the 2 that read the GameData generated from your install).
 - Rojo 7.4.4 `rojo build` succeeds. All .luau files compile (syntax only).
 - Synthetic atlas: 16 × 120 px frames pack to 960×240 (8×2, no padding); validator passes on dimensions,
   rectangles, direction order, pixel identity, pivot, partial alpha, edge bleed, arrow orientation, manifest.
@@ -33,7 +33,7 @@ Git-ignored local docs: `docs/private/` (audit reports with excerpts from the ga
 Only synthetic or approved new art is tracked under `assets/sprites/`.
 
 ## Temporary items
-- TEMP-001 all units replicated to all clients. No fog of war; no protection against seeing enemy units is claimed.
+- TEMP-001 closed: fog of war. The server sends each player only what their side sees (`Shared.Simulation.Fog`); enemy units outside vision never reach the client
 - TEMP-002 closed: units now plan routes with the game's pathfinding (`Shared.Simulation.Pathing`); `Movement.luau` is no longer used by the match
 - TEMP-003 placeholder unit shapes and colours
 - Atlas test board runs in Studio while `DevFlags.ATLAS_TEST_BOARD` is true
@@ -89,11 +89,26 @@ Bot-vs-bot on Saddle now ends: balanced v warlord, warlord wins at 11:52; turtle
 wins at 11:04; balanced v turtle, balanced wins at 20:42; balanced v balanced, side 1 wins at 26:46.
 CPU: about 4–6% of real time. Lune: 48 tests pass (6 new for buildings and territory).
 
+Fog of war (2026-11-09): vision is the game's (own buildings, rigs, units and trucks light circles of
+their sight; a building under construction sees footprint + 1; units in the same 1.5 x cell-scale
+block with the same sight count once). The game's 480 s day/night cycle runs, and at full night sight
+drops to 0.4x (night ops are on in the game's defaults; the night vision tower is not in the slice).
+The server keeps a viewer per player side and sends only enemy units on cells seen now, the enemy HQ
+(always shown, as in the game), enemy buildings while seen and then as "last seen", and rigs with the
+owner last seen. The client darkens ground not seen now. The game's bots also play with fog
+(intel.fog and bots.fog), so the bot now uses its own intel like the game: its own vision, enemy units
+remembered for 45 s (counted half after 30 s in its influence map), buildings until seen gone, rig
+owners as last seen, and an unseen HQ or rig assumed to hold 250 or 150 worth of defence. Not in the
+slice: radar contacts, drones, last-known enemy unit markers on the client.
+
+Bot-vs-bot on Saddle with fog: balanced v warlord, warlord wins at 11:26; turtle v warlord, warlord at
+11:13; balanced v turtle, balanced at 16:16; balanced v balanced, side 1 at 16:55. CPU about 3–4% of
+real time. Lune: 51 tests pass.
+
 ## Next
-1. You run Studio tests B1–B14 (B11–B14 are new: building, training from buildings, bot building,
-   blocking).
-2. Then: fog of war (server-filtered), more units (mortar, artillery, scout) and defences (bunker, AT
-   gun), engineers' repair work, vehicle steering; later shared group routes and separation.
+1. You run Studio tests B15–B17 (fog) and commit.
+2. Then: more units (mortar, artillery, scout) and defences (bunker, AT gun), engineers' repair work,
+   vehicle steering; later shared group routes and separation.
 
 ## Open questions
 1. Rights scope: original art, audio, voice; public redistribution of extracted data.

@@ -37,8 +37,7 @@ Run these before any scope is added. Fill in the **Result** column with what act
 
 ## Known temporary limits (do not count as failures)
 
-* **TEMP-001:** every client receives every unit's position. There is no fog of war yet, so these tests
-  say nothing about hiding units from the other team.
+* **TEMP-001 (closed later):** fog of war now filters what each client receives (tests B15–B17).
 * TEMP-002 straight-line movement, TEMP-003 placeholder unit shapes; the test tank and scout per side are test units.
 * The atlas board uses synthetic arrows, not game art, and runs only in Studio (`DevFlags.ATLAS_TEST_BOARD`).
 
@@ -69,6 +68,9 @@ cover, armour facing, truck ambush, HQ loss eliminates, bot). A 10-minute bot-vs
 | B12 | Train from buildings | Click your barracks, press Q then E; build a factory (F), click it when done, press Q | HUD switches to `Barracks queue`, `Infantry Squad (36)` and `AT Team (60)`; units come out of the barracks side facing the map centre; the factory trains `Tank (145)` / `IFV (100)`; Esc goes back to the HQ | not run |
 | B13 | Bot builds | Watch red for 5–10 minutes | Red places a barracks within the first minute and a factory around minute 3–5 once its income reaches 3.5/s, then fields AT teams, tanks and IFVs; bot-vs-bot games now end (see PROJECT_STATUS) | not run |
 | B14 | Buildings block | Walk units through your barracks | Units walk around the 3 x 3 block; your trucks still enter the HQ | not run |
+| B15 | Fog | Play (F5) and look around | Ground outside your units' and buildings' sight is darkened; red units appear only inside your clear area and vanish when they leave it; the red HQ is always shown; a red barracks or factory you scouted stays as a faded block marked `(last seen)` after you leave | not run |
+| B16 | Night | Watch the clear area for 5 minutes | From about 4:20 the clear circles shrink over ~40 s to 0.4x (night), and grow back between about 6:58 and 7:22, repeating every 480 s (the game's day) | not run |
+| B17 | Fog in two-player | Clients and Servers, 2 players | Each player sees only their own side's vision: player 2 does not see player 1's units unless they are in sight | not run |
 
 Known limits (not failures): no fog (TEMP-001), straight-line movement and trucks drive off-road (TEMP-002),
 placeholder shapes (TEMP-003), bot is a simple script, rigs can't be damaged yet, one unit type (infantry).

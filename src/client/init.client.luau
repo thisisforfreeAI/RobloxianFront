@@ -9,6 +9,7 @@ local MapCodec = require(Shared.Maps.MapCodec)
 local MapRenderer = require(script.Rendering.MapRenderer)
 local UnitRenderer = require(script.Rendering.UnitRenderer)
 local StructureRenderer = require(script.Rendering.StructureRenderer)
+local FogOverlay = require(script.Rendering.FogOverlay)
 local CameraController = require(script.Camera.CameraController)
 local SelectionController = require(script.Input.SelectionController)
 local BuildController = require(script.Input.BuildController)
@@ -28,6 +29,7 @@ do
 	local map = MapCodec.decode(require(mapModule) :: any)
 
 	MapRenderer.build(map)
+	FogOverlay.start(map.width, map.height)
 	CameraController.start(map.width, map.height, map.data.starts[info.side] or map.data.starts[1])
 	UnitRenderer.start()
 	StructureRenderer.start()
@@ -65,8 +67,11 @@ do
 		task.spawn(board.start, Vector2.new(cx + 30, cy), "ScoutCar", false) -- REQ-0001 pilot, east of the arrows
 	end
 
-	snapshot.OnClientEvent:Connect(function(tick, units, structures)
+	snapshot.OnClientEvent:Connect(function(tick, units, structures, vision, seeAll)
 		UnitRenderer.apply(tick, units)
 		StructureRenderer.apply(tick, structures or {})
+		if vision then
+			FogOverlay.apply(vision, seeAll == true)
+		end
 	end)
 end

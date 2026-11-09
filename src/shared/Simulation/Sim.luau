@@ -76,7 +76,8 @@
 	UNCONFIRMED (older): new units start with no face direction and an empty shot timer; a dead nation's
 	        trucks are removed; a firing vehicle's hull keeps its heading (turrets not modelled).
 	Engineers can be trained (the HQ lists them) but their building and repair work is not in the slice.
-	Not in the slice: fog (TEMP-001), line of sight, weather, veterancy, smoke, rig damage,
+	Fog: visionFor / nightAmount below; the server filters snapshots per side (Shared.Simulation.Fog).
+	Not in the slice: line of sight (the game's only blockers are settlement buildings), weather, veterancy, smoke, rig damage,
 	        settlements, refineries, rail, events, defences (bunker, AT gun, SAM, radar), mortars,
 	        artillery, rockets, scouts, the command truck, power lines and dams.
 ]]
@@ -1843,6 +1844,98 @@ function Sim.new(deps: Deps)
 		hqTrickle(dt)
 		compact()
 		checkVerdict()
+	end
+
+	---------------------------------------------------------------- vision (fog of war)
+
+	-- The game's day/night: a 480 s day starting at phase 0.08; night from phase 0.62, easing in over
+	-- 0.08 and out over the last 0.05 of the day. Returns 0 (day) .. 1 (full night).
+	local DAY_SEC, DAY_START, SUN_UP, NIGHT_IN, NIGHT_OUT = 480, 0.08, 0.62, 0.08, 0.05
+	local function smooth(a: number, b: number, o: number): number
+		local n = math.clamp((o - a) / (b - a), 0, 1)
+		return n * n * (3 - 2 * n)
+	end
+	function self.nightAmount(): number
+		local clock = numOr("daylight.offsetSec", 0) + self.time * numOr("daylight.rate", 1)
+		local phase = ((math.floor(clock) / DAY_SEC + DAY_START) % 1 + 1) % 1
+		if phase < SUN_UP then
+			return 0
+		end
+		return math.min(smooth(SUN_UP, SUN_UP + NIGHT_IN, phase), 1 - smooth(1 - NIGHT_OUT, 1, phase))
+	end
+	-- sight multiplier at night: nightOps.sightShare when night ops are on (the slice has no night
+	-- vision tower), else daylight.nightSightShare
+	local function sightFactor(): number
+		local share = if r:has("nightOps.enabled") and r:flag("nightOps.enabled") then num("nightOps.sightShare") else num("daylight.nightSightShare")
+		return 1 + (share - 1) * self.nightAmount()
+	end
+	self.sightFactor = sightFactor
+
+	-- The game's PS for one nation, for the sources the slice has: fills grid (1-based by cell + 1)
+	-- with 2 where the nation sees and 0 elsewhere. Sources: its structures (a building under
+	-- construction sees footprint + 1 cells), its rigs (rigs.sight), its units (units.<k>.sight; units
+	-- in the same 1.5 x cell scale block with the same rounded sight count once), its trucks
+	-- (intel.convoySight); all x the night factor. No line-of-sight blockers in the slice (the game's
+	-- only blockers are settlement buildings).
+	function self.visionFor(side: number, grid: { number })
+		local n = W * H
+		for i = 1, n do
+			grid[i] = 0
+		end
+		local function circle(x: number, y: number, m: number)
+			local mm = m * m
+			for py = math.max(0, math.floor(y - m)), math.min(H - 1, math.ceil(y + m)) do
+				local hh = py + 0.5 - y
+				local o = mm - hh * hh
+				if o >= 0 then
+					local q = math.sqrt(o)
+					local t0 = math.max(0, math.ceil(x - 0.5 - q))
+					local t1 = math.min(W - 1, math.floor(x - 0.5 + q))
+					local base = py * W + 1
+					for c = t0, t1 do
+						grid[base + c] = 2
+					end
+				end
+			end
+		end
+		local c = sightFactor()
+		for _, st in self.list do
+			if st.alive and isStructure(st) and st.side == side then
+				local x, y = st.cell % W + 0.5, st.cell // W + 0.5
+				if st.built < 1 then
+					circle(x, y, (footprintOf(st.kind) + 1) * c)
+				else
+					circle(x, y, num(`structures.{st.kind}.sight`) * c)
+				end
+			end
+		end
+		for _, rig in rigList do
+			if rig.side == side then
+				circle(rig.x, rig.y, num("rigs.sight") * c)
+			end
+		end
+		local seen = {}
+		local f = math.max(2, math.floor(num("match.cellScale") * 1.5 + 0.5))
+		for _, e in self.list do
+			if e.alive and e.cat == "unit" and e.side == side then
+				if e.kind == TRUCK then
+					local m = numOr("intel.convoySight", 0) * c
+					if m > 0 then
+						circle(e.x, e.y, m)
+					end
+				else
+					local m = num(`units.{e.kind}.sight`) * c
+					local key = (math.floor(e.y / f) * 4096 + math.floor(e.x / f)) * 64 + math.floor(m + 0.5)
+					if not seen[key] then
+						seen[key] = true
+						circle(e.x, e.y, m)
+					end
+				end
+			end
+		end
+	end
+	function self.fogOn(): boolean
+		return r:has("intel.fog") and r:flag("intel.fog")
 	end
 
 	-- Drains events (for networking / logging).

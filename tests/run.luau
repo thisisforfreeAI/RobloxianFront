@@ -672,6 +672,76 @@ if fs.isFile(matchPath) then
 		assert(#structuresOf(sim, 1, "factory") >= 1 or trained > 0, "factory or units from buildings")
 	end)
 
+	-- fog of war
+	local Fog = require("../src/shared/Simulation/Fog")
+	local function soloSim()
+		local sim = newSim({ roads = {} })
+		for _, u in units(sim, 1, "infantry") do
+			u.alive = false
+		end
+		for _, u in units(sim, 2, "infantry") do
+			u.alive = false
+		end
+		run(sim, 0.05)
+		return sim
+	end
+	test("vision: infantry see 21 cells by day and x0.4 at full night (night ops on)", function()
+		local sim = soloSim()
+		local u = sim.spawnUnit("infantry", 1, 90.5, 30.5)
+		local grid = {}
+		sim.visionFor(1, grid)
+		eq(grid[30 * W + 110 + 1], 2, "20 cells east")
+		eq(grid[30 * W + 112 + 1], 0, "22 cells east")
+		sim.time = 320 -- phase 0.747 of the 480 s day: full night
+		eq(sim.nightAmount(), 1)
+		sim.visionFor(1, grid)
+		eq(grid[30 * W + 98 + 1], 2, "8 cells")
+		eq(grid[30 * W + 100 + 1], 0, "10 cells is past 8.4")
+		u.alive = false
+	end)
+	test("fog viewer: enemy units only when seen, enemy HQ always, buildings remembered as last seen", function()
+		local sim = soloSim()
+		local enemy = sim.spawnUnit("infantry", 2, 150.5, 45.5)
+		local scout = sim.spawnUnit("infantry", 1, 60.5, 45.5)
+		local v = Fog.newViewer(sim, 1)
+		v.update()
+		assert(not v.unitVisible(enemy), "far enemy hidden")
+		eq(v.structureState(sim.hqOf(2)), "seen", "the enemy HQ is always shown")
+		sim.sides[2].oil = 1000
+		local bid = sim.placeStructure(2, "barracks", 42 * W + 150) :: number
+		assert(bid, "red barracks placed")
+		v.update()
+		eq(v.structureState(sim.entities[bid]), "hidden")
+		scout.x = 135.5
+		v.update()
+		assert(v.unitVisible(enemy), "now in sight")
+		eq(v.structureState(sim.entities[bid]), "seen")
+		scout.x = 60.5
+		v.update()
+		eq(v.structureState(sim.entities[bid]), "stale", "remembered after leaving")
+		local rig = sim.rigs[2]
+		rig.side = 2
+		v.update()
+		eq(v.rigOwner(rig), 0, "never seen: shown neutral")
+	end)
+	test("bot intel: the bot only knows enemy units it has seen, and forgets them after 45 s", function()
+		local sim = soloSim()
+		local bot = Bot.new(sim, 1, "balanced")
+		local far = sim.spawnUnit("infantry", 2, 150.5, 50.5)
+		run(sim, 1, { bot })
+		assert(bot.intel.units[far.id] == nil, "unseen")
+		local watcher = sim.spawnUnit("infantry", 1, 100.5, 50.5)
+		local near = sim.spawnUnit("infantry", 2, 110.5, 50.5)
+		run(sim, 3, { bot })
+		assert(bot.intel.units[near.id] ~= nil, "seen by its unit")
+		watcher.alive = false
+		near.x, near.y = 150.5, 55.5
+		run(sim, 30, { bot })
+		assert(bot.intel.units[near.id] ~= nil, "remembered where it was last seen")
+		run(sim, 20, { bot })
+		assert(bot.intel.units[near.id] == nil, "forgotten after intel.unitIntelSec")
+	end)
+
 	-- a river along x = 80 with one ford at y = 11 (no roads)
 	local function riverSim()
 		return newSim({

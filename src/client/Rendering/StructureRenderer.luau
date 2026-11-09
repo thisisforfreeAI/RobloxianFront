@@ -82,14 +82,15 @@ function StructureRenderer.start()
 	folder.Parent = workspace
 end
 
--- structures: { id, kind, side, x, y, hp, maxHp, capSide, capProgress, store, built }
+-- structures: { id, kind, side, x, y, hp, maxHp, capSide, capProgress, store, built, stale }
+-- stale = 1: an enemy building remembered from an earlier sighting (fog): drawn faded, health unknown.
 function StructureRenderer.apply(tick: number, structures: { any })
 	if tick <= lastTick then
 		return
 	end
 	lastTick = tick
 	for _, st in structures do
-		local id, kind, side, x, y, hp, maxHp, capSide, capProgress, store, built = table.unpack(st)
+		local id, kind, side, x, y, hp, maxHp, capSide, capProgress, store, built, stale = table.unpack(st)
 		local v = views[id]
 		if not v then
 			v = create(id, kind, x, y)
@@ -101,8 +102,11 @@ function StructureRenderer.apply(tick: number, structures: { any })
 			local color = SIDE_COLOR[side] or Color3.new(0.7, 0.7, 0.7)
 			local b = built or 1
 			block.Color = if b < 1 then color:Lerp(Color3.new(1, 1, 1), 0.55) else color:Lerp(Color3.new(0, 0, 0), 0.15)
-			block.Transparency = if b < 1 then 0.35 else 0
-			if b < 1 then
+			block.Transparency = if b < 1 or stale == 1 then 0.35 else 0
+			if stale == 1 then
+				v.text.Text = `{NAMES[kind]} (last seen)`
+				v.bar.Size = UDim2.fromScale(0, 1)
+			elseif b < 1 then
 				v.text.Text = `{NAMES[kind]} {math.floor(b * 100)}%`
 				v.bar.Size = UDim2.fromScale(math.clamp(b, 0, 1), 1)
 				v.bar.BackgroundColor3 = Color3.fromRGB(230, 230, 230)
