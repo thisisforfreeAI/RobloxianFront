@@ -107,6 +107,26 @@ end
 
 local prices: { [string]: number } = {}
 
+-- plain wording for the server's refusal codes (PLACEHOLDER wording; the game's own text is not used)
+local NOTICE_TEXT: { [string]: string } = {
+	requires = "Needs another finished building first (the War Factory needs a Barracks)",
+	oil = "Not enough oil",
+	queueFull = "Queue full",
+	unitCap = "Unit cap reached",
+	outsideBase = "Outside your territory",
+	onRoad = "Too close to a road",
+	onRig = "Too close to an oil rig",
+	nearEnemy = "Too close to the enemy",
+	terrain = "Can't build on that ground",
+	sealsWay = "Would block the way",
+	notSecured = "Needs a full garrison first",
+	notHeld = "You don't hold this town",
+	notDamaged = "Not damaged",
+	noEngineers = "No engineers",
+	garrisonFull = "Garrison full",
+	cooldown = "Still cooling down",
+}
+
 local function refreshButtons()
 	local list = TRAINS[selected.kind] or {}
 	for i, b in trainButtons do
@@ -211,7 +231,7 @@ function Hud.update(state: { [string]: any }, mySide: number)
 		refreshQueue()
 	end
 	if state.notice then
-		notice.Text = state.notice
+		notice.Text = NOTICE_TEXT[state.notice] or state.notice
 		notice.Visible = true
 		noticeUntil = os.clock() + 2.5
 		task.delay(2.6, function()
