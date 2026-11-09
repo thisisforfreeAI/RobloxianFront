@@ -2,7 +2,8 @@
 --[[
 	SelectionController: RTS selection and orders.
 	Left click: select own unit (Shift adds/toggles). Left drag: box select (Shift adds).
-	Right click on the ground: move order. X: stop. Esc: clear.
+	Right click on an enemy unit or HQ: attack order. Right click on the ground: move order. X: stop. Esc: clear.
+	Trucks drive themselves and cannot be selected.
 	The client only proposes; the server re-checks ownership and the target.
 	Key choices (X, Esc) are PROVISIONAL until WarFront's bindings are confirmed.
 ]]
@@ -15,6 +16,7 @@ local Shared = ReplicatedStorage:WaitForChild("Shared")
 local World = require(Shared.Config.World)
 local Protocol = require(Shared.Protocol.Protocol)
 local UnitRenderer = require(script.Parent.Parent.Rendering.UnitRenderer)
+local StructureRenderer = require(script.Parent.Parent.Rendering.StructureRenderer)
 
 local SelectionController = {}
 
@@ -94,7 +96,7 @@ function SelectionController.start(mySide: number, sendIntent: (any) -> ())
 		if (a - b).Magnitude < CLICK_PIXELS then
 			local best, bestDist = nil, PICK_PIXELS
 			for id, v in UnitRenderer.each() do
-				if v.side == mySide then
+				if v.side == mySide and v.kind ~= "truck" then
 					local s, on = screenOf(v)
 					local d = (s - b).Magnitude
 					if on and d < bestDist then
@@ -108,7 +110,7 @@ function SelectionController.start(mySide: number, sendIntent: (any) -> ())
 		else
 			local minV, maxV = a:Min(b), a:Max(b)
 			for id, v in UnitRenderer.each() do
-				if v.side == mySide then
+				if v.side == mySide and v.kind ~= "truck" then
 					local s, on = screenOf(v)
 					if on and s.X >= minV.X and s.X <= maxV.X and s.Y >= minV.Y and s.Y <= maxV.Y then
 						selected[id] = true
@@ -126,8 +128,36 @@ function SelectionController.start(mySide: number, sendIntent: (any) -> ())
 		if input.UserInputType == Enum.UserInputType.MouseButton1 then
 			dragStart = UserInputService:GetMouseLocation()
 		elseif input.UserInputType == Enum.UserInputType.MouseButton2 then
-			local hit = groundPoint(UserInputService:GetMouseLocation())
-			if hit and next(selected) then
+			if not next(selected) then
+				return
+			end
+			-- enemy under the cursor? attack it; otherwise move
+			local mouse = UserInputService:GetMouseLocation()
+			local best, bestDist = nil, PICK_PIXELS
+			for id, v in UnitRenderer.each() do
+				if v.side ~= mySide and v.side ~= 0 then
+					local sp, on = screenOf(v)
+					local d = (sp - mouse).Magnitude
+					if on and d < bestDist then
+						best, bestDist = id, d
+					end
+				end
+			end
+			for id, v in StructureRenderer.each() do
+				if v.kind == "hq" and v.side ~= mySide and v.side ~= 0 then
+					local p, on = workspace.CurrentCamera:WorldToViewportPoint(World.toWorld(v.x, v.y, 1))
+					local d = (Vector2.new(p.X, p.Y) - mouse).Magnitude
+					if on and d < math.max(bestDist, 40) then
+						best, bestDist = id, d
+					end
+				end
+			end
+			if best then
+				send(sendIntent, "attack", { targetId = best })
+				return
+			end
+			local hit = groundPoint(mouse)
+			if hit then
 				local x, y = World.toCell(hit)
 				send(sendIntent, "move", { x = x, y = y })
 			end

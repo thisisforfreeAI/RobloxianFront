@@ -41,3 +41,26 @@ Run these before any scope is added. Fill in the **Result** column with what act
   say nothing about hiding units from the other team.
 * TEMP-002 straight-line movement, TEMP-003 placeholder unit shapes; the test tank and scout per side are test units.
 * The atlas board uses synthetic arrows, not game art, and runs only in Studio (`DevFlags.ATLAS_TEST_BOARD`).
+
+
+# Milestone 1B Studio tests
+
+Outside Studio (Claude, Linux container): 24/24 Lune tests pass, including 9 for the 1B simulation
+(production cost/time/queue, refused orders, 12 s rig capture, trucks delivering oil, 8-damage shots,
+armour facing, truck ambush, HQ destruction ends the match, bot captures and trains). A 20-minute
+bot-vs-bot run on Saddle completed with rigs captured, oil delivered and units killed, using 10 s of CPU.
+
+| # | Test | Steps | Pass when | Result |
+|---|---|---|---|---|
+| B1 | Start | Play (F5) | Output: `[Match] side 1 unit ids: ...` and `side 2 is played by the bot`; HUD shows Oil 600 and the Train button; each HQ shows `HQ 3000/3000` | not run |
+| B2 | Production | Press Q (or the button) twice | Oil drops 36 each time; queue shows 2/6 and a countdown; a new infantry appears next to the HQ every 7 s | not run |
+| B3 | Capture | Send 2+ infantry onto the nearest rig (black disc) | A "capturing" bar fills in about 12 s; the rig gets a blue ring and shows `oil N`; Output `[Match] rigCaptured side 1`; 3 dark trucks leave your HQ | not run |
+| B4 | Trucks | Watch a truck | It drives to the rig, waits, loads, drives back and your oil jumps when it unloads (HQ also adds 0.5 oil/s) | not run |
+| B5 | Combat | Right-click an enemy (red) unit with units selected | Your units close in and fire; health bars appear and drop; dead units vanish | not run |
+| B6 | Interception | Send units onto a red truck route | Red trucks get shot and disappear | not run |
+| B7 | Bot | Wait 2–5 minutes | Red trains infantry, captures rigs, and later sends a group at your HQ | not run |
+| B8 | Victory | Select all your infantry and right-click the red HQ (train ~15 first) | Red HQ bar drops; `HQ DESTROYED`; banner VICTORY for you (DEFEAT if yours falls) | not run |
+| B9 | Two players | Clients and Servers, 2 players | Output `side 2 handed from the bot to a player`; each player has own oil and Train button; K probe still refused | not run |
+
+Known limits (not failures): no fog (TEMP-001), straight-line movement and trucks drive off-road (TEMP-002),
+placeholder shapes (TEMP-003), bot is a simple script, rigs can't be damaged yet, one unit type (infantry).

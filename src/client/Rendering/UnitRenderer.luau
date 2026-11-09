@@ -14,7 +14,7 @@ local UnitRenderer = {}
 
 local S = World.STUDS_PER_CELL
 local SNAPSHOT_SEC = 0.1 -- server sends 10 snapshots/s
-local FOOTPRINT = { infantry = 0.78, at = 0.78, mortar = 0.78, para = 0.78, tank = 1, ifv = 0.95, artillery = 1.4, rocket = 1.3, scout = 0.62, engineer = 0.8, command = 1, demo = 1.2 }
+local FOOTPRINT = { infantry = 0.78, at = 0.78, mortar = 0.78, para = 0.78, tank = 1, ifv = 0.95, artillery = 1.4, rocket = 1.3, scout = 0.62, engineer = 0.8, command = 1, demo = 1.2, truck = 0.7 }
 local SIDE_COLOR = { [1] = Color3.fromRGB(70, 130, 230), [2] = Color3.fromRGB(220, 80, 70) }
 
 export type View = {
@@ -24,6 +24,8 @@ export type View = {
 	model: Model,
 	body: Part,
 	ring: Part,
+	bar: Frame,
+	barGui: BillboardGui,
 	from: Vector3,
 	to: Vector3,
 	fromYaw: number,
@@ -62,10 +64,32 @@ local function create(id: number, kind: string, side: number): View
 	ring.Shape = Enum.PartType.Cylinder
 	ring.Material = Enum.Material.Neon
 	ring.Transparency = 1
+	if kind == "truck" then
+		body.Material = Enum.Material.Metal -- trucks: darker, so they read apart from combat units
+		body.Color = color:Lerp(Color3.new(0, 0, 0), 0.35)
+	end
+	-- health bar, shown only when damaged
+	local barGui = Instance.new("BillboardGui")
+	barGui.Size = UDim2.fromOffset(28, 4)
+	barGui.StudsOffsetWorldSpace = Vector3.new(0, 2, -cells * S * 0.6)
+	barGui.AlwaysOnTop = true
+	barGui.Enabled = false
+	barGui.Adornee = body
+	local back = Instance.new("Frame")
+	back.Size = UDim2.fromScale(1, 1)
+	back.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+	back.BorderSizePixel = 0
+	back.Parent = barGui
+	local bar = Instance.new("Frame")
+	bar.Size = UDim2.fromScale(1, 1)
+	bar.BackgroundColor3 = Color3.fromRGB(110, 220, 90)
+	bar.BorderSizePixel = 0
+	bar.Parent = back
+	barGui.Parent = body
 	model.PrimaryPart = body
 	model.Parent = folder
 	return {
-		id = id, kind = kind, side = side, model = model, body = body, ring = ring,
+		id = id, kind = kind, side = side, model = model, body = body, ring = ring, bar = bar, barGui = barGui,
 		from = Vector3.zero, to = Vector3.zero, fromYaw = 0, toYaw = 0, t = 1, seen = 0,
 	}
 end
@@ -96,7 +120,7 @@ function UnitRenderer.start()
 	end)
 end
 
--- units: { {id, kind, side, x, y, heading, hp}, ... }
+-- units: { {id, kind, side, x, y, heading, hp, maxHp}, ... }
 function UnitRenderer.apply(tick: number, units: { any })
 	if tick <= lastTick then
 		return -- stale or duplicate snapshot
@@ -116,6 +140,10 @@ function UnitRenderer.apply(tick: number, units: { any })
 			v.fromYaw = lerpAngle(v.fromYaw, v.toYaw, t)
 		end
 		v.to, v.toYaw, v.t, v.seen = target, heading, 0, tick
+		local frac = math.clamp((u[7] or 1) / math.max(1, u[8] or u[7] or 1), 0, 1)
+		v.barGui.Enabled = frac < 0.999
+		v.bar.Size = UDim2.fromScale(frac, 1)
+		v.bar.BackgroundColor3 = if frac > 0.5 then Color3.fromRGB(110, 220, 90) elseif frac > 0.25 then Color3.fromRGB(240, 200, 60) else Color3.fromRGB(230, 70, 60)
 	end
 	for id, v in views do
 		if v.seen ~= tick then -- gone from the snapshot (dead, or later hidden by fog)

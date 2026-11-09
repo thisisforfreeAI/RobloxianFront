@@ -8,7 +8,7 @@ Last updated: 2026-11-09
 - GitHub: https://github.com/thisisforfreeAI/RobloxianFront (public; first commit 4142c4e pushed 2026-11-09)
 
 ## Phase
-Phase 1, milestone 1A done: Studio tests 1–7 pass (2b, Part-ground comparison, optional). Pilot sprite request REQ-0001 open.
+Phase 1. Milestone 1A done (Studio tests 1–7 pass). Pilot sprite REQ-0001 approved. Milestone 1B (gameplay loop) written and tested outside Studio; Studio tests B1–B9 pending.
 
 ## Verified outside Studio (actually run, Linux container)
 - Lune 0.11.1 `tests/run`: 14 passed, 0 failed (including the 2 that read the GameData generated from your install).
@@ -36,13 +36,17 @@ Only synthetic or approved new art is tracked under `assets/sprites/`.
 - TEMP-001 all units replicated to all clients. No fog of war; no protection against seeing enemy units is claimed.
 - TEMP-002 straight-line movement, no pathfinding
 - TEMP-003 placeholder unit shapes and colours
-- Test units: one tank + one scout per side beside the start infantry
 - Atlas test board runs in Studio while `DevFlags.ATLAS_TEST_BOARD` is true
 
+## Milestone 1B (2026-11-09)
+`Shared.Simulation.Sim` runs economy, HQ production, rig capture/pumping, trucks, combat and victory with
+WarFront's rule values; `Shared.Simulation.Bot` plays side 2 while it has no player. PROVISIONAL choices:
+free start trucks on capture, enemy rigs neutralised in rigs.takeoverSec, immediate loss on HQ death,
+the bot's script. Not yet: rig damage, rich rigs, upgrades, roads for trucks, more unit types.
+
 ## Next
-1. REQ-0001: you give the prompt to ChatGPT and drop the PNG in assets/sprites/incoming/REQ-0001/.
-2. Claude validates, rotates, packs and shows it on the test board.
-3. Milestone 1B (HQ, oil, combat) per `docs/private/FIRST_SLICE.md`.
+1. You run Studio tests B1–B9.
+2. Then: pathfinding on roads (trucks use roads in WarFront), fog of war (server-filtered), more units.
 
 ## Open questions
 1. Rights scope: original art, audio, voice; public redistribution of extracted data.

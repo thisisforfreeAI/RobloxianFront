@@ -8,6 +8,7 @@ local MapCodec = require(Shared.Maps.MapCodec)
 
 local MapRenderer = require(script.Rendering.MapRenderer)
 local UnitRenderer = require(script.Rendering.UnitRenderer)
+local StructureRenderer = require(script.Rendering.StructureRenderer)
 local CameraController = require(script.Camera.CameraController)
 local SelectionController = require(script.Input.SelectionController)
 local Hud = require(script.UI.Hud)
@@ -17,6 +18,7 @@ local net = ReplicatedStorage:WaitForChild(Protocol.FOLDER)
 local join = net:WaitForChild(Protocol.JOIN) :: RemoteFunction
 local snapshot = net:WaitForChild(Protocol.SNAPSHOT) :: RemoteEvent
 local intent = net:WaitForChild(Protocol.INTENT) :: RemoteEvent
+local stateEvent = net:WaitForChild(Protocol.STATE) :: RemoteEvent
 
 do
 	local info = join:InvokeServer()
@@ -27,7 +29,13 @@ do
 	MapRenderer.build(map)
 	CameraController.start(map.width, map.height, map.data.starts[info.side] or map.data.starts[1])
 	UnitRenderer.start()
-	Hud.start(info)
+	StructureRenderer.start()
+	Hud.start(info, function()
+		intent:FireServer({ kind = "produce", item = "infantry" })
+	end)
+	stateEvent.OnClientEvent:Connect(function(state)
+		Hud.update(state, info.side)
+	end)
 	SelectionController.start(info.side, function(payload)
 		intent:FireServer(payload)
 	end)
@@ -45,7 +53,8 @@ do
 		task.spawn(board.start, Vector2.new(cx + 30, cy), "ScoutCar", false) -- REQ-0001 pilot, east of the arrows
 	end
 
-	snapshot.OnClientEvent:Connect(function(tick, units)
+	snapshot.OnClientEvent:Connect(function(tick, units, structures)
 		UnitRenderer.apply(tick, units)
+		StructureRenderer.apply(tick, structures or {})
 	end)
 end
