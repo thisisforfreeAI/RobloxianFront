@@ -856,7 +856,7 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 					item = if k < 0.45 then "tank" elseif k < 0.75 then "ifv" elseif k < 0.88 then "artillery" else nil
 				end
 			end
-			if item and sim.sides[side].oil - num(`units.{item}.cost`) >= reserve then
+			if item and sim.sides[side].oil - sim.unitCost(side, item) >= reserve then
 				if sim.orderProduce(side, item, st.id) then
 					counts[item] = c(item) + 1
 					if item == "engineer" then
@@ -1219,7 +1219,9 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 									o = math.min(o, hypot(st.x - h.x, st.y - h.y))
 								end
 								local far = 1 + (if o < math.huge then o else homeCells * 4) / homeCells
-								local value = num(`bots.cityValue.{st.kind}`)
+								-- a settlement with a trait is worth 1 + bots.traitValue
+								local trait = if st.trait and rules:flag("cities.traits.on") then 1 + num("bots.traitValue") else 1
+								local value = num(`bots.cityValue.{st.kind}`) * trait
 									* (if owner < 0 then 0.5 + persona.defence elseif status == "secured" then num("bots.cityEnemy") else 1)
 								local score = value / (hd * hd) / far / (1 + k / 400) / (1 + c / num("bots.influence.approachSoft"))
 								if not pick or score > pick.score then

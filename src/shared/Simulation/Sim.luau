@@ -581,6 +581,105 @@ function Sim.new(deps: Deps)
 	end
 	self.paintBonus = paintBonus
 
+	-- the game's eZe: traits for towns and cities (cities.traits.kinds). Each settlement goes to the
+	-- start nearest it; starts within contestShare x that distance of the nearest share it. Each group
+	-- (same set of starts), nearest first, takes cities.traits.order in turn, a contested group
+	-- starting at the number of starts sharing it, so both sides' nearest towns get the same traits.
+	if r:flag("cities.traits.on") then
+		local order = (r.data["cities.traits.order"] :: { string }?) or {}
+		local kinds = (r.data["cities.traits.kinds"] :: { string }?) or {}
+		local share = num("cities.traits.contestShare")
+		if #order > 0 and #deps.starts > 0 then
+			local groups: { [string]: { from: number, list: { any } } } = {}
+			local keys = {}
+			for _, st in settlements do
+				if table.find(kinds, st.kind) then
+					local ds = {}
+					local best = 1
+					for i, sp in deps.starts do
+						ds[i] = math.sqrt((st.x - (math.floor(sp.x) + 0.5)) ^ 2 + (st.y - (math.floor(sp.y) + 0.5)) ^ 2)
+						if ds[i] < ds[best] then
+							best = i
+						end
+					end
+					local near = {}
+					for i, d in ds do
+						if d - ds[best] <= ds[best] * share then
+							table.insert(near, tostring(i - 1))
+						end
+					end
+					local key = table.concat(near, ",")
+					local g = groups[key]
+					if not g then
+						g = { from = if #near > 1 then #near else 0, list = {} }
+						groups[key] = g
+						table.insert(keys, key)
+					end
+					table.insert(g.list, { s = st, d = ds[best] })
+				end
+			end
+			for _, key in keys do
+				local g = groups[key]
+				table.sort(g.list, function(a, b)
+					if a.d ~= b.d then
+						return a.d < b.d
+					end
+					return a.s.id < b.s.id
+				end)
+				for i, it in g.list do
+					it.s.trait = order[(g.from + i - 1) % #order + 1]
+				end
+			end
+		end
+	end
+	-- the game's eA: a trait works while its settlement is held and secured (power is off in match rules)
+	local function traitActive(st: Entity): boolean
+		return r:flag("cities.traits.on") and st.trait ~= nil and st.owner > 0 and cityStatus(st) == "secured"
+	end
+	self.traitActive = traitActive
+	-- the game's tZe: a truck within radius + rail.reach of its owner's working rail town drives
+	-- rail.pace times faster
+	local function railPace(side: number, x: number, y: number): number
+		if not r:flag("cities.traits.on") then
+			return 1
+		end
+		for _, st in settlements do
+			if st.trait == "rail" and st.owner == side then
+				local l = st.radius + num("cities.traits.rail.reach")
+				if (st.x - x) ^ 2 + (st.y - y) ^ 2 <= l * l and traitActive(st) then
+					return num("cities.traits.rail.pace")
+				end
+			end
+		end
+		return 1
+	end
+	self.railPace = railPace
+	-- the game's unitCost: secured settlements (hN, cities.discount.<kind>) and working factory towns
+	-- (factory.discount each, vehicles only) cut the price, together at most cities.discountMax
+	local function unitCost(side: number, item: string): number
+		local base = num(`units.{item}.cost`)
+		local disc = 0
+		for _, st in settlements do
+			if st.owner == side and cityStatus(st) == "secured" then
+				disc += num(`cities.discount.{st.kind}`)
+			end
+		end
+		disc = math.min(num("cities.discountMax"), disc)
+		local mv = text(`units.{item}.move`)
+		if mv ~= "foot" and mv ~= "sea" and r:flag("cities.traits.on") then
+			local f = 0
+			for _, st in settlements do
+				if st.trait == "factory" and st.owner == side and traitActive(st) then
+					f += num("cities.traits.factory.discount")
+				end
+			end
+			disc = math.min(num("cities.discountMax"), disc + f)
+		end
+		local v = base * (1 - disc)
+		return math.floor(v + 0.5) -- Math.round (no negative costs)
+	end
+	self.unitCost = unitCost
+
 	local function baseSources(only: number?): { any }
 		local out = {}
 		for _, st in self.list do
@@ -1323,7 +1422,7 @@ function Sim.new(deps: Deps)
 		if unitsAndQueued(st.side) >= num("match.unitCap") then
 			return "unitCap"
 		end
-		if self.sides[st.side].oil < num(`units.{item}.cost`) then
+		if self.sides[st.side].oil < unitCost(st.side, item) then
 			return "oil"
 		end
 		return nil
@@ -1341,7 +1440,7 @@ function Sim.new(deps: Deps)
 		if why then
 			return false, why
 		end
-		s.oil -= num(`units.{item}.cost`)
+		s.oil -= unitCost(side, item)
 		table.insert(st.queue, item)
 		return true, nil
 	end
@@ -2187,7 +2286,8 @@ function Sim.new(deps: Deps)
 	end
 	-- the game's LQe / Ewe: a hurt unit near a secured settlement of its own (radius + repairReach)
 	-- heals cities.repairMen (foot) / repairVehicles x max hp per second, unless it fired, was hit
-	-- or is firing within cities.repairQuietSec. APPROX: no hospital trait (traits not in the slice).
+	-- or is firing within cities.repairQuietSec. A hospital town heals foot units within its radius +
+	-- traits.hospital.reach at least traits.hospital.menPerSec.
 	local function cityHealing(dt: number)
 		local any = false
 		for _, st in settlements do
@@ -2215,6 +2315,12 @@ function Sim.new(deps: Deps)
 								else num(`cities.repairVehicles.{st.kind}`)
 							rate = math.max(rate, c)
 						end
+						if mv == "foot" and st.trait == "hospital" and r:flag("cities.traits.on") then
+							local h = st.radius + num("cities.traits.hospital.reach")
+							if d2(st.x, st.y, e.x, e.y) <= h * h then
+								rate = math.max(rate, num("cities.traits.hospital.menPerSec"))
+							end
+						end
 					end
 				end
 				if rate > 0 then
@@ -2237,8 +2343,11 @@ function Sim.new(deps: Deps)
 	-- (securedCover once secured) instead of terrain cover; secured adds securedFire x dps and
 	-- rooftopRange; the settlement sees max(cities.sight, the garrison's sight); a secured one heals
 	-- nearby own units and widens its owner's building territory (paintBonus, max paintBonusMax).
-	-- Not in the slice: traits (hospital, rail, factory, radio, airfield), forward training, workforce
-	-- and discounts, integrity damage.
+	-- Discounts: secured settlements cut unit prices (cities.discount.<kind>, max discountMax).
+	-- Traits (towns and cities, assigned at the start, work while secured): hospital heals foot units
+	-- nearby, rail speeds own trucks within rail.reach, factory cuts vehicle prices.
+	-- Not in the slice: the radio trait's radar and the airfield's air drop (no radar or air units yet),
+	-- forward training, workforce, integrity damage.
 	local function settlementsTick(dt: number)
 		local minPace, need = num("rigs.minPace"), math.max(0.1, num("rigs.need"))
 		garrisonTick()
@@ -2438,7 +2547,7 @@ function Sim.new(deps: Deps)
 				end
 				-- driving along the path (APPROX: cell centre to cell centre)
 				local path = t.path
-				local speed = num("convoys.speed") * num("trucks.kinds.light.paceShare")
+				local speed = num("convoys.speed") * num("trucks.kinds.light.paceShare") * railPace(t.side, t.x, t.y)
 				local c = cellAt(t.x, t.y)
 				if roads.isRoad(c) then
 					speed *= num(`roads.classes.{Roads.CLASS_NAME[roads.classAt(c)]}.truck`)

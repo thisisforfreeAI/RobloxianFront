@@ -776,6 +776,61 @@ if fs.isFile(matchPath) then
 		bot.think()
 		eq(e.repairId, hq.id)
 	end)
+	test("traits: each side's nearest towns get rail then hospital; a contested town starts at factory", function()
+		local sim = newSim({ settlements = {
+			{ name = "A", x = 40, y = 45, kind = "town" }, { name = "B", x = 60, y = 45, kind = "town" },
+			{ name = "C", x = 140, y = 45, kind = "town" }, { name = "D", x = 120, y = 45, kind = "town" },
+			{ name = "M", x = 90, y = 45, kind = "town" }, { name = "V", x = 30, y = 45, kind = "village" },
+		} })
+		local t = {}
+		for _, st in sim.settlements do
+			t[st.name] = st.trait or "-"
+		end
+		eq(t.A, "rail")
+		eq(t.B, "hospital")
+		eq(t.C, "rail")
+		eq(t.D, "hospital")
+		eq(t.M, "factory", "contested by both starts: order from index 2")
+		eq(t.V, "-", "villages get no trait")
+	end)
+	test("traits: a secured hospital heals men 5%/s; secured towns and a factory town cut prices", function()
+		local sim = newSim({ settlements = { { name = "A", x = 40, y = 45, kind = "town" }, { name = "B", x = 60, y = 45, kind = "town" },
+			{ name = "M", x = 90, y = 45, kind = "town" } } })
+		clearUnits(sim, {})
+		local hosp, fac = sim.settlements[2], sim.settlements[3]
+		eq(hosp.trait, "hospital")
+		eq(fac.trait, "factory")
+		eq(sim.unitCost(1, "tank"), 145)
+		local function secure(st)
+			st.owner, st.hold = 1, 1
+			local ids = {}
+			for i = 1, 3 do
+				table.insert(ids, sim.spawnUnit("infantry", 1, st.x + 0.5, st.y + 0.5).id)
+			end
+			eq((sim.orderGarrison(1, st.id, ids)), 3)
+			eq(sim.cityStatus(st), "secured")
+		end
+		secure(hosp)
+		assert(sim.traitActive(hosp), "held and secured")
+		local hurt = sim.spawnUnit("infantry", 1, 60.5, 60.5) -- 15 cells off: past radius + repairReach, within + 18
+		hurt.hp = hurt.maxHp * 0.5
+		local h0 = hurt.hp
+		run(sim, 2)
+		near(hurt.hp - h0, hurt.maxHp * 0.05 * 2, "hospital.menPerSec 0.05")
+		eq(sim.unitCost(1, "infantry"), math.floor(36 * (1 - 0.09) + 0.5), "one secured town: 9% off")
+		secure(fac)
+		eq(sim.unitCost(1, "infantry"), math.floor(36 * (1 - 0.18) + 0.5), "men: towns only")
+		eq(sim.unitCost(1, "tank"), math.floor(145 * (1 - 0.3) + 0.5), "vehicles: 0.18 + factory 0.15, capped at 0.3")
+		eq(sim.unitCost(2, "tank"), 145)
+		-- rail: a working rail town speeds its owner's trucks within radius 6 + reach 90
+		local rail = sim.settlements[1]
+		eq(rail.trait, "rail")
+		eq(sim.railPace(1, 40.5, 45.5), 1, "not secured yet")
+		secure(rail)
+		eq(sim.railPace(1, 40.5 + 95, 45.5), 1.3)
+		eq(sim.railPace(1, 40.5 + 97, 45.5), 1, "beyond 96")
+		eq(sim.railPace(2, 40.5, 45.5), 1, "only its owner's trucks")
+	end)
 	test("towns: two infantry take a neutral town in 16 s; a held town lets its owner build round it", function()
 		local sim = newSim({ settlements = { { name = "T", x = 130, y = 45, kind = "town" }, { name = "V", x = 90, y = 45, kind = "village" } } })
 		for _, side in { 1, 2 } do

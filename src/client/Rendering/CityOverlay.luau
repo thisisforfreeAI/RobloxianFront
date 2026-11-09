@@ -2,7 +2,8 @@
 --[[
 	CityOverlay: who holds each settlement, from the server's state (2 Hz, sent when it changes).
 	A ring in the owner's colour round each settlement (none while neutral), and a tag with its name and
-	capture progress or, when enemies are wearing a held one down, its hold. A held town, city or
+	capture progress or, when enemies are wearing a held one down, its hold, its garrison and its trait
+	(rail, hospital, factory, radio, airfield; "ON" while held and secured). A held town, city or
 	capital paints territory you can build in (shown by the build ghost). PLACEHOLDER look (TEMP-003).
 ]]
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -55,10 +56,14 @@ function CityOverlay.start(settlements: { any })
 	end
 end
 
--- cities: { { id, owner, captureSide, captureProgress, hold, garrison?, garrisonFull? }, ... }
+-- trait names as the tag shows them (PLACEHOLDER wording)
+local TRAIT_NAME = { rail = "Rail", hospital = "Hospital", factory = "Factory", radio = "Radio", airfield = "Airfield" }
+
+-- cities: { { id, owner, captureSide, captureProgress, hold, garrison, garrisonFull, trait, traitWorks }, ... }
 function CityOverlay.apply(cities: { any })
 	for _, c in cities do
 		local id, owner, capSide, capProgress, hold, men, full = c[1], c[2], c[3], c[4], c[5], c[6], c[7]
+		local trait, works = c[8], c[9]
 		local v = views[id]
 		if v then
 			v.ring.Transparency = if owner > 0 then 0.55 else 1
@@ -69,12 +74,18 @@ function CityOverlay.apply(cities: { any })
 			elseif owner > 0 and hold < 1 then
 				v.text.Text = `hold {math.floor(hold * 100)}%`
 				v.text.TextColor3 = SIDE_COLOR[owner] or Color3.new(1, 1, 1)
-			elseif owner > 0 and men and full then
+			elseif owner > 0 and men and full and full > 0 then
 				-- garrison: occupied (0), fortified, secured (full)
 				v.text.Text = if men >= full then `secured {men}/{full}` elseif men > 0 then `fortified {men}/{full}` else `occupied 0/{full}`
 				v.text.TextColor3 = SIDE_COLOR[owner] or Color3.new(1, 1, 1)
 			else
 				v.text.Text = ""
+			end
+			-- the trait, marked on when it works (held and secured)
+			local tn = trait and TRAIT_NAME[trait]
+			if tn then
+				local tag = if works == 1 then `{tn} ON` else tn
+				v.text.Text = if v.text.Text == "" then tag else `{v.text.Text} · {tag}`
 			end
 		end
 	end

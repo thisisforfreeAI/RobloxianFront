@@ -84,13 +84,15 @@ local function refreshQueue()
 	end
 end
 
+local prices: { [string]: number } = {}
+
 local function refreshButtons()
 	local list = TRAINS[selected.kind] or {}
 	for i, b in trainButtons do
 		local item = list[i]
 		b.Visible = item ~= nil
 		if item then
-			b.Text = `{unitName(item)} ({rules:number(`units.{item}.cost`)}) [{TRAIN_KEYS[i].Name}]`
+			b.Text = `{unitName(item)} ({prices[item] or rules:number(`units.{item}.cost`)}) [{TRAIN_KEYS[i].Name}]`
 		end
 	end
 	refreshQueue()
@@ -163,6 +165,17 @@ end
 function Hud.update(state: { [string]: any }, mySide: number)
 	if state.oil then
 		oilLabel.Text = if state.trucksIdle then `Oil {state.oil} · trucks idle {state.trucksIdle}` else `Oil {state.oil}`
+	end
+	if state.prices then
+		local changed = false
+		for k, v in state.prices do
+			if prices[k] ~= v then
+				prices[k], changed = v, true
+			end
+		end
+		if changed then
+			refreshButtons()
+		end
 	end
 	if state.producers then
 		lastProducers = state.producers

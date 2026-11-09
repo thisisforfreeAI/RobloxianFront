@@ -284,6 +284,12 @@ local function privateState()
 				end
 			end
 			payload.producers = producers
+			-- unit prices after settlement and factory-town discounts
+			local prices = {}
+			for item in Protocol.PRODUCIBLE do
+				prices[item] = sim.unitCost(side, item)
+			end
+			payload.prices = prices
 			local runs = territoryRuns(side)
 			local key = table.concat(runs, ",")
 			if sentTerritory[player] ~= key then
@@ -302,9 +308,10 @@ local function privateState()
 			local seen = not viewer or st.owner == side or viewer.visibleAt(st.x, st.y)
 			if seen then
 				seenOwners[st.id] = st.owner
-				table.insert(cities, { st.id, st.owner, if st.capture then st.capture.by else 0, if st.capture then math.floor(st.capture.progress * 100) / 100 else 0, math.floor(st.hold * 100) / 100, #st.garrison, rules:number(`cities.garrisonFull.{st.kind}`) })
+				table.insert(cities, { st.id, st.owner, if st.capture then st.capture.by else 0, if st.capture then math.floor(st.capture.progress * 100) / 100 else 0, math.floor(st.hold * 100) / 100, #st.garrison, rules:number(`cities.garrisonFull.{st.kind}`), st.trait or "", if sim.traitActive(st) then 1 else 0 })
 			else
-				table.insert(cities, { st.id, seenOwners[st.id] or 0, 0, 0, 1 })
+				-- the trait is known from the map; garrison and whether it works are not
+				table.insert(cities, { st.id, seenOwners[st.id] or 0, 0, 0, 1, 0, 0, st.trait or "", 0 })
 			end
 		end
 		local ck = HttpService:JSONEncode(cities)

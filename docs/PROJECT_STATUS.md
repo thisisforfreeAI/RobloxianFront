@@ -11,7 +11,7 @@ Last updated: 2026-11-09
 Phase 1. Milestone 1A done (Studio tests 1–7 pass). Pilot sprite REQ-0001 approved. Milestone 1B (gameplay loop) rewritten for WarFront parity and tested outside Studio; Studio tests B1–B9 pending.
 
 ## Verified outside Studio (actually run, Linux container)
-- Lune 0.11.1 `tests/run`: 70 passed, 0 failed (latest run) (including the 2 that read the GameData generated from your install).
+- Lune 0.11.1 `tests/run`: 72 passed, 0 failed (latest run) (including the 2 that read the GameData generated from your install).
 - Rojo 7.4.4 `rojo build` succeeds. All .luau files compile (syntax only).
 - Synthetic atlas: 16 × 120 px frames pack to 960×240 (8×2, no padding); validator passes on dimensions,
   rectangles, direction order, pixel identity, pivot, partial alpha, edge bleed, arrow orientation, manifest.
@@ -175,8 +175,21 @@ already whole ends it too. The tag reads REPAIR. The bot sends its first idle en
 buildings under 70% hp, as the game's bot does. Not in the slice: road wear and cuts, rig blowouts,
 rail, sabotage and trenches.
 
+City traits and discounts (2026-11-09), traced from the game's trait assignment, eA, Ewe, tZe and
+unitCost: at the start every town and city gets a trait. Each side's towns, nearest first, take rail,
+hospital, factory, radio, airfield in turn; a town about equally far from both starts begins at factory.
+On Saddle that gives Slavany/Velika rail, Bogivka/Bogopil hospital, Pokrar/Rosany factory
+(UNCONFIRMED: compare with the town panel in WarFront). A trait works only while its town is held and
+secured: hospital heals your foot units within 18 cells of it 5% a second, rail makes your trucks within
+90 cells 1.3x faster, factory takes 15% off vehicles. Every secured settlement also takes
+village 4% / town 9% / city 15% off unit prices, 30% at most; the HUD shows the discounted price. The
+town tag shows the trait ("Rail ON" when working). The bot values towns with a trait 25% more, as the
+game's bot does. Not in the slice: the radio trait's radar and the airfield's air drop (no radar or
+aircraft yet). Bot-vs-bot after this: balanced v warlord ends (warlord, about 13 min); turtle v balanced
+reached the 30-minute cap with no winner (6/11 towns held), where it used to end.
+
 ## Next
-1. You run Studio tests B18–B28 (defences, mortar, artillery, scout) and commit.
+1. You run Studio tests B18–B29 (defences, mortar, artillery, scout) and commit.
 2. Then: engineers' repair work, vehicle steering, a closer look at the bot's HQ push; later shared group
    routes and separation.
 
