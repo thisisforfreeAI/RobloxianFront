@@ -87,7 +87,8 @@ local function create(id: number, kind: string, side: number): View
 	bar.BorderSizePixel = 0
 	bar.Parent = back
 	barGui.Parent = body
-	-- status tag: RECON (scout deployed), PACKING / SETTING UP (artillery and mortars)
+	-- status tag: RECON (scout deployed), PACKING / SETTING UP (artillery and mortars), INSIDE
+	-- (garrison), REPAIR (engineer on a repair job)
 	local tagGui = Instance.new("BillboardGui")
 	tagGui.Size = UDim2.fromOffset(70, 12)
 	tagGui.StudsOffsetWorldSpace = Vector3.new(0, 2.6, cells * S * 0.7)
@@ -137,7 +138,7 @@ function UnitRenderer.start()
 	end)
 end
 
-local STATUS = { [1] = "RECON", [2] = "PACKING", [3] = "SETTING UP", [4] = "INSIDE" }
+local STATUS = { [1] = "RECON", [2] = "PACKING", [3] = "SETTING UP", [4] = "INSIDE", [5] = "REPAIR" }
 
 -- units: { {id, kind, side, x, y, heading, hp, maxHp, status}, ... }
 function UnitRenderer.apply(tick: number, units: { any })

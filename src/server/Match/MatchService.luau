@@ -109,6 +109,11 @@ local function onIntent(player: Player, raw: any)
 		if n == 0 then
 			Net.sendState(player, { notice = why })
 		end
+	elseif i.kind == "repair" then
+		local n, why = sim.orderRepair(side, i.targetId, i.unitIds)
+		if n == 0 then
+			Net.sendState(player, { notice = why })
+		end
 	elseif i.kind == "recon" then
 		local n, why = sim.deployRecon(side, i.unitIds)
 		if n == 0 then
@@ -158,6 +163,9 @@ end
 local function unitStatus(e: any): number
 	if e.inside then
 		return 4
+	end
+	if e.repairId then
+		return 5
 	end
 	if (e.reconLeft or 0) > 0 then
 		return 1

@@ -7,6 +7,7 @@
 	T with the cursor on one of your rigs: send a truck to it.
 	R: selected scout cars deploy for recon (PROVISIONAL key).
 	H with the cursor on a town you hold: selected infantry / AT garrison it (PROVISIONAL key).
+	Right click on one of your damaged buildings with engineers selected: they repair it (PROVISIONAL).
 	Trucks drive themselves and cannot be selected.
 	The client only proposes; the server re-checks ownership and the target.
 	Key choices (X, Esc) are PROVISIONAL until WarFront's bindings are confirmed.
@@ -164,8 +165,25 @@ function SelectionController.start(mySide: number, sendIntent: (any) -> (), opts
 			if not next(selected) then
 				return
 			end
-			-- enemy under the cursor? attack it; otherwise move
 			local mouse = UserInputService:GetMouseLocation()
+			-- engineers selected and one of your damaged buildings under the cursor: repair it
+			local engineers = {}
+			for id in selected do
+				local v = UnitRenderer.each()[id]
+				if v and v.kind == "engineer" then
+					table.insert(engineers, id)
+				end
+			end
+			if #engineers > 0 then
+				local own = structureUnder(mouse, function(v)
+					return v.kind ~= "rig" and v.side == mySide and v.built >= 1 and v.hp ~= nil and v.maxHp ~= nil and v.hp < v.maxHp
+				end)
+				if own then
+					sendIntent({ kind = "repair", unitIds = engineers, targetId = own.id })
+					return
+				end
+			end
+			-- enemy under the cursor? attack it; otherwise move
 			local best, bestDist = nil, PICK_PIXELS
 			for id, v in UnitRenderer.each() do
 				if v.side ~= mySide and v.side ~= 0 then

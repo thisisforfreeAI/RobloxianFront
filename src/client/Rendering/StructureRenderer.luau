@@ -13,7 +13,7 @@ local World = require(ReplicatedStorage:WaitForChild("Shared").Config.World)
 
 local StructureRenderer = {}
 
-export type View = { id: number, kind: string, side: number, x: number, y: number, anchor: Part, ring: Part?, block: Part?, bar: Frame, barBack: Frame, text: TextLabel, seen: number, built: number }
+export type View = { id: number, kind: string, side: number, x: number, y: number, anchor: Part, ring: Part?, block: Part?, bar: Frame, barBack: Frame, text: TextLabel, seen: number, built: number, hp: number?, maxHp: number? }
 
 local NAMES = { barracks = "Barracks", factory = "War Factory", bunker = "Bunker", atgun = "AT Gun" }
 local DEFENCE = { bunker = true, atgun = true }
@@ -101,7 +101,7 @@ function StructureRenderer.apply(tick: number, structures: { any })
 			v = create(id, kind, x, y)
 			views[id] = v
 		end
-		v.side, v.seen, v.built = side, tick, built or 1
+		v.side, v.seen, v.built, v.hp, v.maxHp = side, tick, built or 1, hp, maxHp
 		if v.block then
 			local block = v.block :: Part
 			local color = SIDE_COLOR[side] or Color3.new(0.7, 0.7, 0.7)

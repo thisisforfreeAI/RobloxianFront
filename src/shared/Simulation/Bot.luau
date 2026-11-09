@@ -39,7 +39,7 @@
 	Intel: like the game's bots (intel.fog and bots.fog are on) it sees only with its own vision and
 	remembers what it saw (see the intel section); an unseen enemy HQ counts at least
 	bots.unknownHqDefence and an unseen rig bots.unknownDefence. Not in the slice, so skipped: SAM, radar, night ops, artillery base, naval yard,
-	forward HQ, engineers' work, drones, rocket barrages, garrisons and the capital, bridges, rail, naval,
+	forward HQ, engineers' work other than mending buildings, drones, rocket barrages, the capital, bridges, rail, naval,
 	events, sabotage.
 	APPROX: the bot's random numbers are not the game's sequence; held-truck rescues are skipped
 	(trucks are never held by enemies in the slice). UNCONFIRMED: which persona a lobby slot defaults to
@@ -1283,6 +1283,34 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 		end
 	end
 
+	---------------------------------------------------------------- engineers
+
+	-- the game's engineer think (zst), structure part: the first idle engineer goes to mend the first
+	-- own built structure below 70% hp. Not in the slice: road cuts, trenches, wear, raids and the
+	-- other engineer jobs the game checks first.
+	local function mend()
+		local first = nil
+		for _, e in sim.list do
+			if e.alive and e.side == side and e.cat == "unit" and sim.isEngineer(e) and not e.repairId
+				and e.target == nil and e.attackId == nil then
+				first = e
+				break
+			end
+		end
+		if not first then
+			return
+		end
+		for _, st in sim.list do
+			if st.alive and st.cat == "structure" and st.side == side and st.kind ~= "rig" and (st.built or 1) >= 1
+				and st.hp < st.maxHp * 0.7 then
+				local n = sim.orderRepair(side, st.id, { first.id })
+				if n > 0 then
+					return
+				end
+			end
+		end
+	end
+
 	---------------------------------------------------------------- think loop
 
 	local function think()
@@ -1298,6 +1326,7 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 			placeBuilding(p)
 			training(p)
 		end
+		mend()
 		scouts()
 		fallBack()
 		local pool = idleArmy()

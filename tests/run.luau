@@ -737,6 +737,45 @@ if fs.isFile(matchPath) then
 		run(sim2, 8)
 		eq(math.floor(w.x), 96, "no enemy, no cover seeking")
 	end)
+	test("repair: engineers walk within reach and mend maxHp x 0.025 per engineer per second", function()
+		local sim = newSim()
+		clearUnits(sim, {})
+		local hq = sim.entities[sim.sides[1].hqId]
+		eq(sim.orderRepair(1, hq.id, {}), 0, "nothing to mend at full hp")
+		hq.hp = 300
+		local _, why = sim.orderRepair(1, hq.id, {})
+		eq(why, "noEngineers")
+		local a = sim.spawnUnit("engineer", 1, 30.5, 30.5)
+		local b = sim.spawnUnit("engineer", 1, 31.5, 30.5)
+		eq(select(2, sim.orderRepair(2, hq.id, {})), "notOwned")
+		eq(sim.orderRepair(1, hq.id, {}), 2, "the nearest idle engineers")
+		run(sim, 15)
+		assert(math.abs(a.x - 10.5) <= 6.5 and math.abs(b.x - 10.5) <= 6.5, "within footprint 2 + reach 4.5")
+		assert(not a.path and a.repairId == hq.id, "working")
+		local h0 = hq.hp
+		run(sim, 2)
+		near(hq.hp - h0, 3000 * 0.025 * 2 * 2, "two engineers: 150 hp/s")
+		run(sim, 15)
+		eq(hq.hp, 3000)
+		assert(a.repairId == nil and b.repairId == nil, "released when whole")
+		-- any other order ends the job
+		hq.hp = 2000
+		sim.orderRepair(1, hq.id, { a.id })
+		sim.orderMove(1, { a.id }, 40.5, 30.5)
+		eq(a.repairId, nil)
+	end)
+	test("bot sends an idle engineer to mend a building below 70% hp", function()
+		local sim = newSim()
+		local bot = Bot.new(sim, 1, "balanced")
+		local hq = sim.entities[sim.sides[1].hqId]
+		local e = sim.spawnUnit("engineer", 1, 20.5, 30.5)
+		hq.hp = 2200 -- 73%: left alone
+		bot.think()
+		eq(e.repairId, nil, "not below 70%")
+		hq.hp = 2000
+		bot.think()
+		eq(e.repairId, hq.id)
+	end)
 	test("towns: two infantry take a neutral town in 16 s; a held town lets its owner build round it", function()
 		local sim = newSim({ settlements = { { name = "T", x = 130, y = 45, kind = "town" }, { name = "V", x = 90, y = 45, kind = "village" } } })
 		for _, side in { 1, 2 } do

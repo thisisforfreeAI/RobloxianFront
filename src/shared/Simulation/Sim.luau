@@ -94,7 +94,9 @@
 	        can hurt holds movement.enemySpaceCells short. Idle foot soldiers step into better cover
 	        nearby when an enemy is in range (seekCover). APPROX: unarmed units are
 	        not slid round enemies, and smoke does not hide chase targets.
-	Engineers can be trained (the HQ lists them) but their building and repair work is not in the slice.
+	Engineers (orderRepair below): mend a damaged own structure, footprint + engineers.reach away, at
+	        maxHp x engineers.structureSharePerSec per engineer per second (up to crewMax). Not in the
+	        slice: road wear and cuts, rig blowouts, rail, sabotage, trenches, building with engineers.
 	Fog: visionFor / nightAmount below; the server filters snapshots per side (Shared.Simulation.Fog).
 	Not in the slice: line of sight (the game's only blockers are settlement buildings), weather, veterancy, smoke, rig damage,
 	        settlement traits and damage, refineries, rail, events, SAM, radar, rocket artillery (salvo barrages),
@@ -1024,6 +1026,7 @@ function Sim.new(deps: Deps)
 		if (e.reconLeft or 0) > 0 then
 			packRecon(e)
 		end
+		e.repairId = nil -- any new order also ends a repair job (the game's clearOrders)
 	end
 	-- the game's deployRecon (qJe): the scout stops and sees intel.scoutReconRadius around it for
 	-- intel.scoutDeploySec. Returns (count deployed, reason when none).
@@ -1058,6 +1061,161 @@ function Sim.new(deps: Deps)
 				if e.reconLeft <= 0 then
 					packRecon(e)
 					event({ type = "scoutPacked", id = e.id, side = e.side })
+				end
+			end
+		end
+	end
+
+	---------------------------------------------------------------- engineers' repair
+
+	local function sq(ax: number, ay: number, bx: number, by: number): number
+		return (ax - bx) ^ 2 + (ay - by) ^ 2
+	end
+	-- the game's Km for a structure job: where the crew works from, footprint + engineers.reach
+	local function repairSpot(st: Entity): (number, number, number)
+		local x, y = centre(st.cell)
+		return x, y, footprintOf(st.kind) + num("engineers.reach")
+	end
+	-- the game's jX for a structure job: nil when it can be repaired, else the reason
+	local function repairProblem(side: number, st: Entity?): string?
+		if not st or not st.alive or st.cat ~= "structure" or st.side ~= side then
+			return "notOwned"
+		end
+		if st.kind == "rig" then
+			return "blocked" -- rig repair (blowouts) is a different job, not in the slice
+		end
+		if st.hp < st.maxHp and (st.built or 1) >= 1 then
+			return nil
+		end
+		return "notDamaged"
+	end
+	local function isEngineer(e: Entity): boolean
+		local ab = r.data[`units.{e.kind}.abilities`] :: { string }?
+		return e.cat == "unit" and ab ~= nil and table.find(ab, "engineer") ~= nil
+	end
+	self.isEngineer = isEngineer
+	-- the game's walkNear: walk to the nearest passable cell within r of (x, y); nothing when already
+	-- there. APPROX: the game's route search ends on the first such cell its search reaches.
+	local function walkNear(e: Entity, x: number, y: number, rr: number)
+		e.path, e.target, e.spot = nil, nil, nil
+		e.still = 0
+		if sq(e.x, e.y, x, y) <= rr * rr then
+			return
+		end
+		local q = math.max(0.5, rr)
+		local best, bestD = -1, math.huge
+		local k = math.ceil(q)
+		local bx, by = math.floor(x), math.floor(y)
+		for dy = -k, k do
+			for dx = -k, k do
+				local cx, cy = bx + dx, by + dy
+				if cx >= 0 and cy >= 0 and cx < W and cy < H then
+					local c = cy * W + cx
+					if sq(cx + 0.5, cy + 0.5, x, y) <= q * q and roads.passable(c) then
+						local g = sq(cx + 0.5, cy + 0.5, e.x, e.y)
+						if g < bestD then
+							best, bestD = c, g
+						end
+					end
+				end
+			end
+		end
+		if best >= 0 then
+			local cx, cy = centre(best)
+			planTo(e, best, cx, cy)
+		end
+	end
+	-- the game's Th: the job ends and the engineer idles where it stands
+	local function endJob(e: Entity)
+		e.repairId, e.path, e.target, e.spot = nil, nil, nil, nil
+		e.post = cellAt(e.x, e.y)
+	end
+	-- the game's repair (KX) for a damaged own structure: the given engineers, or with none given the
+	-- engineers.crewMax nearest idle ones, walk to within 0.8 x reach of it and mend it.
+	-- Returns (count sent, reason when none).
+	function self.orderRepair(side: number, structureId: number, ids: { number }?): (number, string?)
+		local st = self.entities[structureId]
+		local why = repairProblem(side, st)
+		if why then
+			return 0, why
+		end
+		local x, y, reach = repairSpot(st :: Entity)
+		local crew = {}
+		if ids and #ids > 0 then
+			for _, id in ids do
+				local e = self.entities[id]
+				if e and orderable(e, side) and isEngineer(e :: Entity) then
+					table.insert(crew, e)
+				end
+			end
+		else
+			for _, e in self.list do
+				if orderable(e, side) and isEngineer(e) and not e.repairId and not e.attackId then
+					table.insert(crew, e)
+				end
+			end
+			table.sort(crew, function(a: Entity, b: Entity)
+				return sq(a.x, a.y, x, y) < sq(b.x, b.y, x, y)
+			end)
+			for i = #crew, num("engineers.crewMax") + 1, -1 do
+				crew[i] = nil
+			end
+		end
+		if #crew == 0 then
+			return 0, "noEngineers"
+		end
+		for _, e in crew do
+			e.attackId, e.chasing = nil, nil
+			clearRecon(e)
+			leaveGarrison(e)
+			e.repairId = structureId
+			walkNear(e, x, y, reach * 0.8)
+		end
+		return #crew, nil
+	end
+	-- the game's taskThink (Sme) for repair, every 20 ticks while the engineer stands: drop a job that
+	-- is done or gone, walk back within reach if it drifted out.
+	local function repairThink(e: Entity)
+		local st = self.entities[e.repairId :: number]
+		if repairProblem(e.side, st) then
+			endJob(e)
+			return
+		end
+		local x, y, reach = repairSpot(st :: Entity)
+		if sq(e.x, e.y, x, y) > reach * reach then
+			walkNear(e, x, y, reach * 0.8)
+		end
+	end
+	-- the game's updateRepairs (Mme), structures: engineers within reach stop and work; each
+	-- structure gains maxHp x engineers.structureSharePerSec x min(crew, crewMax) per second; when it
+	-- is whole the crew is released.
+	local function repairsTick(dt: number)
+		local crews: { [number]: number } = {}
+		for _, e in self.list do
+			if e.alive and e.repairId then
+				local st = self.entities[e.repairId]
+				if st and st.alive then
+					local x, y, reach = repairSpot(st)
+					if sq(e.x, e.y, x, y) <= reach * reach then
+						e.path, e.target, e.spot = nil, nil, nil
+						e.aimX, e.aimY = x, y
+						crews[st.id] = (crews[st.id] or 0) + 1
+					end
+				end
+			end
+		end
+		for id, n in crews do
+			local st = self.entities[id]
+			if st and st.alive then
+				local crew = math.min(n, num("engineers.crewMax"))
+				st.hp = math.min(st.maxHp, st.hp + st.maxHp * num("engineers.structureSharePerSec") * crew * dt)
+				if st.hp >= st.maxHp then
+					event({ type = "repaired", id = st.id, side = st.side, kind = st.kind })
+					for _, e in self.list do
+						if e.alive and e.repairId == id then
+							endJob(e)
+						end
+					end
 				end
 			end
 		end
@@ -2548,7 +2706,14 @@ function Sim.new(deps: Deps)
 				return
 			end
 		end
-		if (e.id + self.ticks) % 20 ~= 0 or e.attackId or e.firing or (e.reconLeft or 0) > 0 then
+		if (e.id + self.ticks) % 20 ~= 0 then
+			return
+		end
+		if e.repairId then
+			repairThink(e)
+			return
+		end
+		if e.attackId or e.firing or (e.reconLeft or 0) > 0 then
 			return
 		end
 		if dps <= 0 or text(key .. ".weapon") == "salvo" then
@@ -2689,6 +2854,7 @@ function Sim.new(deps: Deps)
 		rigs(dt)
 		settlementsTick(dt)
 		cityHealing(dt)
+		repairsTick(dt)
 		updateRoutes()
 		trucks(dt)
 		hqTrickle(dt)

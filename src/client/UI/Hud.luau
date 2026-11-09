@@ -111,7 +111,7 @@ function Hud.start(info: { [string]: any }, acts: { produce: (string, number?) -
 	gui.ResetOnSpawn = false
 	local sideText = if info.side == 1 then "Side 1 (blue)" elseif info.side == 2 then "Side 2 (red)" else "Spectator"
 	local bar = label(gui, UDim2.new(1, 0, 0, 28), UDim2.new(), 14)
-	bar.Text = `RobloxianFront · {info.map} · {sideText} · WASD pan · wheel zoom · click/drag select · right-click move or attack · X stop · click a building to train there · Q/E/Z/C train · B/F/K/G build · R scouts recon · H garrison a town · PLACEHOLDER ART`
+	bar.Text = `RobloxianFront · {info.map} · {sideText} · WASD pan · wheel zoom · click/drag select · right-click move or attack · X stop · click a building to train there · Q/E/Z/C train · B/F/K/G build · R scouts recon · H garrison a town · right-click a damaged building with engineers to repair · PLACEHOLDER ART`
 
 	oilLabel = label(gui, UDim2.fromOffset(230, 34), UDim2.fromOffset(10, 38), 18)
 	oilLabel.Text = "Oil —"
