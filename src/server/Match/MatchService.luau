@@ -237,6 +237,7 @@ local function territoryRuns(side: number): { number }
 end
 
 local sentCities: { [Player]: string } = {}
+local citySeen: { [number]: { [number]: number } } = {} -- per side: settlement id -> owner last seen
 local function privateState()
 	for player, side in sideOf do
 		local s = sim.sides[side]
@@ -263,11 +264,21 @@ local function privateState()
 				payload.territory = runs
 			end
 		end
-		-- settlements: owner, capture side and progress, hold (UNCONFIRMED: whether the game hides
-		-- settlement owners under fog; sent to everyone here)
+		-- settlements: owner, capture side and progress, hold. With fog, like rigs: a settlement your
+		-- side does not see now shows the owner last seen there (neutral until first seen) and no
+		-- capture or hold progress; your own always show. (APPROX of the game's viewer intel.)
+		local viewer = if side > 0 and sim.fogOn() then viewers[side] else nil
+		local seenOwners = citySeen[side] or {}
+		citySeen[side] = seenOwners
 		local cities = {}
 		for _, st in sim.settlements do
-			table.insert(cities, { st.id, st.owner, if st.capture then st.capture.by else 0, if st.capture then math.floor(st.capture.progress * 100) / 100 else 0, math.floor(st.hold * 100) / 100 })
+			local seen = not viewer or st.owner == side or viewer.visibleAt(st.x, st.y)
+			if seen then
+				seenOwners[st.id] = st.owner
+				table.insert(cities, { st.id, st.owner, if st.capture then st.capture.by else 0, if st.capture then math.floor(st.capture.progress * 100) / 100 else 0, math.floor(st.hold * 100) / 100 })
+			else
+				table.insert(cities, { st.id, seenOwners[st.id] or 0, 0, 0, 1 })
+			end
 		end
 		local ck = HttpService:JSONEncode(cities)
 		if sentCities[player] ~= ck then

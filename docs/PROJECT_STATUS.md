@@ -139,7 +139,8 @@ fast, then it turns neutral with their capture started; the owner's units there 
 rigs already allowed building round them (now covered by a test). Not in the slice yet: garrisons
 (units inside, fortified/secured status and its benefits), city traits, forward training, settlement
 damage, and the bot's city-taking (bots.city*): bot units only take settlements they happen to stand
-in. UNCONFIRMED: whether the game hides settlement owners under fog (sent to everyone here).
+in. With fog, a settlement you don't see shows the owner last seen there and no capture progress (as rigs
+do; APPROX of the game's viewer).
 
 ## Next
 1. You run Studio tests B18–B24 (defences, mortar, artillery, scout) and commit.
