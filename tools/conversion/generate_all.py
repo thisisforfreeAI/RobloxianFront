@@ -31,6 +31,11 @@ def main(install):
         run(sys.executable, "-I", os.path.join(HERE, "rules_to_luau.py"), tsv,
             os.path.join(GAMEDATA, "RulesData.luau"))
         run(sys.executable, "-I", os.path.join(HERE, "extract_catalog.py"), dist, GAMEDATA)
+        main_js = glob.glob(os.path.join(dist, "assets", "main-*.js"))
+        if len(main_js) != 1:
+            sys.exit(f"expected one main bundle, found {main_js}")
+        # the values a real match runs with (the simulation uses these, not the guide's table)
+        run("node", os.path.join(HERE, "export_rules.cjs"), main_js[0], os.path.join(GAMEDATA, "RulesMatch.luau"))
         worker = glob.glob(os.path.join(dist, "assets", "genWorker-*.js"))
         if len(worker) != 1:
             sys.exit(f"expected one genWorker bundle, found {worker}")

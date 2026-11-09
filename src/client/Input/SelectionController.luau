@@ -3,6 +3,7 @@
 	SelectionController: RTS selection and orders.
 	Left click: select own unit (Shift adds/toggles). Left drag: box select (Shift adds).
 	Right click on an enemy unit or HQ: attack order. Right click on the ground: move order. X: stop. Esc: clear.
+	T with the cursor on one of your rigs: send a truck to it.
 	Trucks drive themselves and cannot be selected.
 	The client only proposes; the server re-checks ownership and the target.
 	Key choices (X, Esc) are PROVISIONAL until WarFront's bindings are confirmed.
@@ -160,6 +161,22 @@ function SelectionController.start(mySide: number, sendIntent: (any) -> ())
 			if hit then
 				local x, y = World.toCell(hit)
 				send(sendIntent, "move", { x = x, y = y })
+			end
+		elseif input.KeyCode == Enum.KeyCode.T then
+			-- T over one of your rigs: send a truck there (an idle one first, otherwise buy one)
+			local mouse = UserInputService:GetMouseLocation()
+			local best, bestDist = nil, 48
+			for id, v in StructureRenderer.each() do
+				if v.kind == "rig" and v.side == mySide then
+					local p, on = workspace.CurrentCamera:WorldToViewportPoint(World.toWorld(v.x, v.y, 1))
+					local d = (Vector2.new(p.X, p.Y) - mouse).Magnitude
+					if on and d < bestDist then
+						best, bestDist = id, d
+					end
+				end
+			end
+			if best then
+				sendIntent({ kind = "truck", rigId = best })
 			end
 		elseif input.KeyCode == Enum.KeyCode.X and next(selected) then
 			send(sendIntent, "stop")

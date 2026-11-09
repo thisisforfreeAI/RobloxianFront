@@ -1,6 +1,7 @@
 --!strict
 --[[
-	Rules: read access to WarFront's rules table (RulesData.luau, generated).
+	Rules: read access to WarFront's rules tables (generated, git-ignored): RulesMatch.luau holds the
+	values a real match runs with (the simulation uses these); RulesData.luau is the modding guide's table.
 	Keys keep WarFront's dotted names, e.g. "units.tank.cost".
 	Pure module: pass the data table in, so it runs in Roblox and in Lune tests.
 ]]
@@ -8,7 +9,7 @@
 local Rules = {}
 Rules.__index = Rules
 
-export type RuleValue = number | boolean
+export type RuleValue = number | boolean | string | { any }
 export type RuleSet = typeof(setmetatable({} :: { data: { [string]: RuleValue } }, Rules))
 
 function Rules.new(data: { [string]: RuleValue }): RuleSet
@@ -39,6 +40,14 @@ function Rules.flag(self: RuleSet, key: string): boolean
 	local v = self.data[key]
 	if type(v) ~= "boolean" then
 		error(`Rules: "{key}" is not a switch rule (got {typeof(v)})`, 2)
+	end
+	return v
+end
+
+function Rules.text(self: RuleSet, key: string): string
+	local v = self.data[key]
+	if type(v) ~= "string" then
+		error(`Rules: "{key}" is not a text rule (got {typeof(v)})`, 2)
 	end
 	return v
 end

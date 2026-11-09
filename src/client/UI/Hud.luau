@@ -33,7 +33,7 @@ function Hud.start(info: { [string]: any }, produce: () -> ())
 	local bar = label(gui, UDim2.new(1, 0, 0, 28), UDim2.new(), 14)
 	bar.Text = `RobloxianFront · {info.map} · {sideText} · WASD pan · wheel zoom · click/drag select · right-click move or attack · X stop · Q train infantry · PLACEHOLDER ART`
 
-	oilLabel = label(gui, UDim2.fromOffset(150, 34), UDim2.fromOffset(10, 38), 18)
+	oilLabel = label(gui, UDim2.fromOffset(230, 34), UDim2.fromOffset(10, 38), 18)
 	oilLabel.Text = "Oil —"
 	oilLabel.TextColor3 = Color3.fromRGB(250, 210, 90)
 	queueLabel = label(gui, UDim2.fromOffset(150, 22), UDim2.fromOffset(10, 74), 13)
@@ -59,10 +59,10 @@ function Hud.start(info: { [string]: any }, produce: () -> ())
 	gui.Parent = Players.LocalPlayer:WaitForChild("PlayerGui")
 end
 
--- state from the server (2 Hz): { oil, queue, queueLeft, lost, winner, notice }
+-- state from the server (2 Hz): { oil, trucksIdle, queue, queueLeft, lost, winner, notice }
 function Hud.update(state: { [string]: any }, mySide: number)
 	if state.oil then
-		oilLabel.Text = `Oil {state.oil}`
+		oilLabel.Text = if state.trucksIdle then `Oil {state.oil} · trucks idle {state.trucksIdle}` else `Oil {state.oil}`
 	end
 	if state.queue then
 		queueLabel.Text = if state.queueLeft

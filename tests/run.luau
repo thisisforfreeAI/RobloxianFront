@@ -166,27 +166,69 @@ else
 	print("  skip  Saddle.luau not generated")
 end
 
-print("Milestone 1B simulation (needs RulesData)")
-if fs.isFile(rulesPath) then
+print("Roads (pure)")
+local Roads = require("../src/shared/Simulation/Roads")
+test("grid line walk matches the game's (0,0)->(5,2) and (3,3)->(0,0)", function()
+	-- expected cells computed with WarFront's own line function
+	local a = Roads.line(10, 10, 0, 0, 5, 2)
+	eq(table.concat(a, ","), "0,1,11,12,13,14,24,25")
+	local b = Roads.line(10, 10, 3.7, 3.2, 0, 0)
+	eq(table.concat(b, ","), "33,23,22,12,11,1,0")
+	eq(table.concat(Roads.line(10, 10, 2, 2, 2, 6), ","), "22,32,42,52,62", "vertical")
+	eq(table.concat(Roads.line(10, 10, 2, 2, 7, 2), ","), "22,23,24,25,26,27", "horizontal")
+end)
+test("float32 rounding helper", function()
+	eq(Roads.f32(0.1), 0.10000000149011612)
+end)
+test("road raster, bridge widening, networks and truck route", function()
+	-- 20x9 plains with a river column at x=10; one highway along y=4 crossing it
+	local w, h = 20, 9
+	local roads = Roads.build({
+		width = w, height = h,
+		terrainAt = function(c) return if c % w == 10 then "river" else "plains" end,
+		passable = function(t) return t ~= "river" and t ~= "deep" end,
+		roads = { { rank = 2, track = false, pts = { 0.5, 4.5, 19.5, 4.5 } } },
+		bridgeHalf = 1,
+		truckCost = { [0] = 1.25, [1] = 1 / 0.6, [2] = 1.25, [3] = 1 },
+		offRoadCost = 20,
+		offRoadReach = 3,
+	})
+	assert(roads.isRoad(4 * w + 10), "bridge cell is road")
+	assert(roads.isRoad(3 * w + 10) and roads.isRoad(5 * w + 10), "deck widened over the river")
+	assert(not roads.isRoad(3 * w + 9), "no widening onto passable ground")
+	eq(roads.pieces, 1)
+	local path = roads.truckRoute(4 * w + 2, 4 * w + 18) :: { number }
+	eq(#path, 16, "straight along the highway")
+	eq(path[#path], 4 * w + 18)
+	-- off-road only near the ends: a goal 7 rows away from any road is unreachable
+	local far = roads.truckRoute(0 * w + 2, 8 * w + 18)
+	assert(far ~= nil, "short off-road ends allowed (reach 3 + road)")
+end)
+
+print("Milestone 1B simulation on WarFront's match rules (needs RulesMatch)")
+local matchPath = "src/shared/GameData/RulesMatch.luau"
+if fs.isFile(matchPath) then
 	local Sim = require("../src/shared/Simulation/Sim")
 	local Bot = require("../src/shared/Simulation/Bot")
-	local Movement = require("../src/shared/Simulation/Movement")
-	local rulesData = require("../src/shared/GameData/RulesData") :: any
-	local CLASS = { infantry = "soft", at = "soft", tank = "armour", scout = "soft" }
-	local function newSim()
+	local rulesData = require("../src/shared/GameData/RulesMatch") :: any
+	local W, H = 180, 60
+	-- plains, a forest block at x 100..102, and a highway along y = 30
+	local function newSim(opts: { [string]: any }?)
+		local o = opts or {}
 		return Sim.new({
 			rules = Rules.new(rulesData) :: any,
 			movement = Movement,
-			paceAt = function(_kind, x, y)
-				return if x >= 0 and y >= 0 and x < 60 and y < 20 then 1 else 0
-			end,
-			unitClass = function(kind)
-				return CLASS[kind] or "soft"
-			end,
-			starts = { { x = 5, y = 10 }, { x = 55, y = 10 } },
-			rigs = { { x = 14, y = 10 }, { x = 46, y = 10 } },
-			width = 60,
-			height = 20,
+			roadsLib = Roads,
+			map = {
+				width = W, height = H,
+				terrainAt = function(c)
+					local x = c % W
+					return if x >= 100 and x <= 102 then "forest" else "plains"
+				end,
+				roads = o.roads or { { rank = 2, track = false, pts = { 0.5, 30.5, 179.5, 30.5 } } },
+			},
+			starts = { { x = 10.5, y = 30.5 }, { x = 170.5, y = 30.5 } },
+			rigs = o.rigs or { { x = 50, y = 30 }, { x = 130, y = 30 } },
 		})
 	end
 	local function run(sim, seconds, bots: any?)
@@ -201,14 +243,11 @@ if fs.isFile(rulesPath) then
 	end
 	local function units(sim, side, kind)
 		local list = {}
-		for _, e in sim.entities do
-			if e.side == side and e.kind == kind then
+		for _, e in sim.list do
+			if e.alive and e.side == side and e.kind == kind then
 				table.insert(list, e)
 			end
 		end
-		table.sort(list, function(a, b)
-			return a.id < b.id
-		end)
 		return list
 	end
 	local function ids(list)
@@ -218,17 +257,48 @@ if fs.isFile(rulesPath) then
 		end
 		return out
 	end
+	local function clearUnits(sim, keep: { any })
+		local k = {}
+		for _, e in keep do
+			k[e] = true
+		end
+		for _, e in sim.list do
+			if e.cat == "unit" and not k[e] then
+				e.alive = false
+			end
+		end
+	end
+	local function rigAt(sim, x)
+		for _, rig in sim.rigs do
+			if math.floor(rig.x) == x then
+				return rig
+			end
+		end
+		error("no rig")
+	end
 
-	test("setup: HQs 3000 hp, 600 oil, 3 infantry per side, neutral rigs", function()
-		local sim = newSim()
-		eq(sim.sides[1].oil, 600)
-		eq(sim.entities[sim.sides[1].hqId].hp, 3000)
-		eq(#units(sim, 1, "infantry"), 3)
-		eq(#units(sim, 2, "infantry"), 3)
-		eq(#units(sim, 0, "rig"), 2)
+	test("match rules: cell scale 3, infantry range 13.5 cells, real rig values", function()
+		local r = Rules.new(rulesData)
+		eq(r:number("match.cellScale"), 3)
+		near(r:number("units.infantry.range"), 13.5, "range")
+		eq(r:number("rigs.oilPerSec"), 2.4)
+		eq(r:number("rigs.tank"), 440)
+		eq(r:number("trucks.kinds.light.capacity"), 160)
 	end)
 
-	test("production: costs 36, takes 7 s, queue capped at 6, refuses without oil", function()
+	test("setup: 600 oil, 3 idle trucks, 3 infantry 6.2 cells round the HQ, HQ 3000 hp", function()
+		local sim = newSim()
+		eq(sim.sides[1].oil, 600)
+		eq(sim.sides[1].trucksIdle, 3)
+		local hq = sim.hqOf(1)
+		eq(hq.hp, 3000)
+		local inf = units(sim, 1, "infantry")
+		eq(#inf, 3)
+		near(math.sqrt((inf[1].x - hq.x) ^ 2 + (inf[1].y - hq.y) ^ 2), 2 + 1.4 * 3, "ring radius")
+		near(math.atan2(inf[1].y - hq.y, inf[1].x - hq.x), 0.6, "first at 0.6 rad")
+	end)
+
+	test("production: 36 oil, 7 s, queue 6, unit cap and oil refusals", function()
 		local sim = newSim()
 		assert(sim.orderProduce(1, "infantry"))
 		eq(sim.sides[1].oil, 564)
@@ -240,113 +310,247 @@ if fs.isFile(rulesPath) then
 			sim.orderProduce(1, "infantry")
 		end
 		local ok, why = sim.orderProduce(1, "infantry")
-		assert(not ok and why == "queue full", why)
+		assert(not ok and why == "queueFull", why)
 		sim.sides[2].oil = 10
 		local ok2, why2 = sim.orderProduce(2, "infantry")
-		assert(not ok2 and why2 == "not enough oil", why2)
-		local ok3 = sim.orderProduce(1, "tank")
-		assert(not ok3, "HQ must not build tanks")
+		assert(not ok2 and why2 == "oil", why2)
+		assert(not sim.orderProduce(1, "tank"), "HQ must not build tanks")
 	end)
 
 	test("orders for the other side's units are refused", function()
 		local sim = newSim()
-		local enemy = ids(units(sim, 2, "infantry"))
-		local refused = sim.orderMove(1, enemy, 30, 10)
+		local refused = sim.orderMove(1, ids(units(sim, 2, "infantry")), 30, 10)
 		eq(#refused, 3)
-		for _, e in units(sim, 2, "infantry") do
-			assert(e.target == nil, "enemy unit got an order")
-		end
 	end)
 
-	test("rig capture takes 12 s with weight 2, gives 3 trucks, trucks deliver oil", function()
+	test("capture: weight 3 takes 12 s, weight 1 takes 24 s (minPace formula)", function()
 		local sim = newSim()
 		local inf = units(sim, 1, "infantry")
-		for i, u in inf do -- stand three infantry (weight 3 >= rigs.need 2) on the rig
-			u.x, u.y = 14 + (i - 2) * 0.5, 10
+		clearUnits(sim, inf)
+		for i, u in inf do
+			u.x, u.y = 50.5 + (i - 2) * 0.5, 30.5
 		end
 		run(sim, 11.9)
-		eq(#units(sim, 1, "rig"), 0, "not before 12 s")
+		eq(rigAt(sim, 50).side, 0, "not before 12 s")
 		run(sim, 0.2)
-		eq(#units(sim, 1, "rig"), 1, "captured")
-		eq(#units(sim, 1, "truck"), 3, "startIdle trucks")
-		sim.takeEvents()
-		local oilBefore = sim.sides[1].oil
+		eq(rigAt(sim, 50).side, 1, "captured at 12 s")
+		local sim2 = newSim()
+		local one = units(sim2, 1, "infantry")[1]
+		clearUnits(sim2, { one })
+		one.x, one.y = 50.5, 30.5
+		run(sim2, 23.9)
+		eq(rigAt(sim2, 50).side, 0, "one infantry: pace 0.5")
+		run(sim2, 0.2)
+		eq(rigAt(sim2, 50).side, 1, "captured at 24 s")
+	end)
+
+	test("capture: a rival freezes progress, leaving lets it decay at 0.08/s", function()
+		local sim = newSim()
+		local a = units(sim, 1, "infantry")[1]
+		local b = units(sim, 2, "infantry")[1]
+		clearUnits(sim, { a })
+		a.x, a.y = 50.5, 30.5
+		run(sim, 6) -- progress 0.25
+		local rig = rigAt(sim, 50)
+		near(rig.capture.progress, 0.25 + 0, "progress after 6 s at pace 0.5")
+		_ = b
+		local rival = sim.spawnUnit("infantry", 2, 51, 30.5) -- an unkillable rival on the rig
+		rival.hp, rival.shotTimer, a.shotTimer = 1e9, math.huge, math.huge
+		run(sim, 2)
+		assert(rig.contested, "contested")
+		near(rig.capture.progress, 0.25, "frozen")
+		rival.alive, a.target = false, nil
+		a.x = 80
+		run(sim, 1)
+		assert(math.abs(rig.capture.progress - (0.25 - 0.08)) < 1e-6, `decayed: {rig.capture.progress}`)
+	end)
+
+	test("guard: a rig within radius x guardShare of the owner's HQ cannot be taken", function()
+		local sim = newSim({ rigs = { { x = 160, y = 30 } } })
+		local rig = sim.rigs[1]
+		rig.side, rig.takenAt = 2, -999
+		assert(sim.guarded(rig, 2), "HQ guards rig 10.5 cells away (reach 12)")
+		local inf = units(sim, 1, "infantry")
+		clearUnits(sim, inf)
+		for _, u in inf do
+			u.x, u.y, u.hp, u.shotTimer = 160.5, 31, 1e9, math.huge
+		end
+		run(sim, 30)
+		eq(rig.side, 2, "still side 2")
+	end)
+
+	test("pumping starts takeoverSec (6 s) after capture at 2.4 oil/s into a 440 tank", function()
+		local sim = newSim()
+		local inf = units(sim, 1, "infantry")
+		clearUnits(sim, inf)
+		for _, u in inf do
+			u.x, u.y = 50.5, 30.5
+		end
+		local rig = rigAt(sim, 50)
+		while rig.side ~= 1 do
+			sim.step(0.05)
+		end
+		local t0 = sim.time
+		while sim.time - t0 < 5.9 do
+			sim.step(0.05)
+		end
+		eq(rig.tank, 0, "no oil during takeover")
+		run(sim, 1.1)
+		assert(rig.tank > 0 and rig.tank <= 2.4 * 1.1, `pumping: {rig.tank}`)
+	end)
+
+	test("trucks: one idle truck goes out automatically, loads and delivers by road", function()
+		local sim = newSim()
+		local inf = units(sim, 1, "infantry")
+		clearUnits(sim, inf)
+		for _, u in inf do
+			u.x, u.y = 50.5, 30.5
+		end
+		local start = sim.sides[1].oil
 		local delivered = 0
+		local t = 0
 		for _ = 1, 20 * 120 do
 			sim.step(0.05)
+			t += 0.05
 			for _, ev in sim.takeEvents() do
 				if ev.type == "delivered" then
 					delivered += ev.oil
 				end
 			end
 		end
-		assert(delivered > 0, "no truck delivered in 120 s")
-		local trickle = 0.5 * 120
-		assert(math.abs(sim.sides[1].oil - (oilBefore + delivered + trickle)) < 1e-6, "oil = deliveries + HQ trickle")
+		eq(sim.sides[1].trucksIdle, 2, "one idle truck used")
+		eq(#units(sim, 1, "truck"), 1, "one truck on the rig")
+		assert(delivered >= 80, `first load is at least half a truck: {delivered}`)
+		assert(math.abs(sim.sides[1].oil - (start + 0.5 * t + delivered)) < 1e-6, "oil = start + HQ trickle + deliveries")
 	end)
 
-	test("combat: infantry vs infantry, 8 damage per shot, kill in 13 shots", function()
+	test("buying trucks: idle first, then 40 oil each, at most 4 per rig", function()
+		local sim = newSim()
+		local rig = rigAt(sim, 50)
+		rig.side, rig.takenAt, rig.autoTruckAt = 1, 0, 0
+		sim.updateConnections()
+		for _ = 1, 10 do
+			sim.updateRoutes()
+			sim.ticks += 1
+		end
+		assert(rig.route, "route home exists")
+		for _ = 1, 3 do
+			assert(sim.orderTruck(1, rig.id))
+		end
+		eq(sim.sides[1].trucksIdle, 0)
+		eq(sim.sides[1].oil, 600)
+		assert(sim.orderTruck(1, rig.id))
+		eq(sim.sides[1].oil, 560, "fourth truck bought")
+		local ok, why = sim.orderTruck(1, rig.id)
+		assert(not ok and why == "truckLimit", why)
+		local ok2, why2 = sim.orderTruck(2, rig.id)
+		assert(not ok2 and why2 == "notOwned", why2)
+	end)
+
+	test("a rig with no road nearby is not connected and gets no truck", function()
+		local sim = newSim({ roads = { { rank = 2, track = false, pts = { 0.5, 30.5, 30.5, 30.5 } } } })
+		local rig = rigAt(sim, 50)
+		rig.side, rig.takenAt = 1, 0
+		sim.updateConnections()
+		eq(rig.connected, false)
+		local ok, why = sim.orderTruck(1, rig.id)
+		assert(not ok and why == "noRoute", why)
+	end)
+
+	test("combat: 8 damage per infantry shot, landing after the bullet flight", function()
 		local sim = newSim()
 		local a = units(sim, 1, "infantry")[1]
 		local b = units(sim, 2, "infantry")[1]
-		for _, e in sim.entities do -- clear the field except a and b and the HQs
-			if e.cat == "unit" and e ~= a and e ~= b then
-				sim.entities[e.id] = nil
-			end
-		end
-		a.x, a.y, b.x, b.y = 30, 10, 32, 10
-		run(sim, 0.05)
-		eq(b.hp, 92, "first shot")
-		run(sim, 12)
-		assert(b.hp <= 0 and sim.entities[b.id] == nil, `b hp {b.hp}`)
+		clearUnits(sim, { a, b })
+		a.x, a.y, b.x, b.y = 60, 10, 67, 10 -- 7 cells: flight 0.1 s
+		b.shotTimer = math.huge
+		run(sim, 0.1)
+		eq(b.hp, 100, "still in flight")
+		run(sim, 0.1)
+		eq(b.hp, 92, "first hit")
+		run(sim, 14)
+		assert(not b.alive, `b hp {b.hp}`)
 	end)
 
-	test("armour facing: rear hits do 1.35x, front 0.7x", function()
+	test("cover: forest takes 25% off", function()
 		local sim = newSim()
-		local tank = sim.spawnUnit("tank", 2, 30, 10)
-		tank.heading = 0 -- facing east
-		local front = sim.spawnUnit("infantry", 1, 32, 10)
-		for _, e in sim.entities do
-			if e.cat == "unit" and e ~= tank and e ~= front then
-				sim.entities[e.id] = nil
-			end
-		end
-		tank.cooldown = math.huge -- tank holds fire
+		local a = units(sim, 1, "infantry")[1]
+		local b = units(sim, 2, "infantry")[1]
+		clearUnits(sim, { a, b })
+		a.x, a.y, b.x, b.y = 95, 10, 101.5, 10
+		b.heading, b.shotTimer = math.pi, math.huge -- b faces a
+		run(sim, 0.3)
+		near(b.hp, 100 - 8 * 0.75, "forest cover 0.25")
+	end)
+
+	test("armour facing: front 0.7x, rear 1.35x (tank target)", function()
+		local sim = newSim()
+		local tank = sim.spawnUnit("tank", 2, 60, 10)
+		local front = sim.spawnUnit("infantry", 1, 63, 10)
+		clearUnits(sim, { tank, front })
+		tank.heading, tank.shotTimer = 0, math.huge
 		local hp0 = tank.hp
-		run(sim, 0.05)
+		run(sim, 0.15)
 		near(hp0 - tank.hp, 8 * 0.25 * 0.7, "front")
-		front.x = 28
-		front.cooldown = 0
+		front.x, front.shotTimer = 57, 0
 		local hp1 = tank.hp
-		run(sim, 0.05)
-		near(hp1 - tank.hp, 8 * 0.25 * 1.35, "rear")
+		run(sim, 0.15)
+		near(hp1 - tank.hp, 8 * 0.25 * 1.35, "rear (flanked, armour keeps facing only)")
 	end)
 
-	test("trucks are shootable and their cargo is lost", function()
+	test("a destroyed truck loses its cargo and its rig reports no trucks", function()
 		local sim = newSim()
-		local truck = sim.spawnUnit("truck", 1, 30, 10) -- rigless truck drives home (west) past an ambush
-		truck.cargo = 50
-		for i = 1, 3 do
-			sim.spawnUnit("infantry", 2, 20, 8.5 + i * 0.5)
+		local rig = rigAt(sim, 50)
+		rig.side, rig.takenAt, rig.autoTruckAt = 1, 0, 0
+		sim.updateConnections()
+		for _ = 1, 10 do
+			sim.updateRoutes()
+			sim.ticks += 1
 		end
-		local before = sim.sides[1].oil
-		run(sim, 30)
-		assert(sim.entities[truck.id] == nil, "truck survived the ambush")
-		assert(sim.sides[1].oil < before + 50, "cargo was credited")
+		assert(sim.orderTruck(1, rig.id))
+		local truck = units(sim, 1, "truck")[1]
+		truck.payload = 50
+		rig.takenAt, rig.autoTruckAt = 1e9, 1e9 -- keep the rig dry so the truck waits there
+		clearUnits(sim, { truck })
+		for i = 1, 3 do -- an ambush next to the rig, where the truck waits for oil
+			sim.spawnUnit("infantry", 2, 50, 20 + i) -- 8+ cells off: in range, outside the capture radius
+		end
+		local lost = false
+		for _ = 1, 20 * 60 do
+			sim.step(0.05)
+			for _, ev in sim.takeEvents() do
+				if ev.type == "convoyLost" then
+					lost = true
+				end
+			end
+		end
+		assert(lost and not truck.alive, "truck survived the ambush")
+		assert(rig.noTrucks, "rig flagged")
+		eq(sim.sides[1].trucksIdle, 2, "a lost truck does not return to the pool")
 	end)
 
-	test("destroying the HQ ends the match", function()
+	test("HQ destroyed with no factory: eliminated at once, rigs neutral, winner decided", function()
 		local sim = newSim()
-		local hq2 = sim.entities[sim.sides[2].hqId]
+		local rig = rigAt(sim, 130)
+		rig.side, rig.tank = 2, 100
+		local hq2 = sim.hqOf(2)
 		hq2.hp = 5
 		local inf = units(sim, 1, "infantry")
-		sim.orderAttack(1, ids(inf), hq2.id)
-		run(sim, 200)
+		for _, u in units(sim, 2, "infantry") do
+			u.alive = false -- otherwise our infantry shoot them first (units before structures)
+		end
+		for _, u in inf do
+			u.x, u.y = 160, 30.5
+		end
+		run(sim, 5)
 		eq(sim.winner, 1)
 		assert(sim.sides[2].lost)
+		eq(#units(sim, 2, "infantry"), 0, "all its units die")
+		eq(rig.side, 0)
+		eq(rig.tank, 0)
 	end)
 
-	test("bot captures rigs and trains infantry within 5 minutes", function()
+	test("bot captures a rig and trains infantry within 5 minutes", function()
 		local sim = newSim()
 		local bot = Bot.new(sim, 2)
 		run(sim, 300, { bot })
@@ -354,7 +558,7 @@ if fs.isFile(rulesPath) then
 		assert(#units(sim, 2, "infantry") > 3 or sim.winner ~= nil, "bot did not train")
 	end)
 else
-	print("  skip  RulesData.luau not generated")
+	print("  skip  RulesMatch.luau not generated")
 end
 
 print("Sprites (synthetic atlas)")

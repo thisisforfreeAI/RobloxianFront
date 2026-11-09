@@ -98,7 +98,7 @@ function StructureRenderer.apply(tick: number, structures: { any })
 				v.barBack.Visible = true
 				v.bar.Size = UDim2.fromScale(math.clamp(capProgress, 0, 1), 1)
 				v.bar.BackgroundColor3 = SIDE_COLOR[capSide] or Color3.new(1, 1, 1)
-				v.text.Text = if side == 0 then "capturing" else "taking over"
+				v.text.Text = "capturing"
 			else
 				v.barBack.Visible = false
 				v.text.Text = if side == 0 then "" else `oil {math.floor(store)}`

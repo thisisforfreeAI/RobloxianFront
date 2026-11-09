@@ -3,6 +3,7 @@
 	MatchService: owns the authoritative match (Shared.Simulation.Sim) and the fixed 20 Hz loop.
 	Clients only send intents (Protocol); everything here runs on the server.
 	Sides: the first player gets side 1, the second side 2, later players spectate.
+	The simulation runs on WarFront's match rules (GameData/RulesMatch: runtime defaults at cell scale 3).
 	PROVISIONAL: while side 2 has no player, a bot (Shared.Simulation.Bot) plays it.
 ]]
 
@@ -14,6 +15,7 @@ local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Rules = require(Shared.Config.Rules)
 local MapCodec = require(Shared.Maps.MapCodec)
 local Movement = require(Shared.Simulation.Movement)
+local Roads = require(Shared.Simulation.Roads)
 local Sim = require(Shared.Simulation.Sim)
 local Bot = require(Shared.Simulation.Bot)
 local Protocol = require(Shared.Protocol.Protocol)
@@ -21,11 +23,9 @@ local Net = require(script.Parent.Parent.Networking.Net)
 local GameData = Shared:WaitForChild("GameData", 10)
 assert(GameData, "src/shared/GameData missing: run tools/conversion/generate_all.py (see README)")
 local Locked = require(GameData.Locked)
-local Units = require(GameData.UnitCatalog)
 
 local MatchService = {}
 
-local LOCOMOTION = { foot = "foot", tracks = "tracks", wheels = "wheels", sea = "sea" }
 local SNAPSHOT_EVERY = 2 -- 20 Hz sim, 10 Hz snapshots
 local STATE_EVERY = 10 -- 2 Hz private state
 
@@ -35,20 +35,6 @@ local sim: any
 local sideOf: { [Player]: number } = {}
 local bots: { [number]: any } = {}
 local tick = 0
-
-local function paceAt(kind: string, x: number, y: number): number
-	local terrain = MapCodec.terrainName(map, x, y)
-	if not terrain or not rules:flag(`terrain.{terrain}.passable`) then
-		return 0
-	end
-	local loco = LOCOMOTION[Units[kind] and Units[kind].moves or "foot"]
-	if loco == "foot" then
-		-- Foot units: WarFront uses units.<kind>.rough off open ground (simplified, TEMP-002).
-		return if terrain == "plains" or terrain == "beach" or terrain == "desert" then 1 else rules:number(`units.{kind}.rough`)
-	end
-	local key = `movement.terrainPace.{loco}.{terrain}`
-	return if rules:has(key) then rules:number(key) else 1
-end
 
 local function updateBots()
 	local taken = {}
@@ -91,6 +77,11 @@ local function onIntent(player: Player, raw: any)
 		if not ok then
 			Net.sendState(player, { notice = why })
 		end
+	elseif i.kind == "truck" then
+		local ok, why = sim.orderTruck(side, i.rigId)
+		if not ok then
+			Net.sendState(player, { notice = why })
+		end
 	end
 	if #refused > 0 then
 		warn(`[Match] refused order from {player.Name} (side {side}) for units it does not own: {table.concat(refused, ",")}`)
@@ -114,7 +105,7 @@ end
 local function snapshot()
 	-- TEMP-001: everyone receives every unit. Fog-filtered snapshots come with fog of war.
 	local units, structures = table.create(64), table.create(24)
-	for _, e in sim.entities do
+	for _, e in sim.list do
 		if e.cat == "unit" then
 			table.insert(units, { e.id, e.kind, e.side, e.x, e.y, e.heading, e.hp, e.maxHp })
 		else
@@ -129,11 +120,11 @@ local function privateState()
 		local s = sim.sides[side]
 		local payload: { [string]: any } = { winner = sim.winner }
 		if s then
-			local hq = sim.entities[s.hqId]
-			local queue = hq and hq.queue or {}
+			local hq = sim.hqOf(side)
 			payload.oil = math.floor(s.oil)
-			payload.queue = #queue
-			payload.queueLeft = if queue[1] then queue[1].left else nil
+			payload.queue = if hq then #hq.queue else 0
+			payload.queueLeft = sim.queueLeft(side)
+			payload.trucksIdle = s.trucksIdle
 			payload.lost = s.lost
 		end
 		Net.sendState(player, payload)
@@ -141,29 +132,44 @@ local function privateState()
 end
 
 function MatchService.start(mapModule: string)
-	rules = Rules.new(require(GameData.RulesData) :: any)
+	assert(GameData:FindFirstChild("RulesMatch"), "GameData.RulesMatch missing: rerun tools/conversion/generate_all.py")
+	rules = Rules.new(require(GameData.RulesMatch) :: any)
 	map = MapCodec.decode(require(GameData.Maps[mapModule]) :: any)
 
-	-- Structures sit on the centre of their cell, matching MapRenderer.
+	-- Structures and rigs sit on the centre of their cell, as in WarFront.
 	local starts, rigs = {}, {}
 	for _, s in map.data.starts do
-		table.insert(starts, { x = s.x + 0.5, y = s.y + 0.5 })
+		table.insert(starts, { x = math.floor(s.x) + 0.5, y = math.floor(s.y) + 0.5 })
 	end
 	for _, r in map.data.rigs do
-		table.insert(rigs, { x = r.x + 0.5, y = r.y + 0.5, name = r.name })
+		table.insert(rigs, { x = r.x, y = r.y, name = r.name })
 	end
+	local w = map.width
 	sim = Sim.new({
 		rules = rules :: any,
 		movement = Movement,
-		paceAt = paceAt,
-		unitClass = function(kind: string): string
-			return if Units[kind] and Units[kind].armour == "armour" then "armour" else "soft"
-		end,
+		roadsLib = Roads,
+		map = {
+			width = map.width,
+			height = map.height,
+			terrainAt = function(cell: number): string?
+				return MapCodec.terrainName(map, cell % w, cell // w)
+			end,
+			urbanAt = function(cell: number): boolean
+				return buffer.readu8(map.urban, cell) ~= 0
+			end,
+			roads = (map.data :: any).roads or {},
+		},
 		starts = starts,
 		rigs = rigs,
-		width = map.width,
-		height = map.height,
+		seed = map.data.seed,
 	})
+	for _, rig in sim.rigs do
+		if rig.rich > 1 then
+			print(`[Match] rich rig {rig.id} {rig.name or ""} at {rig.x},{rig.y}`)
+		end
+	end
+	print(`[Match] roads: {sim.roads.pieces} road networks; rules cell scale {rules:number("match.cellScale")}`)
 	for side = 1, 2 do
 		local list = {}
 		for id, e in sim.entities do
@@ -194,8 +200,8 @@ function MatchService.start(mapModule: string)
 			end
 			sim.step(step)
 			for _, ev in sim.takeEvents() do
-				if ev.type == "rigCaptured" or ev.type == "rigLost" or ev.type == "victory" then
-					print(`[Match] {ev.type} side {ev.side}{if ev.id then " rig " .. ev.id else ""}`)
+				if ev.type == "rigCaptured" or ev.type == "rigLost" or ev.type == "victory" or ev.type == "eliminated" or ev.type == "delivered" or ev.type == "convoyLost" then
+					print(`[Match] {ev.type} side {ev.side}{if ev.id then " id " .. ev.id else ""}{if ev.oil then " oil " .. math.floor(ev.oil) else ""}`)
 				elseif ev.type == "destroyed" and ev.kind == "hq" then
 					print(`[Match] HQ of side {ev.side} destroyed`)
 				end

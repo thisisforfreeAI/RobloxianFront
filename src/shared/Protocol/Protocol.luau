@@ -20,7 +20,8 @@ export type MoveIntent = { kind: "move", unitIds: { number }, x: number, y: numb
 export type StopIntent = { kind: "stop", unitIds: { number } }
 export type AttackIntent = { kind: "attack", unitIds: { number }, targetId: number }
 export type ProduceIntent = { kind: "produce", item: string }
-export type Intent = MoveIntent | StopIntent | AttackIntent | ProduceIntent
+export type TruckIntent = { kind: "truck", rigId: number } -- send an idle truck to a rig, or buy one
+export type Intent = MoveIntent | StopIntent | AttackIntent | ProduceIntent | TruckIntent
 
 local function finite(n: any): boolean
 	return type(n) == "number" and n == n and n ~= math.huge and n ~= -math.huge
@@ -59,6 +60,12 @@ function Protocol.parse(raw: any, mapWidth: number, mapHeight: number): (Intent?
 			return nil, "cannot produce that"
 		end
 		return { kind = "produce", item = raw.item }, nil
+	end
+	if raw.kind == "truck" then
+		if not finite(raw.rigId) or raw.rigId % 1 ~= 0 then
+			return nil, "rigId must be an integer"
+		end
+		return { kind = "truck", rigId = raw.rigId }, nil
 	end
 	local ids, err = readIds(raw.unitIds)
 	if not ids then
