@@ -10,6 +10,7 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+local HttpService = game:GetService("HttpService")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Rules = require(Shared.Config.Rules)
@@ -235,6 +236,7 @@ local function territoryRuns(side: number): { number }
 	return runs
 end
 
+local sentCities: { [Player]: string } = {}
 local function privateState()
 	for player, side in sideOf do
 		local s = sim.sides[side]
@@ -260,6 +262,17 @@ local function privateState()
 				sentTerritory[player] = key
 				payload.territory = runs
 			end
+		end
+		-- settlements: owner, capture side and progress, hold (UNCONFIRMED: whether the game hides
+		-- settlement owners under fog; sent to everyone here)
+		local cities = {}
+		for _, st in sim.settlements do
+			table.insert(cities, { st.id, st.owner, if st.capture then st.capture.by else 0, if st.capture then math.floor(st.capture.progress * 100) / 100 else 0, math.floor(st.hold * 100) / 100 })
+		end
+		local ck = HttpService:JSONEncode(cities)
+		if sentCities[player] ~= ck then
+			sentCities[player] = ck
+			payload.cities = cities
 		end
 		Net.sendState(player, payload)
 	end
@@ -300,6 +313,7 @@ function MatchService.start(mapModule: string)
 		},
 		starts = starts,
 		rigs = rigs,
+		settlements = (map.data :: any).settlements or {},
 		seed = map.data.seed,
 	})
 	for _, rig in sim.rigs do
@@ -324,6 +338,7 @@ function MatchService.start(mapModule: string)
 	Players.PlayerRemoving:Connect(function(p)
 		sideOf[p] = nil
 		sentTerritory[p] = nil
+		sentCities[p] = nil
 		sentVision[p] = nil
 		updateBots()
 	end)

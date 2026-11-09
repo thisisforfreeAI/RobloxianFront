@@ -235,6 +235,7 @@ if fs.isFile(matchPath) then
 			},
 			starts = { { x = 10.5, y = 30.5 }, { x = 170.5, y = 30.5 } },
 			rigs = o.rigs or { { x = 50, y = 30 }, { x = 130, y = 30 } },
+			settlements = o.settlements,
 		})
 	end
 	local function run(sim, seconds, bots: any?)
@@ -672,6 +673,47 @@ if fs.isFile(matchPath) then
 		assert(#structuresOf(sim, 1, "factory") >= 1 or trained > 0, "factory or units from buildings")
 	end)
 
+	test("territory: a captured rig lets its owner build beside it, far from the HQ", function()
+		local sim = newSim()
+		local rig = sim.rigs[2] -- (130, 30), 120 cells from side 1's HQ
+		eq(sim.canPlace(1, "bunker", cellOf(130, 37)), "outsideBase", "not owned yet")
+		rig.side = 1
+		eq(sim.canPlace(1, "bunker", cellOf(130, 37)), nil, "rigPad 12 paints territory round it")
+		eq(sim.canPlace(1, "atgun", cellOf(133, 37)), nil)
+		eq(sim.canPlace(1, "bunker", cellOf(130, 34)), "onRig", "within footprint + padCells of the rig")
+	end)
+	test("towns: two infantry take a neutral town in 16 s; a held town lets its owner build round it", function()
+		local sim = newSim({ settlements = { { name = "T", x = 130, y = 45, kind = "town" }, { name = "V", x = 90, y = 45, kind = "village" } } })
+		for _, side in { 1, 2 } do
+			for _, u in units(sim, side, "infantry") do
+				u.alive = false
+			end
+		end
+		local town, village = sim.settlements[1], sim.settlements[2]
+		eq(sim.canPlace(1, "bunker", cellOf(138, 50)), "outsideBase")
+		local a = sim.spawnUnit("infantry", 1, 130.5, 45.5)
+		local b = sim.spawnUnit("infantry", 1, 131.5, 45.5)
+		run(sim, 15.9)
+		eq(town.owner, 0, "not yet")
+		run(sim, 0.2)
+		eq(town.owner, 1, "taken: weight 2 = rigs.need, so full pace over captureSec 16")
+		eq(sim.claimRadius(town), 6 + 12, "townRadius 6 + claim margin 12")
+		eq(sim.canPlace(1, "bunker", cellOf(138, 50)), nil, "inside the town's claim")
+		a.x, a.y, b.x, b.y = 90.5, 45.5, 91.5, 45.5
+		run(sim, 10.1)
+		eq(village.owner, 1)
+		eq(sim.claimRadius(village), 0, "villages claim nothing")
+		-- two enemy infantry alone in the town wear its hold down twice as fast (8 s), then capture it
+		local c = sim.spawnUnit("infantry", 2, 130.5, 45.5)
+		local d = sim.spawnUnit("infantry", 2, 131.5, 45.5)
+		c.hp, d.hp = 1e6, 1e6
+		run(sim, 8.1)
+		eq(town.owner, 0, "neutralised")
+		eq(town.capture and town.capture.by, 2)
+		run(sim, 16.1)
+		eq(town.owner, 2)
+		eq(sim.canPlace(1, "bunker", cellOf(138, 50)), "outsideBase")
+	end)
 	test("defences: a bunker goes up in 10 s, then fires on enemy infantry in its 16.5 cell range", function()
 		local sim = newSim()
 		for _, side in { 1, 2 } do

@@ -10,6 +10,7 @@ local MapRenderer = require(script.Rendering.MapRenderer)
 local UnitRenderer = require(script.Rendering.UnitRenderer)
 local StructureRenderer = require(script.Rendering.StructureRenderer)
 local FogOverlay = require(script.Rendering.FogOverlay)
+local CityOverlay = require(script.Rendering.CityOverlay)
 local CameraController = require(script.Camera.CameraController)
 local SelectionController = require(script.Input.SelectionController)
 local BuildController = require(script.Input.BuildController)
@@ -33,6 +34,7 @@ do
 	CameraController.start(map.width, map.height, map.data.starts[info.side] or map.data.starts[1])
 	UnitRenderer.start()
 	StructureRenderer.start()
+	CityOverlay.start((map.data :: any).settlements or {})
 	local function send(payload: any)
 		intent:FireServer(payload)
 	end
@@ -47,6 +49,9 @@ do
 		Hud.update(state, info.side)
 		if state.territory then
 			BuildController.setTerritory(state.territory)
+		end
+		if state.cities then
+			CityOverlay.apply(state.cities)
 		end
 	end)
 	SelectionController.start(info.side, send, {

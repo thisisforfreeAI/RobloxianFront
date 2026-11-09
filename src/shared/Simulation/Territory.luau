@@ -3,7 +3,7 @@
 	Territory: WarFront's base territory (where a nation may build), ported from the game's code.
 
 	Sources (the game's base sources, in its order): every built, living structure of a living nation
-	reaches buildRadius x territory.reachShare (x 1 + settlement bonus, 0 in the slice); then every
+	reaches buildRadius x territory.reachShare (x 1 + settlement paint bonus, 0 in the slice: no garrisons); then every
 	owned rig reaches territory.rigReach when a built structure of its owner stands within
 	territory.rigJoin of it, else territory.rigPad.
 	Painting: each source paints the cells of its circle (radius r x (1 + edgeWobble)) that lie in the

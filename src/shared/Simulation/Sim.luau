@@ -91,7 +91,7 @@
 	Engineers can be trained (the HQ lists them) but their building and repair work is not in the slice.
 	Fog: visionFor / nightAmount below; the server filters snapshots per side (Shared.Simulation.Fog).
 	Not in the slice: line of sight (the game's only blockers are settlement buildings), weather, veterancy, smoke, rig damage,
-	        settlements, refineries, rail, events, SAM, radar, rocket artillery (salvo barrages),
+	        settlement garrisons and benefits, refineries, rail, events, SAM, radar, rocket artillery (salvo barrages),
 	        drones, craters, the command truck, power lines and dams.
 ]]
 
@@ -134,6 +134,7 @@ export type Deps = {
 	map: MapInfo,
 	starts: { { x: number, y: number } }, -- cell centres
 	rigs: { { x: number, y: number, name: string? } },
+	settlements: { { name: string?, x: number, y: number, kind: string } }?, -- map order
 	seed: number?,
 }
 
@@ -503,6 +504,53 @@ function Sim.new(deps: Deps)
 	local function builtStructure(st: Entity): boolean
 		return st.alive and isStructure(st) and st.built >= 1
 	end
+	-- Settlements (the game's hme): neutral at the start, captured like rigs (see settlementsTick).
+	-- A held town, city or capital claims territory: its urban radius (the game's PV: the larger of
+	-- settlements.<kind>Radius and the radius of a disc as big as the urban cells nearest it) plus
+	-- cities.claim.margin.<kind>. Villages claim nothing.
+	local settlements: { Entity } = {}
+	for i, sd in deps.settlements or {} do
+		local cx = math.clamp(math.floor(sd.x), 0, W - 1)
+		local cy = math.clamp(math.floor(sd.y), 0, H - 1)
+		local key = `settlements.{sd.kind}Radius`
+		table.insert(settlements, {
+			id = i, name = sd.name or "", kind = sd.kind, cell = cy * W + cx, x = cx + 0.5, y = cy + 0.5,
+			radius = if r:has(key) then num(key) else 0, owner = 0, capture = nil, hold = 0, takenAt = -999,
+			warnedAt = -99, urbanR = 0,
+		})
+	end
+	self.settlements = settlements
+	if #settlements > 0 and map.urbanAt then
+		local counts = {}
+		for c = 0, W * H - 1 do
+			if map.urbanAt(c) then
+				local x, y = c % W + 0.5, c // W + 0.5
+				local best, bd = settlements[1], math.huge
+				for _, st in settlements do
+					local d = (st.x - x) ^ 2 + (st.y - y) ^ 2
+					if d < bd then
+						best, bd = st, d
+					end
+				end
+				counts[best.id] = (counts[best.id] or 0) + 1
+			end
+		end
+		for _, st in settlements do
+			st.urbanR = math.sqrt((counts[st.id] or 0) / math.pi)
+		end
+	end
+	local function claimRadius(st: Entity): number
+		if not r:flag("cities.claim.on") or st.owner <= 0 then
+			return 0
+		end
+		local kinds = r.data["cities.claim.kinds"] :: { string }?
+		if not kinds or not table.find(kinds, st.kind) then
+			return 0
+		end
+		return math.max(st.radius, st.urbanR) + num(`cities.claim.margin.{st.kind}`)
+	end
+	self.claimRadius = claimRadius
+
 	local function baseSources(only: number?): { any }
 		local out = {}
 		for _, st in self.list do
@@ -528,6 +576,14 @@ function Sim.new(deps: Deps)
 					nation = rig.side, x = rig.x, y = rig.y, rig = rig.id,
 					r = if joined then num("territory.rigReach") else num("territory.rigPad"),
 				})
+			end
+		end
+		for _, st in settlements do
+			if st.owner > 0 and (only == nil or st.owner == only) and alive(st.owner) then
+				local cr = claimRadius(st)
+				if cr > 0 then
+					table.insert(out, { nation = st.owner, x = st.x, y = st.y, r = cr, settlement = st.id })
+				end
 			end
 		end
 		return out
@@ -1201,6 +1257,12 @@ function Sim.new(deps: Deps)
 				resetRoute(rig)
 			end
 		end
+		-- the game's zwe: its settlements turn neutral
+		for _, st in settlements do
+			if st.owner == side then
+				st.owner, st.hold, st.capture, st.takenAt = 0, 0, nil, self.time
+			end
+		end
 		event({ type = "eliminated", side = side, by = by })
 	end
 	eliminateRef = eliminate
@@ -1761,6 +1823,92 @@ function Sim.new(deps: Deps)
 		end
 	end
 
+	---------------------------------------------------------------- settlements (the game's RQe)
+
+	-- Capture weight is the rigs' (strengthNear over the settlement radius, pace max(rigs.minPace,
+	-- min(1, weight / rigs.need))). Neutral: one pressing side gains progress / cities.captureSec.<kind>
+	-- (a different side first wears the old progress down); with nobody there progress decays at
+	-- cities.decayPerSec. Held: enemies alone in it wear its hold down neutraliseMult times as fast,
+	-- and at 0 it turns neutral with their capture started; with no enemies the hold recovers at
+	-- decayPerSec. The owner's own units there stop neutralising.
+	-- Not in the slice: garrisons (units inside, fortified/secured status and its benefits: paint
+	-- bonus, cover, fire, sight, healing, discounts), traits, forward training, integrity damage.
+	local function settlementsTick(dt: number)
+		local minPace, need = num("rigs.minPace"), math.max(0.1, num("rigs.need"))
+		for _, st in settlements do
+			if st.owner > 0 and not alive(st.owner) then
+				st.owner, st.hold, st.capture, st.takenAt = 0, 0, nil, self.time
+			end
+			local weights = strengthNear(st.x, st.y, st.radius)
+			local sides = {}
+			for side in weights do
+				if alive(side) then
+					table.insert(sides, side)
+				end
+			end
+			table.sort(sides)
+			local c = math.max(0.1, num(`cities.captureSec.{st.kind}`))
+			local function h(side: number): number
+				return math.max(minPace, math.min(1, (weights[side] or 0) / need))
+			end
+			if st.owner <= 0 then
+				local f = if #sides == 1 then sides[1] else -1 -- no alliances in the slice
+				if f > 0 then
+					if st.capture and st.capture.by ~= f then
+						st.capture.progress -= dt * h(f) / c
+						if st.capture.progress <= 0 then
+							st.capture = nil
+						end
+					end
+					if st.capture then
+						if st.capture.by == f then
+							st.capture.progress = math.min(1, st.capture.progress + dt * h(f) / c)
+							if st.capture.progress >= 1 then
+								st.owner, st.capture, st.hold, st.takenAt = f, nil, 1, self.time
+								event({ type = "cityTaken", id = st.id, side = f })
+							end
+						end
+					else
+						st.capture = { by = f, progress = 0 }
+						event({ type = "cityCaptureStarted", id = st.id, side = f })
+					end
+				elseif st.capture and #sides == 0 then
+					st.capture.progress -= num("cities.decayPerSec") * dt
+					if st.capture.progress <= 0 then
+						st.capture = nil
+					end
+				end
+			else
+				st.capture = nil
+				local foes = {}
+				for _, side in sides do
+					if side ~= st.owner and canAttack(side, st.owner) then
+						table.insert(foes, side)
+					end
+				end
+				if #foes == 0 then
+					if st.hold < 1 then
+						st.hold = math.min(1, st.hold + num("cities.decayPerSec") * dt)
+					end
+				elseif #foes ~= #sides or #foes > 1 then
+					-- the owner is there too, or several enemies: under attack, no progress
+					if self.time - st.warnedAt > num("cities.noticeSec") then
+						st.warnedAt = self.time
+						event({ type = "cityUnderAttack", id = st.id, side = st.owner })
+					end
+				else
+					local p = foes[1]
+					st.hold -= dt * h(p) * num("cities.neutraliseMult") / c
+					if st.hold <= 0 then
+						local prev = st.owner
+						st.owner, st.hold, st.takenAt, st.capture = 0, 0, self.time, { by = p, progress = 0 }
+						event({ type = "cityLost", id = st.id, side = prev, by = p })
+					end
+				end
+			end
+		end
+	end
+
 	---------------------------------------------------------------- trucks
 
 	local function sendHome(t: Entity, rig: Entity?, hq: Entity)
@@ -2103,6 +2251,7 @@ function Sim.new(deps: Deps)
 			end
 		end
 		rigs(dt)
+		settlementsTick(dt)
 		updateRoutes()
 		trucks(dt)
 		hqTrickle(dt)
