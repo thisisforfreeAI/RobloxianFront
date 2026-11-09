@@ -27,10 +27,15 @@ def main():
     ap.add_argument("--frame", type=int, default=120)
     ap.add_argument("--pivot", type=float, nargs=2, default=None)
     ap.add_argument("--gutter", type=int, default=2)
+    ap.add_argument("--snap-alpha", type=int, default=None,
+                    help="treat alpha >= N as fully opaque (fixes art delivered at e.g. alpha 253); the delivered file is kept as is")
     a = ap.parse_args()
     f = a.frame
     px, py = a.pivot or (f / 2, f / 2)
     src = Image.open(a.image).convert("RGBA")
+    if a.snap_alpha is not None:
+        alpha = src.getchannel("A").point(lambda v: 255 if v >= a.snap_alpha else v)
+        src.putalpha(alpha)
     if src.width != src.height:
         raise SystemExit(f"input must be square (got {src.size}) with the vehicle centred on its pivot")
     if src.size != (f, f) and src.width % f:
@@ -63,7 +68,8 @@ def main():
         "frameWidth": f, "frameHeight": f,
         "pivot": {"x": px, "y": py, "convention": "pixels from the frame's top-left, y down"},
         "directions": DIRECTION_ORDER, "transparentGutterPx": a.gutter,
-        "generatedFrom": {"file": "source_east.png", "method": "rotate about pivot, 4x supersampled"},
+        "generatedFrom": {"file": "source_east.png", "method": "rotate about pivot, 4x supersampled",
+                          "snapAlpha": a.snap_alpha},
         "animations": [{"name": "idle", "frames": 1, "frameMs": None, "loop": True}],
         "frames": frames,
     })

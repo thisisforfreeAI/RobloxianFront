@@ -118,14 +118,15 @@
       "requestId": "REQ-0001",
       "revision": 1,
       "kind": "vehicle",
-      "status": "requested",
+      "status": "delivered",
       "synthetic": false,
-      "description": "Pilot: scout car, one east-facing image rotated into 16 directions.",
+      "description": "Pilot: scout car, one east-facing image (ChatGPT, 480x480) rotated into 16 directions. Body delivered at alpha 253; snapped to 255 at alpha >= 240.",
       "source": {
         "type": "chatgpt",
         "reference": "docs/asset_requests/REQ-0001.md",
         "originalAsset": null,
-        "path": null
+        "path": "assets/sprites/source/chatgpt/unit_scout_car/r1",
+        "delivered": "assets/sprites/incoming/REQ-0001/scout_car_east_r1.png"
       },
       "rights": {
         "status": "unresolved",
@@ -168,18 +169,19 @@
             "pages": [
               {
                 "page": 0,
-                "path": null,
+                "path": "assets/sprites/runtime/unit_scout_car/r1/p0/atlas_p0.png",
                 "robloxAssetId": null
               }
             ],
-            "frameRects": null
+            "frameRects": "assets/sprites/runtime/unit_scout_car/r1/p0/atlas.json"
           }
         ]
       },
       "outputs": {
-        "sourceDir": null,
-        "runtimeDir": null,
-        "luauModule": null
+        "sourceDir": "assets/sprites/source/chatgpt/unit_scout_car/r1",
+        "runtimeDir": "assets/sprites/runtime/unit_scout_car/r1",
+        "luauModule": "src/shared/Assets/Atlases/ScoutCar.luau",
+        "devPixels": "src/client/DevAssets/ScoutCar_p0.luau"
       },
       "approval": {
         "state": "pending",

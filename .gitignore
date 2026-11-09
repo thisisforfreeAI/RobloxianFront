@@ -32,6 +32,9 @@ desktop.ini
 !/assets/sprites/runtime/syn_*/
 # Files set aside instead of deleted (deletion not authorised); review and delete by hand.
 /_to_delete/
+# Dev pixel modules embed the art itself: only synthetic ones are committed.
+/src/client/DevAssets/*
+!/src/client/DevAssets/Syn*
 
 __pycache__/
 *.pyc

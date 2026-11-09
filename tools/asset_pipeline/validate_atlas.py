@@ -130,6 +130,32 @@ def main():
         r.check(orient_ok, "arrow k points k*22.5 deg clockwise from east (pixel y down)", f"worst error {worst:.2f} deg")
         r.check(pivot_ok, "magenta pivot cross at the declared pivot in every frame")
 
+    else:
+        # Real art: the long axis of the opaque pixels must turn with the direction (checked modulo 180,
+        # since a long shape has no front/back by this measure; the Studio board checks the front).
+        axis_ok, worst = True, 0.0
+        for f in meta["frames"]:
+            A = pages[f["page"]].crop((f["x"], f["y"], f["x"] + fw, f["y"] + fh)).getchannel("A").load()
+            n = mx = my = 0.0
+            pts = []
+            for y in range(fh):
+                for x in range(fw):
+                    if A[x, y] > 128:
+                        pts.append((x, y)); mx += x; my += y; n += 1
+            mx, my = mx / n, my / n
+            sxx = sum((x - mx) ** 2 for x, _ in pts); syy = sum((y - my) ** 2 for _, y in pts)
+            sxy = sum((x - mx) * (y - my) for x, y in pts)
+            ang = math.degrees(0.5 * math.atan2(2 * sxy, sxx - syy)) % 180
+            err = abs((ang - f["direction"] * 22.5 + 90) % 180 - 90)
+            worst = max(worst, err)
+            if err > 6:
+                axis_ok = False
+                print(f"        dir {f['direction']}: long axis at {ang:.1f} deg")
+            if math.hypot(mx - pv["x"], my - pv["y"]) > 3:
+                axis_ok = False
+                print(f"        dir {f['direction']}: shape centre ({mx:.1f}, {my:.1f}) is off the pivot")
+        r.check(axis_ok, "long axis turns 22.5 deg per direction, shape centred on the pivot", f"worst {worst:.2f} deg")
+
     man = load_json(os.path.join(ROOT, "assets", "manifests", "assets.json"))
     aid = a.asset_id or meta["assetId"]
     entry = next((e for e in man["assets"] if e.get("assetId") == aid), None)

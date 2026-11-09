@@ -39,7 +39,10 @@ do
 	if DevFlags.ATLAS_TEST_BOARD then
 		local start = map.data.starts[info.side] or map.data.starts[1]
 		local cy = math.max(16, start.y - 30) -- north of the start, inside the map
-		task.spawn(require(script.Dev.AtlasTestBoard).start, Vector2.new(math.clamp(start.x, 16, map.width - 16), cy))
+		local board = require(script.Dev.AtlasTestBoard)
+		local cx = math.clamp(start.x, 16, map.width - 46)
+		task.spawn(board.start, Vector2.new(cx, cy), "SynVehicleArrow", true)
+		task.spawn(board.start, Vector2.new(cx + 30, cy), "ScoutCar", false) -- REQ-0001 pilot, east of the arrows
 	end
 
 	snapshot.OnClientEvent:Connect(function(tick, units)
