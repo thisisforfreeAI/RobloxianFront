@@ -734,6 +734,92 @@ if fs.isFile(matchPath) then
 		assert(sent, "the bot sent units to the town")
 		eq(sim.settlements[1].owner, 1, "taken")
 	end)
+	test("garrison: 3 infantry secure a town; inside they take 0.4x, hit 1.3x harder from 3 cells further", function()
+		local sim = newSim({ settlements = { { name = "T", x = 130, y = 45, kind = "town" } } })
+		for _, side in { 1, 2 } do
+			for _, u in units(sim, side, "infantry") do
+				u.alive = false
+			end
+		end
+		local town = sim.settlements[1]
+		local men = {}
+		for i = 1, 4 do
+			men[i] = sim.spawnUnit("infantry", 1, 129.5 + i, 45.5)
+		end
+		run(sim, 16.1)
+		eq(town.owner, 1)
+		eq(sim.cityStatus(town), "occupied")
+		local far = sim.spawnUnit("infantry", 1, 130.5, 5.5)
+		eq((sim.orderGarrison(1, town.id, { men[1].id, men[2].id })), 2, "two enter at once (within radius + enterReach)")
+		eq(sim.cityStatus(town), "fortified")
+		assert(men[1].inside and men[1].x == town.x and men[1].y == town.y, "inside, at the centre")
+		eq((sim.orderGarrison(1, town.id, { far.id })), 1, "walks there")
+		assert(not far.inside and far.path, "walking")
+		local n, why = sim.orderGarrison(1, town.id, { men[3].id })
+		eq(n, 0)
+		eq(why, "garrisonFull", "2 inside + 1 walking = garrisonFull 3")
+		run(sim, 25)
+		assert(far.inside, "entered on arrival")
+		eq(sim.cityStatus(town), "secured")
+		near(sim.paintBonus(1), 0.04, "secured town paint bonus")
+		-- a hit on a man inside a secured town: x securedCover 0.4 (no terrain cover or flanking)
+		local hp = men[1].hp
+		local foe = sim.spawnUnit("infantry", 2, 130.5, 20.5) -- 25 cells: beyond infantry range 13.5
+		men[4].alive = false
+		foe.hp = 1e6
+		local rows = 0
+		for _, st in sim.strikes do
+			rows += 1
+		end
+		eq(rows, 0)
+		-- 13.5 + rooftop 3 = 16.5: inside men reach a foe 16 cells away, ordinary men would not
+		foe.y = 45.5 - 16
+		run(sim, 3)
+		assert(foe.hp < 1e6, "rooftop range")
+		local lost = 1e6 - foe.hp
+		assert(lost > 0)
+		eq(men[1].hp, hp, "not yet hit back (out of the foe's range)")
+		-- neutralising is blocked while a garrison holds it
+		foe.x, foe.y = 130.5, 45.5
+		foe.hp = 1e9
+		for _, m in { men[1], men[2], far } do
+			m.hp = 1e6
+		end
+		run(sim, 10)
+		eq(town.owner, 1, "garrisoned towns are not worn down")
+		eq(town.hold, 1)
+		-- a move order brings a man out
+		sim.orderMove(1, { men[2].id }, 130.5, 60.5)
+		assert(not men[2].inside, "out")
+		eq(sim.cityStatus(town), "fortified")
+	end)
+	test("garrison: inside damage is the hit x 0.4 (secured town)", function()
+		local sim = newSim({ settlements = { { name = "T", x = 130, y = 45, kind = "town" } } })
+		local town = sim.settlements[1]
+		town.owner, town.hold = 1, 1
+		local men = {}
+		for i = 1, 3 do
+			men[i] = sim.spawnUnit("infantry", 1, 130.5, 45.5)
+		end
+		eq((sim.orderGarrison(1, town.id, { men[1].id, men[2].id, men[3].id })), 3)
+		eq(sim.cityStatus(town), "secured")
+		local m = men[1]
+		m.hp = 1000
+		sim.strikes = { { kind = "unit", at = sim.time, target = m.id, dps = 10, key = "units.infantry", secs = 1, by = 2, fromX = 130.5, fromY = 30.5 } }
+		run(sim, 0.05)
+		near(1000 - m.hp, 10 * 1 * 1 * 0.4, "dps x vs.soft (1) x secs x securedCover.town 0.4")
+	end)
+	test("bot garrisons a town it holds and trains men for it", function()
+		local sim = newSim({ settlements = { { name = "T", x = 30, y = 45, kind = "town" } } })
+		local town = sim.settlements[1]
+		town.owner, town.hold = 1, 1
+		local bot = Bot.new(sim, 1, "turtle")
+		for _ = 1, 30 do
+			sim.sides[1].oil = 2000
+			run(sim, 10, { bot })
+		end
+		assert(#town.garrison >= 1, `garrison {#town.garrison}`)
+	end)
 	test("defences: a bunker goes up in 10 s, then fires on enemy infantry in its 16.5 cell range", function()
 		local sim = newSim()
 		for _, side in { 1, 2 } do

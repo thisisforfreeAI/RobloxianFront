@@ -24,8 +24,9 @@ export type AttackIntent = { kind: "attack", unitIds: { number }, targetId: numb
 export type ProduceIntent = { kind: "produce", item: string, structureId: number? } -- no id = the HQ
 export type BuildIntent = { kind: "build", structure: string, x: number, y: number } -- footprint centre cell
 export type ReconIntent = { kind: "recon", unitIds: { number } } -- deploy scouts for recon
+export type GarrisonIntent = { kind: "garrison", unitIds: { number }, x: number, y: number } -- into the held settlement at (x, y)
 export type TruckIntent = { kind: "truck", rigId: number } -- send an idle truck to a rig, or buy one
-export type Intent = MoveIntent | StopIntent | AttackIntent | ProduceIntent | TruckIntent | BuildIntent | ReconIntent
+export type Intent = MoveIntent | StopIntent | AttackIntent | ProduceIntent | TruckIntent | BuildIntent | ReconIntent | GarrisonIntent
 
 local function finite(n: any): boolean
 	return type(n) == "number" and n == n and n ~= math.huge and n ~= -math.huge
@@ -102,6 +103,14 @@ function Protocol.parse(raw: any, mapWidth: number, mapHeight: number): (Intent?
 		return { kind = "stop", unitIds = ids }, nil
 	elseif raw.kind == "recon" then
 		return { kind = "recon", unitIds = ids }, nil
+	elseif raw.kind == "garrison" then
+		if not finite(raw.x) or not finite(raw.y) then
+			return nil, "target must be numbers"
+		end
+		if raw.x < 0 or raw.y < 0 or raw.x >= mapWidth or raw.y >= mapHeight then
+			return nil, "target outside the map"
+		end
+		return { kind = "garrison", unitIds = ids, x = raw.x, y = raw.y }, nil
 	elseif raw.kind == "attack" then
 		if not finite(raw.targetId) or raw.targetId % 1 ~= 0 then
 			return nil, "targetId must be an integer"

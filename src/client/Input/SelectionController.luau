@@ -6,6 +6,7 @@
 	Right click on an enemy unit or building: attack order. Right click on the ground: move order. X: stop. Esc: clear.
 	T with the cursor on one of your rigs: send a truck to it.
 	R: selected scout cars deploy for recon (PROVISIONAL key).
+	H with the cursor on a town you hold: selected infantry / AT garrison it (PROVISIONAL key).
 	Trucks drive themselves and cannot be selected.
 	The client only proposes; the server re-checks ownership and the target.
 	Key choices (X, Esc) are PROVISIONAL until WarFront's bindings are confirmed.
@@ -208,6 +209,13 @@ function SelectionController.start(mySide: number, sendIntent: (any) -> (), opts
 			end
 			if best then
 				sendIntent({ kind = "truck", rigId = best })
+			end
+		elseif input.KeyCode == Enum.KeyCode.H and next(selected) then
+			-- H with the cursor on a town you hold: selected infantry / AT go in (PROVISIONAL key)
+			local hit = groundPoint(UserInputService:GetMouseLocation())
+			if hit then
+				local x, y = World.toCell(hit)
+				send(sendIntent, "garrison", { x = x, y = y })
 			end
 		elseif input.KeyCode == Enum.KeyCode.R and next(selected) then
 			-- R: selected scout cars deploy for recon (PROVISIONAL key; the server checks cooldowns)

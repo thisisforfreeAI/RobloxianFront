@@ -78,6 +78,7 @@ cover, armour facing, truck ambush, HQ loss eliminates, bot). A 10-minute bot-vs
 | B22 | Scout car | Train a scout (C at the factory), select it, press R | It shows RECON and stops, the clear area around it grows to 66 cells for 90 s; a move order cancels it and R is refused ("cooldown") for 60 s | not run |
 | B23 | Train keys | Click a barracks / factory | The panel lists 3 / 4 units with keys Q, E, Z, C; build buttons B, F, K, G are below them | not run |
 | B24 | Towns | Walk 2+ infantry into a town (named grey disc) and wait | "capturing N%" in blue, then a blue ring after about 16 s; press K and the ghost turns green round the town, so you can place a bunker there. A village gives no territory | not run |
+| B25 | Garrison | Hold a town, select 3 infantry, put the cursor on the town and press H | They show INSIDE at the town's centre; the tag reads `fortified 1/3` ... `secured 3/3`; a move order brings a man out; red units standing in a garrisoned town do not wear its hold down | not run |
 
 Known limits (not failures): no fog (TEMP-001), straight-line movement and trucks drive off-road (TEMP-002),
 placeholder shapes (TEMP-003), bot is a simple script, rigs can't be damaged yet, one unit type (infantry).

@@ -11,7 +11,7 @@ Last updated: 2026-11-09
 Phase 1. Milestone 1A done (Studio tests 1–7 pass). Pilot sprite REQ-0001 approved. Milestone 1B (gameplay loop) rewritten for WarFront parity and tested outside Studio; Studio tests B1–B9 pending.
 
 ## Verified outside Studio (actually run, Linux container)
-- Lune 0.11.1 `tests/run`: 62 passed, 0 failed (latest run) (including the 2 that read the GameData generated from your install).
+- Lune 0.11.1 `tests/run`: 65 passed, 0 failed (latest run) (including the 2 that read the GameData generated from your install).
 - Rojo 7.4.4 `rojo build` succeeds. All .luau files compile (syntax only).
 - Synthetic atlas: 16 × 120 px frames pack to 960×240 (8×2, no padding); validator passes on dimensions,
   rectangles, direction order, pixel identity, pivot, partial alpha, edge bleed, arrow orientation, manifest.
@@ -144,8 +144,18 @@ Bot-vs-bot on Saddle with towns: balanced v warlord, warlord at 15:19 (it held 3
 balanced, side 1 at 29:18 (4 towns). With fog, a settlement you don't see shows the owner last seen there and no capture progress (as rigs
 do; APPROX of the game's viewer).
 
+Garrisons (2026-11-09), traced from the game: select infantry or AT and press H over a town you hold
+(PROVISIONAL key). Up to garrisonFull (village 2, town 3, city 4, capital 6) go in; nearby ones enter at
+once, others walk there. A town is occupied (nobody inside), fortified, or secured (full). Inside, men
+take 0.6x damage (secured town 0.4x) instead of terrain cover; when secured they fire 1.3x harder
+(town) from 3 cells further, the town sees 30 cells, hurt own units near it heal slowly, and its owner's
+building territory widens 4% (max 30%). A garrisoned town cannot be worn down; any order brings a man
+out. The bot garrisons its towns with a share of its army (bots.garrisonShare x (0.5 + defence)), trains
+infantry to fill them, and weighs enemy garrisons when choosing towns. Not in the slice: city traits,
+forward training, discounts, settlement damage.
+
 ## Next
-1. You run Studio tests B18–B24 (defences, mortar, artillery, scout) and commit.
+1. You run Studio tests B18–B25 (defences, mortar, artillery, scout) and commit.
 2. Then: engineers' repair work, vehicle steering, a closer look at the bot's HQ push; later shared group
    routes and separation.
 

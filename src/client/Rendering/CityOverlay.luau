@@ -55,10 +55,10 @@ function CityOverlay.start(settlements: { any })
 	end
 end
 
--- cities: { { id, owner, captureSide, captureProgress, hold }, ... }
+-- cities: { { id, owner, captureSide, captureProgress, hold, garrison?, garrisonFull? }, ... }
 function CityOverlay.apply(cities: { any })
 	for _, c in cities do
-		local id, owner, capSide, capProgress, hold = c[1], c[2], c[3], c[4], c[5]
+		local id, owner, capSide, capProgress, hold, men, full = c[1], c[2], c[3], c[4], c[5], c[6], c[7]
 		local v = views[id]
 		if v then
 			v.ring.Transparency = if owner > 0 then 0.55 else 1
@@ -68,6 +68,10 @@ function CityOverlay.apply(cities: { any })
 				v.text.TextColor3 = SIDE_COLOR[capSide] or Color3.new(1, 1, 1)
 			elseif owner > 0 and hold < 1 then
 				v.text.Text = `hold {math.floor(hold * 100)}%`
+				v.text.TextColor3 = SIDE_COLOR[owner] or Color3.new(1, 1, 1)
+			elseif owner > 0 and men and full then
+				-- garrison: occupied (0), fortified, secured (full)
+				v.text.Text = if men >= full then `secured {men}/{full}` elseif men > 0 then `fortified {men}/{full}` else `occupied 0/{full}`
 				v.text.TextColor3 = SIDE_COLOR[owner] or Color3.new(1, 1, 1)
 			else
 				v.text.Text = ""

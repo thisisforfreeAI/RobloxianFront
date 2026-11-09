@@ -91,7 +91,7 @@
 	Engineers can be trained (the HQ lists them) but their building and repair work is not in the slice.
 	Fog: visionFor / nightAmount below; the server filters snapshots per side (Shared.Simulation.Fog).
 	Not in the slice: line of sight (the game's only blockers are settlement buildings), weather, veterancy, smoke, rig damage,
-	        settlement garrisons and benefits, refineries, rail, events, SAM, radar, rocket artillery (salvo barrages),
+	        settlement traits and damage, refineries, rail, events, SAM, radar, rocket artillery (salvo barrages),
 	        drones, craters, the command truck, power lines and dams.
 ]]
 
@@ -445,6 +445,7 @@ function Sim.new(deps: Deps)
 	end
 
 	local planLater: (Entity) -> () = function(_e: Entity) end
+	local leaveGarrison: (Entity) -> ()
 	local eliminateRef: (number, number) -> () = function(_s: number, _b: number) end
 
 	-- Block or free a structure's footprint (the game's tUe / YB): units standing inside step out
@@ -516,7 +517,7 @@ function Sim.new(deps: Deps)
 		table.insert(settlements, {
 			id = i, name = sd.name or "", kind = sd.kind, cell = cy * W + cx, x = cx + 0.5, y = cy + 0.5,
 			radius = if r:has(key) then num(key) else 0, owner = 0, capture = nil, hold = 0, takenAt = -999,
-			warnedAt = -99, urbanR = 0,
+			warnedAt = -99, urbanR = 0, garrison = {},
 		})
 	end
 	self.settlements = settlements
@@ -551,13 +552,34 @@ function Sim.new(deps: Deps)
 	end
 	self.claimRadius = claimRadius
 
+	-- the game's e2: neutral; occupied (held, nobody inside); fortified; secured (cities.garrisonFull)
+	local function cityStatus(st: Entity): string
+		if st.owner <= 0 then
+			return "neutral"
+		end
+		local n = #st.garrison
+		return if n <= 0 then "occupied" elseif n >= num(`cities.garrisonFull.{st.kind}`) then "secured" else "fortified"
+	end
+	self.cityStatus = cityStatus
+	-- the game's Iwe: each secured settlement widens its owner's building territory (capped)
+	local function paintBonus(side: number): number
+		local n = 0
+		for _, st in settlements do
+			if st.owner == side and cityStatus(st) == "secured" then
+				n += num(`cities.paintBonus.{st.kind}`)
+			end
+		end
+		return math.min(num("cities.paintBonusMax"), n)
+	end
+	self.paintBonus = paintBonus
+
 	local function baseSources(only: number?): { any }
 		local out = {}
 		for _, st in self.list do
 			if builtStructure(st) and alive(st.side) and (only == nil or st.side == only) then
 				table.insert(out, {
 					nation = st.side, x = st.cell % W + 0.5, y = st.cell // W + 0.5, structure = st.id,
-					r = num(`structures.{st.kind}.buildRadius`) * num("territory.reachShare"),
+					r = num(`structures.{st.kind}.buildRadius`) * num("territory.reachShare") * (1 + paintBonus(st.side)),
 				})
 			end
 		end
@@ -1042,6 +1064,7 @@ function Sim.new(deps: Deps)
 			if orderable(e, side) then
 				e.attackId = nil
 				clearRecon(e)
+				leaveGarrison(e)
 				table.insert(group, e)
 			elseif e and e.side ~= side then
 				table.insert(refused, id)
@@ -1072,6 +1095,7 @@ function Sim.new(deps: Deps)
 			if orderable(e, side) then
 				e.target, e.attackId, e.path = nil, nil, nil
 				clearRecon(e)
+				leaveGarrison(e)
 			elseif e and e.side ~= side then
 				table.insert(refused, id)
 			end
@@ -1090,6 +1114,7 @@ function Sim.new(deps: Deps)
 			if orderable(e, side) then
 				e.attackId, e.target, e.path = targetId, nil, nil
 				clearRecon(e)
+				leaveGarrison(e)
 			elseif e and e.side ~= side then
 				table.insert(refused, id)
 			end
@@ -1338,6 +1363,20 @@ function Sim.new(deps: Deps)
 		return (ax - bx) ^ 2 + (ay - by) ^ 2
 	end
 
+	-- the game's GM: units inside a settlement take cities.cover of a hit (securedCover.<kind> once secured)
+	local function insideCover(u: Entity): number
+		local st = u.garrisonCity and settlements[u.garrisonCity]
+		if not st then
+			return 1
+		end
+		return if cityStatus(st) == "secured" then num(`cities.securedCover.{st.kind}`) else num("cities.cover")
+	end
+	-- the game's Dwe: the secured settlement a unit sits in, if any
+	local function securedIn(u: Entity): Entity?
+		local st = u.inside and u.garrisonCity and settlements[u.garrisonCity]
+		return if st and cityStatus(st) == "secured" then st else nil
+	end
+
 	-- the game's bunchFactor: splash hurts more where foot soldiers crowd
 	local function bunchFactor(by: number, x: number, y: number): number
 		local cells = num("combat.bunchCells")
@@ -1347,7 +1386,7 @@ function Sim.new(deps: Deps)
 		end
 		local n = 0
 		for _, u in self.list do
-			if u.alive and u.cat == "unit" and u.kind ~= TRUCK and d2(u.x, u.y, x, y) <= cells * cells
+			if u.alive and u.cat == "unit" and u.kind ~= TRUCK and not u.inside and d2(u.x, u.y, x, y) <= cells * cells
 				and text(unitKey(u) .. ".move") == "foot" and (by < 0 or canAttack(by, u.side)) then
 				n += 1
 			end
@@ -1371,7 +1410,9 @@ function Sim.new(deps: Deps)
 			p *= bunchFactor(by, target.x, target.y)
 		end
 		local g = if target.class == "armour" and not bombard then num(`armour.{armourSide(target, fromX, fromY)}`) else 0
-		if target.class ~= "air" then
+		if target.inside then
+			p *= insideCover(target)
+		elseif target.class ~= "air" then
 			local y = coverAt(cellAt(target.x, target.y))
 			if not bombard and flanked(target, fromX, fromY) then
 				p *= (1 - y * num("combat.flankCoverKeep")) * (if g ~= 0 then 1 else num("combat.flankBonus"))
@@ -1388,7 +1429,7 @@ function Sim.new(deps: Deps)
 			for _, b in self.list do
 				if b ~= target and b.alive and b.cat == "unit" and b.kind ~= TRUCK and b.side == target.side
 					and d2(b.x, b.y, target.x, target.y) <= s * s and vsOf(key, b.class) > 0 then
-					b.hp -= p * 0.5
+					b.hp -= p * 0.5 * (if b.inside and not target.inside then insideCover(b) else 1)
 					b.hitAt, b.hitBy = self.time, by
 					killIfDead(b, by)
 				end
@@ -1520,6 +1561,9 @@ function Sim.new(deps: Deps)
 			return
 		end
 		local arty = e.cat == "unit" and text(key .. ".nato") == "artillery"
+		if e.cat == "unit" then
+			e.firedAt = self.time
+		end
 		if arty then
 			-- the game's Jze: a firing gun is revealed to the enemy and stays deployed (packs before moving)
 			e.revealedUntil = self.time + num("artillery.revealSec")
@@ -1627,6 +1671,12 @@ function Sim.new(deps: Deps)
 				local dps = num(key .. ".dps")
 				if dps > 0 then
 					local range = num(key .. ".range")
+					-- inside a secured settlement: cities.securedFire.<kind> x dps, + rooftopRange.<kind>
+					local sec = securedIn(e)
+					if sec then
+						dps *= num(`cities.securedFire.{sec.kind}`)
+						range += num(`cities.rooftopRange.{sec.kind}`)
+					end
 					-- artillery (mortars too) fire only after standing still for their set-up time
 					local arty = text(key .. ".nato") == "artillery"
 					local mortar = text(key .. ".weapon") == "mortar"
@@ -1823,6 +1873,185 @@ function Sim.new(deps: Deps)
 		end
 	end
 
+	---------------------------------------------------------------- garrisons
+
+	-- the game's _m: out of the settlement (or no longer heading there); it stands where it is
+	function leaveGarrison(e: Entity)
+		if not e.garrisonCity then
+			return
+		end
+		local st = settlements[e.garrisonCity]
+		if st then
+			local i = table.find(st.garrison, e.id)
+			if i then
+				table.remove(st.garrison, i)
+			end
+		end
+		e.inside, e.garrisonCity = nil, nil
+		e.post = cellAt(e.x, e.y)
+	end
+	self.leaveGarrison = leaveGarrison
+	-- the game's Vwe: in, at the settlement's centre
+	local function enterGarrison(st: Entity, e: Entity)
+		e.inside, e.garrisonCity = true, st.id
+		e.target, e.path, e.spot, e.attackId, e.chasing = nil, nil, nil, nil, nil
+		e.x, e.y, e.px, e.py = st.x, st.y, st.x, st.y
+		e.still, e.post = 0, st.cell
+		table.insert(st.garrison, e.id)
+	end
+	local function canGarrison(e: Entity): boolean
+		local kinds = r.data["cities.garrisonUnits"] :: { string }?
+		return e.cat == "unit" and kinds ~= nil and table.find(kinds, e.kind) ~= nil and e.class ~= "air"
+	end
+	self.canGarrison = canGarrison
+	-- units walking to garrison a settlement (the game's Pw)
+	local function garrisonWalking(st: Entity): number
+		local n = 0
+		for _, e in self.list do
+			if e.alive and e.garrisonCity == st.id and not e.inside and e.side == st.owner then
+				n += 1
+			end
+		end
+		return n
+	end
+	self.garrisonWalking = garrisonWalking
+	-- the game's orderGarrison (Fwe): the nearest eligible units, up to the free slots
+	-- (cities.garrisonFull.<kind> - inside - walking), go in; those within radius + enterReach enter at
+	-- once, the rest walk there. Returns (count, reason when none).
+	function self.orderGarrison(side: number, cityId: number, ids: { number }): (number, string?)
+		local st = settlements[cityId]
+		if not st or st.owner ~= side or not alive(side) then
+			return 0, "notHeld"
+		end
+		local list = {}
+		for _, id in ids do
+			local e = self.entities[id]
+			if orderable(e, side) and canGarrison(e :: Entity) and (e :: Entity).garrisonCity ~= st.id then
+				table.insert(list, e)
+			end
+		end
+		if #list == 0 then
+			return 0, "noGarrisonUnits"
+		end
+		local free = num(`cities.garrisonFull.{st.kind}`) - #st.garrison - garrisonWalking(st)
+		if free <= 0 then
+			return 0, "garrisonFull"
+		end
+		table.sort(list, function(a, b)
+			local da, db = d2(a.x, a.y, st.x, st.y), d2(b.x, b.y, st.x, st.y)
+			if da ~= db then
+				return da < db
+			end
+			return a.id < b.id
+		end)
+		local reach = st.radius + num("cities.enterReach")
+		local n = 0
+		for i = 1, math.min(free, #list) do
+			local e = list[i]
+			e.attackId = nil
+			clearRecon(e)
+			leaveGarrison(e)
+			if d2(e.x, e.y, st.x, st.y) <= reach * reach then
+				enterGarrison(st, e)
+				n += 1
+			else
+				planTo(e, st.cell, st.x, st.y) -- APPROX of the game's walkNear(centre, radius)
+				if e.path then
+					e.garrisonCity = st.id
+					n += 1
+				end
+			end
+		end
+		if n > 0 then
+			return n, nil
+		end
+		return 0, "unreachable"
+	end
+	-- the game's PQe and Bwe, each tick: walkers enter on reaching radius + enterReach (or give up
+	-- when it is full, lost or out of reach); the garrison list drops dead or departed units.
+	local function garrisonTick()
+		for _, e in self.list do
+			if e.alive and e.garrisonCity and not e.inside then
+				local st = settlements[e.garrisonCity]
+				if not st or st.owner ~= e.side then
+					leaveGarrison(e)
+				else
+					local reach = st.radius + num("cities.enterReach")
+					if d2(e.x, e.y, st.x, st.y) <= reach * reach then
+						if #st.garrison >= num(`cities.garrisonFull.{st.kind}`) then
+							leaveGarrison(e)
+						else
+							enterGarrison(st, e)
+						end
+					elseif not e.path then
+						leaveGarrison(e)
+					end
+				end
+			end
+		end
+		for _, st in settlements do
+			for i = #st.garrison, 1, -1 do
+				local e = self.entities[st.garrison[i]]
+				if not e or not e.alive or e.side ~= st.owner or not e.inside or e.garrisonCity ~= st.id then
+					table.remove(st.garrison, i)
+					if e and e.alive and e.inside and e.garrisonCity == st.id then
+						e.inside, e.garrisonCity = nil, nil
+						e.post = cellAt(e.x, e.y)
+					end
+				end
+			end
+		end
+	end
+	-- the game's kQ: everyone inside comes out
+	local function emptyGarrison(st: Entity)
+		for _, id in table.clone(st.garrison) do
+			local e = self.entities[id]
+			if e then
+				e.inside, e.garrisonCity = nil, nil
+				e.post = cellAt(e.x, e.y)
+			end
+		end
+		table.clear(st.garrison)
+	end
+	-- the game's LQe / Ewe: a hurt unit near a secured settlement of its own (radius + repairReach)
+	-- heals cities.repairMen (foot) / repairVehicles x max hp per second, unless it fired, was hit
+	-- or is firing within cities.repairQuietSec. APPROX: no hospital trait (traits not in the slice).
+	local function cityHealing(dt: number)
+		local any = false
+		for _, st in settlements do
+			if st.owner > 0 and #st.garrison > 0 then
+				any = true
+				break
+			end
+		end
+		if not any then
+			return
+		end
+		local quiet = num("cities.repairQuietSec")
+		local reachPad = num("cities.repairReach")
+		for _, e in self.list do
+			if e.alive and e.cat == "unit" and e.kind ~= TRUCK and e.hp < e.maxHp and not e.firing
+				and self.time - (e.hitAt or -999) >= quiet and self.time - (e.firedAt or -999) >= quiet then
+				local mv = text(unitKey(e) .. ".move")
+				local rate = 0
+				for _, st in settlements do
+					if st.owner == e.side and cityStatus(st) == "secured" then
+						local l = st.radius + reachPad
+						if d2(st.x, st.y, e.x, e.y) <= l * l then
+							local c = if mv == "air" or mv == "sea" then 0
+								elseif mv == "foot" then num(`cities.repairMen.{st.kind}`)
+								else num(`cities.repairVehicles.{st.kind}`)
+							rate = math.max(rate, c)
+						end
+					end
+				end
+				if rate > 0 then
+					e.hp = math.min(e.maxHp, e.hp + e.maxHp * rate * dt)
+				end
+			end
+		end
+	end
+
 	---------------------------------------------------------------- settlements (the game's RQe)
 
 	-- Capture weight is the rigs' (strengthNear over the settlement radius, pace max(rigs.minPace,
@@ -1831,12 +2060,19 @@ function Sim.new(deps: Deps)
 	-- cities.decayPerSec. Held: enemies alone in it wear its hold down neutraliseMult times as fast,
 	-- and at 0 it turns neutral with their capture started; with no enemies the hold recovers at
 	-- decayPerSec. The owner's own units there stop neutralising.
-	-- Not in the slice: garrisons (units inside, fortified/secured status and its benefits: paint
-	-- bonus, cover, fire, sight, healing, discounts), traits, forward training, integrity damage.
+	-- A garrison (orderGarrison) blocks neutralising. Garrisons: up to cities.garrisonFull.<kind>
+	-- infantry / AT inside (occupied 0, fortified, secured when full). Inside: hits x cities.cover
+	-- (securedCover once secured) instead of terrain cover; secured adds securedFire x dps and
+	-- rooftopRange; the settlement sees max(cities.sight, the garrison's sight); a secured one heals
+	-- nearby own units and widens its owner's building territory (paintBonus, max paintBonusMax).
+	-- Not in the slice: traits (hospital, rail, factory, radio, airfield), forward training, workforce
+	-- and discounts, integrity damage.
 	local function settlementsTick(dt: number)
 		local minPace, need = num("rigs.minPace"), math.max(0.1, num("rigs.need"))
+		garrisonTick()
 		for _, st in settlements do
 			if st.owner > 0 and not alive(st.owner) then
+				table.clear(st.garrison)
 				st.owner, st.hold, st.capture, st.takenAt = 0, 0, nil, self.time
 			end
 			local weights = strengthNear(st.x, st.y, st.radius)
@@ -1864,6 +2100,7 @@ function Sim.new(deps: Deps)
 						if st.capture.by == f then
 							st.capture.progress = math.min(1, st.capture.progress + dt * h(f) / c)
 							if st.capture.progress >= 1 then
+								emptyGarrison(st)
 								st.owner, st.capture, st.hold, st.takenAt = f, nil, 1, self.time
 								event({ type = "cityTaken", id = st.id, side = f })
 							end
@@ -1890,8 +2127,8 @@ function Sim.new(deps: Deps)
 					if st.hold < 1 then
 						st.hold = math.min(1, st.hold + num("cities.decayPerSec") * dt)
 					end
-				elseif #foes ~= #sides or #foes > 1 then
-					-- the owner is there too, or several enemies: under attack, no progress
+				elseif #st.garrison > 0 or #foes ~= #sides or #foes > 1 then
+					-- a garrison, the owner's units, or several enemies: under attack, no progress
 					if self.time - st.warnedAt > num("cities.noticeSec") then
 						st.warnedAt = self.time
 						event({ type = "cityUnderAttack", id = st.id, side = st.owner })
@@ -1900,6 +2137,7 @@ function Sim.new(deps: Deps)
 					local p = foes[1]
 					st.hold -= dt * h(p) * num("cities.neutraliseMult") / c
 					if st.hold <= 0 then
+						emptyGarrison(st)
 						local prev = st.owner
 						st.owner, st.hold, st.takenAt, st.capture = 0, 0, self.time, { by = p, progress = 0 }
 						event({ type = "cityLost", id = st.id, side = prev, by = p })
@@ -2252,6 +2490,7 @@ function Sim.new(deps: Deps)
 		end
 		rigs(dt)
 		settlementsTick(dt)
+		cityHealing(dt)
 		updateRoutes()
 		trucks(dt)
 		hqTrickle(dt)
@@ -2327,10 +2566,23 @@ function Sim.new(deps: Deps)
 				circle(rig.x, rig.y, num("rigs.sight") * c)
 			end
 		end
+		-- a garrisoned settlement sees max(cities.sight, its garrison's sight) (the game's AQe)
+		for _, st in settlements do
+			if st.owner == side and #st.garrison > 0 then
+				local m = num("cities.sight")
+				for _, id in st.garrison do
+					local u = self.entities[id]
+					if u then
+						m = math.max(m, num(`units.{u.kind}.sight`))
+					end
+				end
+				circle(st.x, st.y, m * c)
+			end
+		end
 		local seen = {}
 		local f = math.max(2, math.floor(num("match.cellScale") * 1.5 + 0.5))
 		for _, e in self.list do
-			if e.alive and e.cat == "unit" and e.side == side then
+			if e.alive and e.cat == "unit" and e.side == side and not e.inside then
 				if e.kind == TRUCK then
 					local m = numOr("intel.convoySight", 0) * c
 					if m > 0 then

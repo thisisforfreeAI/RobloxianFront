@@ -151,6 +151,7 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 		structures = {} :: { [number]: { kind: string, owner: number, cell: number, hp: number, built: number, t: number } },
 		rigs = {} :: { [number]: number },
 		cities = {} :: { [number]: number }, -- settlement id -> owner last seen (0 = neutral)
+		cityStatus = {} :: { [number]: string }, -- settlement id -> status last seen
 	}
 	self.intel = intel
 	local fogged = sim.fogOn() and rules:has("bots.fog") and rules:flag("bots.fog")
@@ -207,6 +208,7 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 		for _, st in sim.settlements do
 			if seen(st.cell) then
 				intel.cities[st.id] = st.owner
+				intel.cityStatus[st.id] = sim.cityStatus(st)
 			end
 		end
 	end
@@ -253,8 +255,8 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 	end
 
 	local function isArmy(e: any): boolean
-		if not e.alive or e.cat ~= "unit" or e.kind == "truck" then
-			return false
+		if not e.alive or e.cat ~= "unit" or e.kind == "truck" or e.garrisonCity then
+			return false -- garrisons (inside or on their way) are not army (the game's Ik)
 		end
 		local k = `units.{e.kind}`
 		return num(k .. ".dps") > 0 and text(k .. ".armour") ~= "air" and text(k .. ".nato") ~= "recon" and text(k .. ".move") ~= "sea"
@@ -268,6 +270,7 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 		end
 		return out
 	end
+	local garrisonWanted: () -> number
 	local function idle(e: any): boolean
 		return e.target == nil and e.attackId == nil
 	end
@@ -667,14 +670,132 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 
 	---------------------------------------------------------------- training (Bst)
 
+	---------------------------------------------------------------- garrisons (Wbe, uat, dat)
+
+	-- free garrison slots: cities.garrisonFull.<kind> - inside - walking (the game's qI)
+	local function citySlots(st: any): number
+		return num(`cities.garrisonFull.{st.kind}`) - #st.garrison - sim.garrisonWalking(st)
+	end
+	-- own settlements, most valuable first, then fewest free slots, then id (the game's zV)
+	local function myCities(): { any }
+		local out = {}
+		for _, st in sim.settlements do
+			if st.owner == side then
+				table.insert(out, st)
+			end
+		end
+		table.sort(out, function(a, b)
+			local va, vb = num(`bots.cityValue.{a.kind}`), num(`bots.cityValue.{b.kind}`)
+			if va ~= vb then
+				return va > vb
+			end
+			local sa, sb = citySlots(a), citySlots(b)
+			if sa ~= sb then
+				return sa < sb
+			end
+			return a.id < b.id
+		end)
+		return out
+	end
+	-- garrisoned men outside the capital, and the cap: (army + them) x bots.garrisonShare x (0.5 + defence)
+	local function garrisonCap(): (number, number)
+		local capital = nil
+		for _, st in sim.settlements do
+			if st.kind == "capital" then
+				capital = st.id
+				break
+			end
+		end
+		local inside = 0
+		for _, e in sim.list do
+			if e.alive and e.side == side and e.garrisonCity and e.garrisonCity ~= capital then
+				inside += 1
+			end
+		end
+		return inside, math.floor((#army() + inside) * num("bots.garrisonShare") * (0.5 + persona.defence))
+	end
+	-- men still wanted for garrisons (the game's uat): barracks train infantry while idle men fall short
+	function garrisonWanted(): number
+		local list = myCities()
+		if #list == 0 then
+			return 0
+		end
+		local inside, cap = garrisonCap()
+		local room, n = math.max(0, cap - inside), 0
+		for _, st in list do
+			local c = math.max(0, citySlots(st))
+			local h = if st.kind == "capital" then c else math.min(c, room)
+			n += h
+			if st.kind ~= "capital" then
+				room -= h
+			end
+		end
+		return n
+	end
+	-- the game's dat: send the nearest idle infantry / AT (within bots.garrisonReach; any distance for
+	-- the capital) into own settlements with free slots, up to the cap
+	local function garrison(pool: { any })
+		local list = myCities()
+		if #list == 0 then
+			return
+		end
+		local inside, cap = garrisonCap()
+		local reach = scaled(num("bots.garrisonReach"))
+		for _, st in list do
+			local capital = st.kind == "capital"
+			if inside < cap or capital then
+				local d = citySlots(st)
+				if d > 0 then
+					local cands = {}
+					for _, u in pool do
+						if sim.canGarrison(u) and (capital or hypot(u.x - st.x, u.y - st.y) <= reach) then
+							table.insert(cands, u)
+						end
+					end
+					table.sort(cands, function(a, b)
+						local da, db = hypot(a.x - st.x, a.y - st.y), hypot(b.x - st.x, b.y - st.y)
+						if da ~= db then
+							return da < db
+						end
+						return a.id < b.id
+					end)
+					local take = if capital then d else math.min(d, cap - inside)
+					local ids = {}
+					for i = 1, math.min(take, #cands) do
+						table.insert(ids, cands[i].id)
+					end
+					if #ids > 0 then
+						local n = sim.orderGarrison(side, st.id, ids)
+						if n > 0 then
+							if not capital then
+								inside += n
+							end
+							for i = #pool, 1, -1 do
+								if pool[i].garrisonCity then
+									table.remove(pool, i)
+								end
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+
 	local PRIORITY = { factory = 1, barracks = 2, hq = 3 }
 	local function training(p: any)
 		local counts: { [string]: number } = {}
+		local idleMen = 0 -- idle units that could garrison (the game's r)
+		local menKinds = sim.deps.rules.data["cities.garrisonUnits"] :: { string }? or {}
 		for _, e in sim.list do
-			if e.alive and e.side == side and e.cat == "unit" and e.kind ~= "truck" then
+			if e.alive and e.side == side and e.cat == "unit" and e.kind ~= "truck" and not e.garrisonCity then
 				counts[e.kind] = (counts[e.kind] or 0) + 1
+				if idle(e) and table.find(menKinds, e.kind) then
+					idleMen += 1
+				end
 			end
 		end
+		local menShort = idleMen < garrisonWanted()
 		local producers = {}
 		for _, st in sim.list do
 			if st.alive and st.side == side and st.cat == "structure" and st.queue then
@@ -717,7 +838,9 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 					item = "infantry"
 				end
 			elseif st.kind == "barracks" then
-				if footShort then
+				if menShort then
+					item = "infantry" -- men for the garrisons
+				elseif footShort then
 					local mortarShare = num("bots.mortarShare") * (0.5 + persona.defence)
 					item = if k < 0.3 then "at" elseif k < 0.3 + mortarShare then "mortar" else "infantry"
 				end
@@ -739,6 +862,9 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 						self.lastEngineer = sim.time
 					elseif item == "scout" then
 						self.lastScout = sim.time
+					elseif item == "infantry" then
+						idleMen += 1
+						menShort = idleMen < garrisonWanted()
 					end
 				end
 			end
@@ -1024,9 +1150,7 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 		end
 		-- settlements (not capitals) after bots.cityAfter: neutral ones while the bot holds fewer than
 		-- floor(cityHeld x (0.5 + defence)) and has fewer than max(1, floor(maxOccupied x (0.5 +
-		-- defence))) without a garrison; enemy ones after the grace when not massing. APPROX: no
-		-- garrisons in the slice, so every held settlement counts as ungarrisoned and is defended by
-		-- the units near it only.
+		-- defence))) without a garrison; enemy ones after the grace when not massing.
 		local targetedCities, nTargeted = {}, 0
 		for _, t in self.orders do
 			if t.kind == "city" and not targetedCities[t.id] then
@@ -1035,15 +1159,18 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 			end
 		end
 		local function mayTake(enemy: boolean): boolean
-			local held = 0
+			local held, bare = 0, 0
 			for _, st in sim.settlements do
 				if st.owner == side and st.kind ~= "capital" then
 					held += 1
+					if #st.garrison == 0 and sim.garrisonWalking(st) == 0 then
+						bare += 1
+					end
 				end
 			end
 			local l = math.floor(num("bots.cityHeld") * (0.5 + persona.defence))
 			local c = math.max(1, math.floor(num("bots.maxOccupied") * (0.5 + persona.defence)))
-			return held + nTargeted < l and (enemy or held + nTargeted < c)
+			return held + nTargeted < l and (enemy or bare + nTargeted < c)
 		end
 		local takeNeutral = sim.time >= num("bots.cityAfter") and mayTake(false)
 		local takeEnemy = sim.time >= num("bots.cityAfter") and afterGrace and not massing and mayTake(true)
@@ -1064,7 +1191,20 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 					local owner = cityOwner(st)
 					local ok = owner ~= side and (if owner < 0 then takeNeutral else takeEnemy and canAttack(side, owner))
 					if ok then
-						local k = enemyNear(st.x, st.y, st.radius * 2)
+						-- status as last seen (the game's vwe) and its garrison's worth (lat)
+						local status = "neutral"
+						if owner >= 0 then
+							status = intel.cityStatus[st.id] or "occupied"
+							if status == "neutral" or intel.cities[st.id] == side then
+								status = "occupied"
+							end
+						end
+						local full = num(`cities.garrisonFull.{st.kind}`)
+						local men = unitWorth("infantry")
+						local held = if status == "secured" then full * men * num(`cities.securedFire.{st.kind}`) / math.max(0.05, num(`cities.securedCover.{st.kind}`))
+							elseif status == "fortified" then (full - 1) * men / math.max(0.05, num("cities.cover"))
+							else 0
+						local k = enemyNear(st.x, st.y, st.radius * 2) + held
 						if not fresh(st.x, st.y) and (owner >= 0 or sim.time >= num("bots.neutralTrustSec")) then
 							k = math.max(k, num("bots.unknownDefence"))
 						end
@@ -1078,7 +1218,8 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 									o = math.min(o, hypot(st.x - h.x, st.y - h.y))
 								end
 								local far = 1 + (if o < math.huge then o else homeCells * 4) / homeCells
-								local value = num(`bots.cityValue.{st.kind}`) * (if owner < 0 then 0.5 + persona.defence else 1)
+								local value = num(`bots.cityValue.{st.kind}`)
+									* (if owner < 0 then 0.5 + persona.defence elseif status == "secured" then num("bots.cityEnemy") else 1)
 								local score = value / (hd * hd) / far / (1 + k / 400) / (1 + c / num("bots.influence.approachSoft"))
 								if not pick or score > pick.score then
 									pick = { kind = "city", id = st.id, x = st.x, y = st.y, need = math.max(k * x, 20), score = score }
@@ -1160,6 +1301,7 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 		fallBack()
 		local pool = idleArmy()
 		defence(pool)
+		garrison(pool)
 		attack(pool)
 	end
 	self.think = think

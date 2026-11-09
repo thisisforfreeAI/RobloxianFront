@@ -93,6 +93,22 @@ local function onIntent(player: Player, raw: any)
 		if not id then
 			Net.sendState(player, { notice = why })
 		end
+	elseif i.kind == "garrison" then
+		-- the settlement whose centre is nearest the click, within twice its radius
+		local best, bd = nil, math.huge
+		for _, st in sim.settlements do
+			local d = (st.x - i.x) ^ 2 + (st.y - i.y) ^ 2
+			if d <= (st.radius * 2) ^ 2 and d < bd then
+				best, bd = st, d
+			end
+		end
+		local n, why = 0, "noSettlement"
+		if best then
+			n, why = sim.orderGarrison(side, best.id, i.unitIds)
+		end
+		if n == 0 then
+			Net.sendState(player, { notice = why })
+		end
 	elseif i.kind == "recon" then
 		local n, why = sim.deployRecon(side, i.unitIds)
 		if n == 0 then
@@ -138,8 +154,11 @@ local function structureRow(e: any, owner: number, details: boolean): { any }
 	}
 end
 
--- 0 none, 1 scout deployed (recon), 2 gun packing up, 3 gun setting up
+-- 0 none, 1 scout deployed (recon), 2 gun packing up, 3 gun setting up, 4 inside a settlement
 local function unitStatus(e: any): number
+	if e.inside then
+		return 4
+	end
 	if (e.reconLeft or 0) > 0 then
 		return 1
 	end
@@ -275,7 +294,7 @@ local function privateState()
 			local seen = not viewer or st.owner == side or viewer.visibleAt(st.x, st.y)
 			if seen then
 				seenOwners[st.id] = st.owner
-				table.insert(cities, { st.id, st.owner, if st.capture then st.capture.by else 0, if st.capture then math.floor(st.capture.progress * 100) / 100 else 0, math.floor(st.hold * 100) / 100 })
+				table.insert(cities, { st.id, st.owner, if st.capture then st.capture.by else 0, if st.capture then math.floor(st.capture.progress * 100) / 100 else 0, math.floor(st.hold * 100) / 100, #st.garrison, rules:number(`cities.garrisonFull.{st.kind}`) })
 			else
 				table.insert(cities, { st.id, seenOwners[st.id] or 0, 0, 0, 1 })
 			end
