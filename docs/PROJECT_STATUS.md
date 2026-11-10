@@ -11,7 +11,7 @@ Last updated: 2026-11-09
 Phase 1. Milestone 1A done (Studio tests 1–7 pass). Pilot sprite REQ-0001 approved. Milestone 1B (gameplay loop) rewritten for WarFront parity and tested outside Studio; Studio tests B1–B9 pending.
 
 ## Verified outside Studio (actually run, Linux container)
-- Lune 0.11.1 `tests/run`: 118 passed, 0 failed (latest run) (including the 2 that read the GameData generated from your install).
+- Lune 0.11.1 `tests/run`: 119 passed, 0 failed (latest run) (including the 2 that read the GameData generated from your install).
 - Rojo 7.4.4 `rojo build` succeeds. All .luau files compile (syntax only).
 - Synthetic atlas: 16 × 120 px frames pack to 960×240 (8×2, no padding); validator passes on dimensions,
   rectangles, direction order, pixel identity, pivot, partial alpha, edge bleed, arrow orientation, manifest.
@@ -452,12 +452,19 @@ at the cursor), 100 damage over 4.5 cells, 40 s reload, nothing closer than 24 c
 game's missile speed. The bot fires it like the rocket launcher. APPROX: alerts and unit labels
 still call it artillery (the HUD's train button uses the republic name).
 
+Night vision switch and opening deck (2026-11-10). Press \ to switch your night operations towers
+off or on (the game's nvOff); the HUD shows which. The opening deck (the game's hqe / sqe / uqe / Pg):
+each match draws the hour the drop arrives from its own seed, day 40 : dawn 18 : dusk 14 : night 8
+(storm and sandstorm need the weather, off in skirmish), and the day clock starts at that hour; the
+drop banner says which. Not ported: the opening scene (a picture only), the operation name and intel
+tip (game text), and the opening conditions (they need the events system, off in skirmish).
+
 ## Next
-1. You run Studio tests B18–B53 (defences, mortar, artillery, scout) and commit.
+1. You run Studio tests B18–B54 (defences, mortar, artillery, scout) and commit.
 2. Done since: engineers' repair, vehicle steering, the bot's HQ push, shared group routes,
    separation, the 100/250/500-unit performance check (`lune run tools/perf.luau 250`) and the
    convoy rules (spacing, town/bridge/off-road pace, held and stranded trucks), airfield drops and
-   the capital's paratroopers and bomb truck, the recon drone and SAM sites, rocket artillery, the artillery base, the night operations tower, veterancy, IFV transport, the command truck, the opening drop.
+   the capital's paratroopers and bomb truck, the recon drone and SAM sites, rocket artillery, the artillery base, the night operations tower, veterancy, IFV transport, the command truck, the opening drop, cancel and demolish, armies and minefields, the republic missile launcher, the opening deck.
 3. Next: more of the game's land units and buildings that the slice still passes over.
 
 ## Open questions

@@ -147,6 +147,7 @@ export type Deps = {
 	seed: number?,
 	drop: boolean?, -- start with the game's opening drop instead of HQs on the start points
 	armies: { string }?, -- per side: "coalition" (the default) or "republic"
+	deckSeed: number?, -- the match's own seed for the opening deck (the game draws one per match); else seed
 }
 
 export type Event = { type: string, [string]: any }
@@ -5831,6 +5832,72 @@ function Sim.new(deps: Deps)
 			end
 			self.drop = { phase = "pick", t = 0, pickEnds = num("drop.pickSec"), homes = homes, picks = picks, ready = ready,
 				planes = {}, landT = -1 }
+			if r:has("opening.on") and r:flag("opening.on") then
+				O.opening()
+			end
+		end
+		-- the game's Pg: a small seeded stream (seed, salt) used by the opening deck
+		function O.stream(seedN: number, salt: number)
+			local function imul(a: number, b: number): number
+				local al, ah = bit32.band(a, 0xffff), bit32.rshift(a, 16)
+				local bl, bh = bit32.band(b, 0xffff), bit32.rshift(b, 16)
+				return bit32.band(al * bl + bit32.lshift(bit32.band(ah * bl + al * bh, 0xffff), 16), 0xffffffff)
+			end
+			local st = (seedN * 2654435761 + salt * 2246822507) % 4294967296
+			local g = {}
+			function g.next(): number
+				st = (st + 1831565813) % 4294967296
+				local e = st
+				e = imul(bit32.bxor(e, bit32.rshift(e, 15)), bit32.bor(e, 1))
+				e = bit32.bxor(e, (e + imul(bit32.bxor(e, bit32.rshift(e, 7)), bit32.bor(e, 61))) % 4294967296)
+				return bit32.bxor(e, bit32.rshift(e, 14)) / 4294967296
+			end
+			function g.pick(list: { string }, w: (string) -> number): string?
+				local n = 0
+				for _, a in list do
+					n += math.max(0, w(a))
+				end
+				if #list == 0 or n <= 0 then
+					return nil
+				end
+				local x = g.next() * n
+				for _, a in list do
+					local k = math.max(0, w(a))
+					if k > 0 then
+						x -= k
+						if x < 0 then
+							return a
+						end
+					end
+				end
+				for i = #list, 1, -1 do
+					if w(list[i]) > 0 then
+						return list[i]
+					end
+				end
+				return nil
+			end
+			return g
+		end
+		-- The opening deck (the game's hqe / sqe / uqe): the hour the drop arrives, drawn from the match
+		-- seed with opening.deck.arrival weights (storm and sandstorm need the weather, off in skirmish),
+		-- moves the day clock to opening.deck.hour.<arrival> unless the rules already shift it.
+		-- Not ported: the opening scene (a picture only), the operation name and intel tip (text), and the
+		-- conditions (need the events system, off in skirmish).
+		function O.opening()
+			local g = O.stream(deps.deckSeed or seed, 23)
+			local weather = r:has("weather.on") and r:flag("weather.on")
+			local arrival = g.pick({ "day", "dawn", "dusk", "night", "storm", "sandstorm" }, function(k: string): number
+				if (k == "storm" or k == "sandstorm") and not weather then
+					return 0
+				end
+				return numOr(`opening.deck.arrival.{k}`, 0)
+			end) or "day"
+			self.drop.opening = { arrival = arrival }
+			if numOr("daylight.offsetSec", 0) == 0 and numOr("daylight.rate", 1) == 1 then
+				local hour = num(`opening.deck.hour.{if arrival == "storm" or arrival == "sandstorm" then "day" else arrival}`)
+				self.dayOffset = ((hour - 0.08) % 1 + 1) % 1 * 480 -- the game's daylight startPhase and lengthSec
+			end
 		end
 		if deps.drop then
 			O.init()
@@ -6579,7 +6646,7 @@ function Sim.new(deps: Deps)
 		return n * n * (3 - 2 * n)
 	end
 	function self.nightAmount(): number
-		local clock = numOr("daylight.offsetSec", 0) + self.time * numOr("daylight.rate", 1)
+		local clock = (self.dayOffset or numOr("daylight.offsetSec", 0)) + self.time * numOr("daylight.rate", 1)
 		local phase = ((math.floor(clock) / DAY_SEC + DAY_START) % 1 + 1) % 1
 		if phase < SUN_UP then
 			return 0

@@ -74,7 +74,7 @@ test("accepts a valid move", function()
 end)
 test("intents without unit ids parse (drop pick, ready, cancel, demolish, mines)", function()
 	for _, raw in { { kind = "dropPick", x = 10, y = 10 }, { kind = "dropReady" }, { kind = "cancelQueue", index = 0 },
-		{ kind = "demolish", structureId = 3 }, { kind = "layMines", pts = { 1, 2, 3, 4 } } } do
+		{ kind = "demolish", structureId = 3 }, { kind = "layMines", pts = { 1, 2, 3, 4 } }, { kind = "nightOps", on = false } } do
 		local i, err = Protocol.parse(raw, 100, 100)
 		assert(i and i.kind == raw.kind, `{raw.kind}: {err}`)
 	end
@@ -246,6 +246,7 @@ if fs.isFile(matchPath) then
 			settlements = o.settlements,
 			drop = o.drop,
 			armies = o.armies,
+			seed = o.seed,
 		})
 	end
 	local function run(sim, seconds, bots: any?)
@@ -2137,6 +2138,15 @@ if fs.isFile(matchPath) then
 		assert(hq, "HQ set up")
 		assert(math.abs(hq.x - 40.5) < 16 and math.abs(hq.y - 36.5) < 16, `near the pick: {hq.x},{hq.y}`)
 		assert(sim.hqOf(2), "the other side's HQ near its start point")
+	end)
+	test("opening deck: the drop arrives at a seeded hour (day / dawn / dusk / night) and the day clock starts there", function()
+		local a = newSim({ drop = true, seed = 1 })
+		eq(a.drop.opening.arrival, "dawn")
+		assert(math.abs(a.dayOffset - 0.905 * 480) < 1e-6, `dawn: {a.dayOffset}`)
+		local b = newSim({ drop = true, seed = 7 })
+		eq(b.drop.opening.arrival, "day")
+		assert(math.abs(b.dayOffset - 0.12 * 480) < 1e-6, `day: {b.dayOffset}`)
+		eq(newSim({ seed = 1 }).dayOffset, nil, "no drop, no deck")
 	end)
 	test("bot: picks a landing in the opening drop and is ready at once", function()
 		local sim = newSim({ drop = true })

@@ -49,6 +49,12 @@ do
 	end
 	BuildController.start(map.width, send)
 	DropController.start(send)
+	-- \\ switches your night operations towers on or off (the game's nvOff)
+	game:GetService("UserInputService").InputBegan:Connect(function(input, processed)
+		if not processed and input.KeyCode == Enum.KeyCode.BackSlash then
+			send({ kind = "nightOps", on = not Hud.nightVisionOn() })
+		end
+	end)
 	Hud.start(info, {
 		produce = function(item: string, structureId: number?)
 			send({ kind = "produce", item = item, structureId = structureId })

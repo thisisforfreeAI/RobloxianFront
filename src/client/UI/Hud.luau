@@ -41,6 +41,7 @@ local alertLines: { TextLabel } = {}
 local alertFeed: { { text: string, untilAt: number } } = {}
 local mineButton: TextButton? = nil
 local myArmy = "coalition"
+local nvOn = false
 local selected: { id: number?, kind: string } = { id = nil, kind = "hq" }
 local lastProducers: { any } = {}
 local lastForwards: { any } = {}
@@ -158,6 +159,7 @@ local NOTICE_TEXT: { [string]: string } = {
 	notOperational = "The artillery base isn't working",
 	notOwned = "Not yours",
 	nothingQueued = "Nothing queued there",
+	noNightOps = "You have no night operations tower",
 	cannotDemolish = "That can't be pulled down (the HQ, or already coming down)",
 	tooClose = "Too close for rockets",
 	droneOut = "The drone is already out",
@@ -292,7 +294,7 @@ function Hud.update(state: { [string]: any }, mySide: number)
 		dropLabel.Visible = d ~= nil
 		if d then
 			dropLabel.Text = if d.phase == "pick"
-				then `Pick where to land: click the map · Enter when ready · {d.left} s{if d.warn then " · no road to the rigs there" else ""}`
+				then `Pick where to land: click the map · Enter when ready · {d.left} s{if d.warn then " · no road to the rigs there" else ""}{if d.arrival then ` · arriving at {d.arrival}` else ""}`
 				else `Planes inbound · down in {d.left} s`
 		end
 	end
@@ -324,7 +326,9 @@ function Hud.update(state: { [string]: any }, mySide: number)
 			table.insert(parts, if best <= 0 then "Airfield drop [L] ready" else `Airfield drop [L] {best} s`)
 		end
 		if state.nv then
-			table.insert(parts, if state.nv[1] == 1 then "Night vision on"
+			nvOn = state.nv[1] == 1
+			table.insert(parts, if state.nv[1] == 1 then "Night vision on [\\ off]"
+				elseif state.nv[3] == 1 then "Night vision switched off [\\ on]"
 				elseif state.nv[2] > 0 then `Night ops tower: new one in {state.nv[2]} s` else "No night vision")
 		end
 		if state.kills then
@@ -391,6 +395,11 @@ function Hud.update(state: { [string]: any }, mySide: number)
 		banner.Text = if state.winner == mySide then "VICTORY" elseif state.winner == 0 then "DRAW" else "DEFEAT"
 		banner.TextColor3 = if state.winner == mySide then Color3.fromRGB(120, 230, 120) else Color3.fromRGB(240, 110, 100)
 	end
+end
+
+-- night vision is on now (the \\ key switches it)
+function Hud.nightVisionOn(): boolean
+	return nvOn
 end
 
 return Hud

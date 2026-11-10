@@ -39,8 +39,9 @@ export type DropPickIntent = { kind: "dropPick", x: number, y: number } -- where
 export type DropReadyIntent = { kind: "dropReady" } -- done picking
 export type CancelQueueIntent = { kind: "cancelQueue", structureId: number?, index: number } -- call off a queued unit (index 0 = the last; no id = the HQ)
 export type DemolishIntent = { kind: "demolish", structureId: number } -- cancel a building going up, or pull a finished one down
+export type NightOpsIntent = { kind: "nightOps", on: boolean } -- switch your night operations towers on or off
 export type LayMinesIntent = { kind: "layMines", pts: { number } } -- a minefield along a stroke: x1, y1, x2, y2, ... in cells
-export type Intent = MoveIntent | StopIntent | AttackIntent | ProduceIntent | TruckIntent | BuildIntent | ReconIntent | GarrisonIntent | RepairIntent | ForwardIntent | RoadRepairIntent | SabotageIntent | PowerIntent | DetonateIntent | BarrageIntent | BoardIntent | UnloadIntent | DropPickIntent | DropReadyIntent | CancelQueueIntent | DemolishIntent | LayMinesIntent
+export type Intent = MoveIntent | StopIntent | AttackIntent | ProduceIntent | TruckIntent | BuildIntent | ReconIntent | GarrisonIntent | RepairIntent | ForwardIntent | RoadRepairIntent | SabotageIntent | PowerIntent | DetonateIntent | BarrageIntent | BoardIntent | UnloadIntent | DropPickIntent | DropReadyIntent | CancelQueueIntent | DemolishIntent | LayMinesIntent | NightOpsIntent
 
 local function finite(n: any): boolean
 	return type(n) == "number" and n == n and n ~= math.huge and n ~= -math.huge
@@ -116,6 +117,12 @@ function Protocol.parse(raw: any, mapWidth: number, mapHeight: number): (Intent?
 			return nil, "target outside the map"
 		end
 		return { kind = "power", power = raw.power, x = raw.x, y = raw.y } :: any, nil
+	end
+	if raw.kind == "nightOps" then
+		if type(raw.on) ~= "boolean" then
+			return nil, "on must be true or false"
+		end
+		return { kind = "nightOps", on = raw.on } :: any, nil
 	end
 	if raw.kind == "dropReady" then
 		return { kind = "dropReady" } :: any, nil

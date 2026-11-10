@@ -226,6 +226,18 @@ local function onIntent(player: Player, raw: any)
 		if not ok then
 			Net.sendState(player, { notice = "nothingQueued" })
 		end
+	elseif i.kind == "nightOps" then
+		-- the game's nvOff switch, for every tower the side has
+		local n = 0
+		for _, e in sim.list do
+			if e.alive and e.kind == "nightops" and e.side == side then
+				sim.switchNightOps(side, e.id, i.on)
+				n += 1
+			end
+		end
+		if n == 0 then
+			Net.sendState(player, { notice = "noNightOps" })
+		end
 	elseif i.kind == "layMines" then
 		local pts = {}
 		for k = 1, #i.pts, 2 do
@@ -635,7 +647,13 @@ local function privateState()
 			payload.powers = { para = { paraState, math.ceil(paraLeft) }, demo = { demoState, math.ceil(demoLeft) }, drone = { droneState, math.ceil(droneLeft) } }
 			-- kills to spend, and the soonest own working artillery base's barrage / flare wait (-1: no base)
 			payload.kills = sim.killsOf(side)
-			payload.nv = { if sim.nightVisionFor(side) then 1 else 0, math.ceil(sim.nightOpsRebuildIn(side)) }
+			local towerOff = 0
+			for _, e in sim.list do
+				if e.alive and e.kind == "nightops" and e.side == side and e.built >= 1 and e.nvOff then
+					towerOff = 1
+				end
+			end
+			payload.nv = { if sim.nightVisionFor(side) then 1 else 0, math.ceil(sim.nightOpsRebuildIn(side)), towerOff }
 			local artyB, artyF = -1, -1
 			for _, b in sim.list do
 				if b.alive and b.kind == "artybase" and b.side == side and not sim.inactiveReason(b) then
@@ -702,7 +720,7 @@ local function privateState()
 			if d and d.phase ~= "done" then
 				local p = d.picks[side]
 				payload.drop = { phase = d.phase, left = math.ceil(sim.dropLeft()), x = p.x, y = p.y,
-					warn = sim.dropWarning(p.x, p.y) ~= nil }
+					warn = sim.dropWarning(p.x, p.y) ~= nil, arrival = d.opening and d.opening.arrival or nil }
 				payload.time = d.t
 				local fl = {}
 				for k, pl in d.planes do
@@ -834,6 +852,8 @@ function MatchService.start(mapModule: string)
 		rigs = rigs,
 		settlements = (map.data :: any).settlements or {},
 		seed = map.data.seed,
+		-- the game starts each match with a fresh seed (0 to 999999); here it only draws the opening deck
+		deckSeed = Random.new():NextInteger(0, 999999),
 	})
 	for _, rig in sim.rigs do
 		if rig.rich > 1 then
