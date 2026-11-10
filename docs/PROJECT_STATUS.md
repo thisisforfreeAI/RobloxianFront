@@ -920,3 +920,14 @@ Verification actually run on Windows for this batch:
 - Confirmed the existing localhost:34872 server reports project RobloxianFront, version 7.4.4.
 - Studio play, Script Analysis, visual parity and renderer performance have **not** been tested here.
   Existing B78-B90 remain unrun; new Studio checks B91-B94 are also unrun.
+
+## Faster town streaming (2026-11-10)
+
+The blurry stretch after panning came from TownRenderer loading one chunk every 0.4 s, inflating it
+from scratch every time, dropping chunks the moment they left the view, and waiting 10 s after any
+image-budget refusal. Now it checks every 0.1 s, keeps the compressed bytes cached, shows every chunk
+whose pixels are ready (up to 6 ms a check) and inflates one new chunk a check, nearest first. When a
+chunk leaves the view, its pixels are copied back out of the image and kept (up to 6 chunks), and its
+image is kept for reuse (up to 2) instead of being handed back to the budget. Shown chunks stay until 1.6x
+the view distance, idle checks pre-inflate the next chunk just outside the view, and a budget refusal
+retries after 1.5 s. Studio test B95.
