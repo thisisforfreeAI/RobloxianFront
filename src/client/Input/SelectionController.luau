@@ -106,7 +106,7 @@ end
 -- opts.onProducer(id, kind): a building was picked as the producer (nil = back to the HQ).
 -- opts.note(text): a short notice; opts.lookAt(x, y): centre the camera on a cell.
 local GROUP_KEYS = { [Enum.KeyCode.One] = 1, [Enum.KeyCode.Two] = 2, [Enum.KeyCode.Three] = 3, [Enum.KeyCode.Four] = 4, [Enum.KeyCode.Five] = 5 }
-function SelectionController.start(mySide: number, sendIntent: (any) -> (), opts: { busy: () -> boolean, onProducer: (number?, string?) -> (), digLine: ({ number }) -> (), cycleTrench: () -> (), note: (string) -> (), lookAt: (number, number) -> () })
+function SelectionController.start(mySide: number, sendIntent: (any) -> (), opts: { busy: () -> boolean, onProducer: (number?, string?) -> (), digLine: ({ number }) -> (), cycleTrench: () -> (), note: (string) -> (), lookAt: (number, number) -> (), openRig: (number?) -> () })
 	local gui = Instance.new("ScreenGui")
 	gui.Name = "WarFrontSelection"
 	gui.IgnoreGuiInset = true
@@ -177,6 +177,7 @@ function SelectionController.start(mySide: number, sendIntent: (any) -> (), opts
 				-- like the game's selectAt: a second click on the same unit within 350 ms (the game's
 				-- doubleMs) picks every unit of its kind on screen (Ctrl: every unit on screen); Shift +
 				-- click adds it, and when its kind is already selected adds all of that kind on screen
+				opts.openRig(nil)
 				local now = os.clock() * 1000
 				local double = not additive and now - lastPick.at <= DOUBLE_MS and lastPick.id == best
 				lastPick = { at = if double then 0 else now, id = best }
@@ -195,6 +196,8 @@ function SelectionController.start(mySide: number, sendIntent: (any) -> (), opts
 					return v.side == mySide
 				end)
 				picked = if own then own.id else nil
+				-- one of your rigs: open its card (the game's RigCard); a click anywhere else closes it
+				opts.openRig(if own and own.kind == "rig" then own.id else nil)
 				local st = structureUnder(b, function(v)
 					return v.side == mySide and PRODUCERS[v.kind] == true
 				end)

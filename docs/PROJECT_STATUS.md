@@ -11,7 +11,7 @@ Last updated: 2026-11-09
 Phase 1. Milestone 1A done (Studio tests 1–7 pass). Pilot sprite REQ-0001 approved. Milestone 1B (gameplay loop) rewritten for WarFront parity and tested outside Studio; Studio tests B1–B9 pending.
 
 ## Verified outside Studio (actually run, Linux container)
-- Lune 0.11.1 `tests/run`: 145 passed, 0 failed (latest run) (including the 2 that read the GameData generated from your install).
+- Lune 0.11.1 `tests/run`: 146 passed, 0 failed (latest run) (including the 2 that read the GameData generated from your install).
 - Rojo 7.4.4 `rojo build` succeeds. All .luau files compile (syntax only).
 - Synthetic atlas: 16 × 120 px frames pack to 960×240 (8×2, no padding); validator passes on dimensions,
   rectangles, direction order, pixel identity, pivot, partial alpha, edge bleed, arrow orientation, manifest.
@@ -606,8 +606,18 @@ when its kind is already in the selection it adds every unit of that kind on scr
 Rig upgrades for players (2026-11-10), traced from the game's upgradeRig (qX / wme): the Sim (and the
 bot) already had them; now a player can buy them. Ctrl+T over your rig upgrades its pump (120 oil,
 pumps 1.5x), Ctrl+Shift+T its tank (60 oil, holds 2x). Each once per rig, paid up front; refused with
-"Already upgraded" or "Not enough oil". APPROX: the game uses buttons on the rig's panel; these keys
-are PROVISIONAL.
+"Already upgraded" or "Not enough oil". The keys stay as shortcuts; the rig card below has the buttons.
+
+Rig card (2026-11-10), after the game's RigCard: left click one of your rigs and a panel opens at the
+bottom right with its tank ("Tank full, needs trucks" when full), pump (most and now, oil a minute),
+trucks n / 4, about how much oil they bring home a minute (the game's Yke: each truck capacity / round
+trip of 2 x route cells / truck speed + load + unload; shown in orange under 85% of the pump), where
+they haul to and the one-way trip time, damage, a cut route or a fight over it. Buttons: send an idle
+truck (or buy one, 40), release a truck, second pump (120), bigger tank (60) ("Done" once bought), and
+reroute (next way on offer; shows the wait). Greyed buttons say why on hover. X, Esc or a click
+elsewhere closes it. The server sends your rigs' figures with the side state.
+- APPROX: placeholder look (text and buttons, no truck pips or pictures); no repair button (select
+  engineers and right click the rig instead).
 
 Withdrawing a garrison (2026-11-10), traced from the game's withdraw ($I / Bwe / _m): Shift+H on a
 town you hold brings everyone inside out (the Sim also takes a count, last in first out, or one unit
@@ -672,7 +682,7 @@ Bot: bridges (2026-11-10), traced from the game's _h / v7e / kUe / nat / Yst / X
 - Stopping a unit now also ends a sabotage job.
 
 ## Next
-1. You run Studio tests B18–B76 (defences, mortar, artillery, scout) and commit.
+1. You run Studio tests B18–B77 (defences, mortar, artillery, scout) and commit.
 2. Done since: engineers' repair, vehicle steering, the bot's HQ push, shared group routes,
    separation, the 100/250/500-unit performance check (`lune run tools/perf.luau 250`) and the
    convoy rules (spacing, town/bridge/off-road pace, held and stranded trucks), airfield drops and

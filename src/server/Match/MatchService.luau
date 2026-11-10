@@ -787,6 +787,42 @@ local function privateState()
 				end
 			end
 			payload.producers = producers
+			-- your rigs, for the rig card (the game's RigCard): tank, pump, trucks, haul, upgrades, route
+			local rigs = {}
+			for _, e in sim.list do
+				if e.kind == "rig" and e.side == side then
+					local trucks = sim.trucksOf(e.id)
+					local route = e.route
+					local speed = math.max(0.01, rules:number("convoys.speed") * rules:number("trucks.kinds.light.paceShare"))
+					local cap = rules:number("trucks.kinds.light.capacity")
+					-- the game's Yke: oil a minute the trucks bring home, each truck capacity / round trip
+					local haul = 0
+					if route and #route > 0 and e.connected then
+						local trip = 2 * #route / speed + cap / math.max(0.01, rules:number("trucks.loadPerSec")) + rules:number("trucks.unloadSec")
+						haul = trucks * cap / trip * 60
+					end
+					local refName = nil
+					if e.refinery then
+						local st = sim.settlements[e.refinery]
+						if st and sim.depotCell(e) ~= nil and st.refinery and sim.depotCell(e) == st.refinery.cell then
+							refName = st.name
+						end
+					end
+					table.insert(rigs, {
+						id = e.id, name = e.name or "", rich = e.rich or 1,
+						tank = math.floor(e.tank or 0), tankCap = math.floor(sim.tankSize(e) + 0.5),
+						pumpNow = math.floor((e.rate or 0) * 60 + 0.5), pumpMax = math.floor(sim.pumpRate(e) * 60 + 0.5),
+						trucks = trucks, perRig = rules:number("trucks.perRig"), haul = math.floor(haul + 0.5),
+						pump = e.pumpLevel ~= nil, bigTank = e.tankLevel ~= nil,
+						hp = if e.hp then math.floor(e.hp) else nil, maxHp = rules:number("rigs.damage.hp"), wrecked = e.wrecked == true,
+						connected = e.connected == true, cut = e.routeCutAt ~= nil, contested = e.contested == true,
+						readyIn = math.ceil(sim.rerouteReadyIn(e)), refinery = refName,
+						trip = if route and #route > 0 and e.connected then math.ceil(#route / speed) else nil,
+						canRelease = sim.releaseTruckProblem(side, e.id) == nil,
+					})
+				end
+			end
+			payload.rigs = rigs
 			-- unit prices after settlement and factory-town discounts
 			local prices = {}
 			for item in Protocol.PRODUCIBLE do

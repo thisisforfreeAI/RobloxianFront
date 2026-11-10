@@ -601,6 +601,36 @@ if fs.isFile(matchPath) then
 		eq(select(2, sim.upgradeRig(2, rig.id, "tank")), "notOwned")
 	end)
 
+	test("rig card: the lines and buttons the panel shows", function()
+		local RC = require("../src/client/UI/RigCard")
+		local prices = { truck = 40, pump = 120, tank = 60, pumpMult = 1.5, tankMult = 2, baseTank = 440 }
+		local row = { id = 7, name = "North", rich = 1, tank = 100, tankCap = 440, pumpNow = 144, pumpMax = 144, trucks = 1, perRig = 4,
+			haul = 60, pump = false, bigTank = false, hp = 800, maxHp = 800, wrecked = false, connected = true, cut = false,
+			contested = false, readyIn = 0, refinery = nil, trip = 30, canRelease = true }
+		local v = RC.view(row, 500, 0, prices)
+		eq(v.title, "OIL FIELD · North")
+		eq(v.lines[1], "Tank 100 / 440")
+		eq(v.lines[2], "Pump 144 oil/min · now 144")
+		eq(v.lines[3], "Trucks 1 / 4")
+		eq(v.lines[4], "Hauls about 60 of 144 oil/min")
+		eq(v.warn[4], true, "under 85% of the pump")
+		eq(v.lines[5], "To the HQ · 00:30 a way")
+		eq(v.buttons[1].label, "Buy oil truck (40)")
+		eq(v.buttons[3].label, "Second pump (120)")
+		eq(v.buttons[3].off, false)
+		eq(v.buttons[4].tip, "Tank holds 880")
+		eq(v.buttons[5].label, "Reroute: next way")
+		row.pump, row.readyIn, row.tank, row.wrecked = true, 5, 440, true
+		v = RC.view(row, 50, 2, prices)
+		eq(v.lines[1], "DESTROYED: it pumps nothing until engineers repair it.")
+		eq(v.lines[2], "Tank full, needs trucks")
+		eq(v.buttons[1].label, "Send idle truck (free)")
+		eq(v.buttons[3].label, "Second pump: Done")
+		eq(v.buttons[3].off, true)
+		eq(v.buttons[4].off, true, "not enough oil for the tank")
+		eq(v.buttons[5].label, "Reroute (ready in 00:05)")
+	end)
+
 	test("control groups: make, add, select, double press, dead units drop out", function()
 		local CG = require("../src/client/Input/ControlGroups")
 		local g = CG.new()

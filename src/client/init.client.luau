@@ -20,6 +20,8 @@ local SelectionController = require(script.Input.SelectionController)
 local BuildController = require(script.Input.BuildController)
 local DropController = require(script.Input.DropController)
 local Hud = require(script.UI.Hud)
+local RigCard = require(script.UI.RigCard)
+local Rules = require(Shared.Config.Rules)
 local DevFlags = require(script.Dev.DevFlags)
 
 local net = ReplicatedStorage:WaitForChild(Protocol.FOLDER)
@@ -65,8 +67,17 @@ do
 		end,
 		build = BuildController.begin,
 	})
+	local rigRules = Rules.new(require(Shared:WaitForChild("GameData").RulesMatch) :: any)
+	local rigCard = RigCard.start(send, {
+		truck = rigRules:number("trucks.kinds.light.cost"), pump = rigRules:number("rigs.upgrades.pump.cost"),
+		tank = rigRules:number("rigs.upgrades.tank.cost"), pumpMult = rigRules:number("rigs.upgrades.pump.mult"),
+		tankMult = rigRules:number("rigs.upgrades.tank.mult"), baseTank = rigRules:number("rigs.tank"),
+	})
 	stateEvent.OnClientEvent:Connect(function(state)
 		Hud.update(state, info.side)
+		if state.rigs then
+			rigCard.update(state.rigs, state.oil, state.trucksIdle)
+		end
 		if state.oil then
 			DropController.apply(state.drop)
 		end
@@ -127,6 +138,7 @@ do
 		end,
 		note = Hud.note,
 		lookAt = CameraController.lookAt,
+		openRig = rigCard.open,
 	})
 	if DevFlags.OWNERSHIP_PROBE then
 		require(script.Dev.OwnershipProbe).start(info.side, UnitRenderer.each, function(payload)
