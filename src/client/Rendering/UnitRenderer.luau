@@ -8,7 +8,16 @@
 	sprite footprints in cells (units-top atlas "cells" values).
 	Infantry squads draw each soldier on his own (the leader and two riflemen from the men sheet),
 	placed and posed by SquadMen as the game does.
+	Round each sprite unit, as the game's unit drawer (S9) does, bottom to top: a soft glow in the side
+	colour (its halo: 1.7 sizes wide, 0.7 as deep, alpha 0.6, hidden while selected), the shadow (the
+	shape row at 1/3 size, alpha 0.34, the turret's x 0.55, pushed and stretched away from the sun by
+	its Of), the dark rim (alpha 0.78; the 6 px one when the unit is drawn under 0.6 x the 120 px frame),
+	the body, the turret's shadow on the hull (alpha 0.42, 0.035 sizes toward the shade), the turret.
+	APPROX: one fixed noon sun, as the town bake (the game turns it through its day and fades shadows
+	at night); the shadow's stretch is applied after the facing's small leftover turn rather than
+	between two turns (within 11 degrees, a hair of shear).
 ]]
+local AssetService = game:GetService("AssetService")
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
@@ -29,6 +38,9 @@ local GUI_YAW = -World.TOP_GUI_YAW -- a Top-face SurfaceGui needs this turn to l
 local SPRITE_Y = -0.05 -- sprite quads sit just under the unit's anchor height
 
 export type Sprite = { quad: Part, colour: ImageLabel, paint: ImageLabel, y0c: number, y0p: number, rise: number, facing: number, turret: boolean }
+
+-- a rim, shadow or turret-shadow quad (one image, no paint)
+export type Fx = { quad: Part, gui: SurfaceGui, image: ImageLabel, kind: string, layer: string, sheet: SpriteBank.FxSheet?, y0: number, facing: number }
 
 export type ManSprite = { quad: Part, gui: SurfaceGui, colour: ImageLabel, paint: ImageLabel, fig: SpriteBank.Figure, pose: string, facing: number }
 
@@ -64,6 +76,9 @@ export type View = {
 	empty: boolean,
 	turretWant: number, -- the sim's turret angle (latest snapshot)
 	turretAt: number?, -- the drawn one, easing after it
+	fx: { Fx },
+	halo: Part?,
+	selected: boolean,
 }
 
 local views: { [number]: View } = {}
@@ -112,6 +127,92 @@ local function spriteQuad(parent: Instance, look: SpriteBank.Look, layer: Sprite
 	local paint = label(2)
 	paint.ImageColor3 = color -- multiply, as the game's paint pass
 	return { quad = quad, colour = colour, paint = paint, y0c = layer.colour, y0p = layer.paint, rise = rise, facing = -1, turret = false }
+end
+
+-- the game's za and its noon sun
+local SUN = Vector2.new(0, 1 / (0.35 + 1)) -- Hb at phase 0.31: toward (0, -1), shadow = -toward / (shadowFloor + elevation 1)
+local SHADOW = { alpha = 0.34, gun = 0.55, maxReach = 2 } -- za.shadow, t2.maxReach
+local RIM_ALPHA = 0.78 -- za.rim.alpha
+local HALF_BELOW = 0.6 * 120 -- za.halfBelow x fa.frame: drawn smaller than this (px), the half rim
+local TURRET_SHADOW = { alpha = 0.42, reach = 0.035 } -- za.turretShadow
+local HALO = { share = 1.7, alpha = 0.6, flat = 0.7 } -- za.halo
+
+local function fxQuad(parent: Instance, sheet: SpriteBank.FxSheet, kind: string, layer: string, smooth: boolean, alpha: number): Fx
+	local quad = Instance.new("Part")
+	quad.Name = "Fx_" .. kind
+	quad.Anchored, quad.CanCollide, quad.CanQuery, quad.CanTouch, quad.CastShadow = true, false, false, false, false
+	quad.Transparency = 1
+	quad.Size = Vector3.new(S, 0.05, S)
+	quad.Parent = parent
+	local gui = Instance.new("SurfaceGui")
+	gui.Face = Enum.NormalId.Top
+	gui.SizingMode = Enum.SurfaceGuiSizingMode.FixedSize
+	gui.CanvasSize = Vector2.new(sheet.frame, sheet.frame)
+	gui.LightInfluence = 0
+	gui.Parent = quad
+	local image = Instance.new("ImageLabel")
+	image.BackgroundTransparency = 1
+	image.Size = UDim2.fromScale(1, 1)
+	image.ImageContent = sheet.content
+	image.ImageRectSize = Vector2.new(sheet.frame, sheet.frame)
+	image.ResampleMode = if smooth then Enum.ResamplerMode.Default else Enum.ResamplerMode.Pixelated
+	image.ImageTransparency = 1 - alpha
+	image.Parent = gui
+	return { quad = quad, gui = gui, image = image, kind = kind, layer = layer, sheet = nil, y0 = -1, facing = -1 }
+end
+
+-- the game's xke: the side colour out to 0.55 of the radius, fading to nothing at the edge, times a
+-- falloff from 1 to 0.85 at half the radius and 0 at the edge. White here; ImageColor3 tints it.
+local haloImage: Content? = nil
+local function haloContent(): Content
+	if haloImage then
+		return haloImage
+	end
+	local n = 64
+	local buf = buffer.create(n * n * 4)
+	for y = 0, n - 1 do
+		for x = 0, n - 1 do
+			local r = math.sqrt((x + 0.5 - n / 2) ^ 2 + (y + 0.5 - n / 2) ^ 2) / (n / 2)
+			local a1 = if r <= 0.55 then 1 elseif r >= 1 then 0 else 1 - (r - 0.55) / 0.45
+			local a2 = if r <= 0.5 then 1 - 0.15 * r / 0.5 elseif r >= 1 then 0 else 0.85 * (1 - (r - 0.5) / 0.5)
+			local o = (y * n + x) * 4
+			buffer.writeu8(buf, o, 255)
+			buffer.writeu8(buf, o + 1, 255)
+			buffer.writeu8(buf, o + 2, 255)
+			buffer.writeu8(buf, o + 3, math.floor(a1 * a2 * 255 + 0.5))
+		end
+	end
+	local image = AssetService:CreateEditableImage({ Size = Vector2.new(n, n) })
+	image:WritePixelsBuffer(Vector2.zero, Vector2.new(n, n), buf)
+	haloImage = Content.fromObject(image)
+	return haloImage :: Content
+end
+
+local function haloQuad(parent: Instance, look: SpriteBank.Look, color: Color3): Part
+	local d = look.size * HALO.share * S
+	local quad = Instance.new("Part")
+	quad.Name = "Halo"
+	quad.Anchored, quad.CanCollide, quad.CanQuery, quad.CanTouch, quad.CastShadow = true, false, false, false, false
+	quad.Transparency = 1
+	quad.Size = Vector3.new(d * HALO.flat, 0.05, d) -- local X runs north-south once turned (as the ground)
+	quad.Parent = parent
+	local gui = Instance.new("SurfaceGui")
+	gui.Face = Enum.NormalId.Top
+	gui.SizingMode = Enum.SurfaceGuiSizingMode.FixedSize
+	gui.CanvasSize = Vector2.new(64, 64)
+	gui.LightInfluence = 0
+	gui.Parent = quad
+	local image = Instance.new("ImageLabel")
+	image.BackgroundTransparency = 1
+	image.Size = UDim2.fromScale(1, 1)
+	local ok = pcall(function()
+		image.ImageContent = haloContent()
+	end)
+	image.Visible = ok
+	image.ImageColor3 = color
+	image.ImageTransparency = 1 - HALO.alpha
+	image.Parent = gui
+	return quad
 end
 
 local function manQuad(parent: Instance, fig: SpriteBank.Figure, color: Color3): ManSprite
@@ -230,6 +331,26 @@ local function create(id: number, kind: string, side: number): View
 			table.insert(sprites, tq)
 		end
 	end
+	local fx: { Fx } = {}
+	local halo: Part? = nil
+	if look then
+		halo = haloQuad(model, look, color)
+		local sheets = look.fx
+		if sheets then
+			local layers = if look.turret then { "body", "turret" } else { "body" }
+			for _, layer in layers do
+				if sheets.shade then
+					table.insert(fx, fxQuad(model, sheets.shade, "shadow", layer, true, if layer == "turret" then SHADOW.alpha * SHADOW.gun else SHADOW.alpha))
+				end
+			end
+			for _, layer in layers do
+				table.insert(fx, fxQuad(model, sheets.rim, "rim", layer, false, RIM_ALPHA))
+			end
+			if look.turret and sheets.rim.strips.turret_plain then
+				table.insert(fx, fxQuad(model, sheets.rim, "plain", "turret", false, TURRET_SHADOW.alpha))
+			end
+		end
+	end
 	model.PrimaryPart = body
 	model.Parent = folder
 	return {
@@ -237,8 +358,78 @@ local function create(id: number, kind: string, side: number): View
 		from = Vector3.zero, to = Vector3.zero, fromYaw = 0, toYaw = 0, t = 1, seen = 0,
 		look = look, sprites = sprites, facing = -1,
 		squad = nil, men = men, hpFrac = 1, flags = 0, aimX = 0, aimY = 0, inTrench = false, status = 0, sinceShot = 9, tube = tube, empty = false,
-		turretWant = 0, turretAt = nil,
+		turretWant = 0, turretAt = nil, fx = fx, halo = halo, selected = false,
 	}
+end
+
+-- the game's Of: the shadow is pushed half its reach away from the sun and stretched along that line by
+-- (l + reach) / l, l being how long the body lies along it
+local function shadowOf(look: SpriteBank.Look, hull: number): (number, number, number)
+	local a = SUN.Magnitude
+	if a < 1e-6 then
+		return 0, 0, 1
+	end
+	local r = look.size * look.tall * math.min(a, SHADOW.maxReach)
+	local axis = math.atan2(SUN.Y, SUN.X)
+	local l = math.max(0.001, math.abs(math.cos(hull - axis)) * look.size + math.abs(math.sin(hull - axis)) * look.size * look.artH)
+	return SUN.X / a * r * 0.5, SUN.Y / a * r * 0.5, (l + r) / l
+end
+
+local function placeFx(v: View, look: SpriteBank.Look, pos: Vector3, hull: number, turret: number)
+	local sheets = look.fx :: any
+	-- how big the unit is on screen: the game swaps in the thicker half-size rim under 0.6 x the frame
+	local cam = workspace.CurrentCamera
+	local px = math.huge
+	if cam then
+		local dist = (cam.CFrame.Position - pos).Magnitude
+		px = look.cells * S * cam.ViewportSize.Y / math.max(1e-3, 2 * dist * math.tan(math.rad(cam.FieldOfView) / 2))
+	end
+	local rimSheet = if px < HALF_BELOW and sheets.rimHalf then sheets.rimHalf else sheets.rim
+	local sx, sy, stretch = shadowOf(look, hull)
+	local W = look.cells * S
+	for _, f in v.fx do
+		local h = (if f.layer == "turret" then turret else hull) % (2 * math.pi)
+		local d = Facing.index(h, 16)
+		local residual = Facing.residual(h, d, 16)
+		local sheet = if f.kind == "shadow" then sheets.shade elseif f.kind == "rim" then rimSheet else sheets.rim
+		local base = if f.kind == "plain" then "turret_plain"
+			elseif f.layer == "turret" then (look.turret :: SpriteBank.Layer).base
+			elseif v.empty and look.empty then look.empty.base
+			else look.body.base
+		local y0 = sheet.strips[base]
+		if y0 == nil then
+			f.image.Visible = false
+			continue
+		end
+		if sheet ~= f.sheet then
+			f.sheet = sheet
+			f.image.ImageContent = sheet.content
+			f.image.ImageRectSize = Vector2.new(sheet.frame, sheet.frame)
+			f.gui.CanvasSize = Vector2.new(sheet.frame, sheet.frame)
+			f.facing = -1
+		end
+		if d ~= f.facing or y0 ~= f.y0 then
+			f.facing, f.y0 = d, y0
+			f.image.ImageRectOffset = SpriteBank.offset(sheet, y0, d)
+		end
+		if f.kind == "shadow" then
+			-- squared to the ground, stretched along the sun's line (local X runs north-south), the
+			-- facing's leftover turn done inside the canvas
+			f.quad.Size = Vector3.new(W * stretch, 0.05, W)
+			f.image.Rotation = math.deg(residual)
+			local rise = if f.layer == "turret" then -0.025 else -0.03
+			f.quad.CFrame = CFrame.new(pos + Vector3.new(sx * S, SPRITE_Y + rise, sy * S)) * CFrame.Angles(0, -GUI_YAW, 0)
+		else
+			f.quad.Size = Vector3.new(W, 0.05, W)
+			local off = Vector3.zero
+			local rise = -0.01
+			if f.kind == "plain" then
+				off = Vector3.new(SUN.X, 0, SUN.Y) * look.size * TURRET_SHADOW.reach * S
+				rise = 0.02
+			end
+			f.quad.CFrame = CFrame.new(pos + off + Vector3.new(0, SPRITE_Y + rise, 0)) * CFrame.Angles(0, -(residual + GUI_YAW), 0)
+		end
+	end
 end
 
 local TURRET_FOLLOW = 20 -- the game's za.turretFollowPerSec: the drawn turret eases after the sim's
@@ -275,6 +466,13 @@ local function place(v: View, pos: Vector3, yaw: number, dt: number)
 			sp.quad.CFrame = CFrame.new(pos + Vector3.new(0, SPRITE_Y + sp.rise, 0)) * CFrame.Angles(0, -(residual + GUI_YAW), 0)
 		end
 		v.facing = 0
+		local halo = v.halo
+		if halo then
+			halo.CFrame = CFrame.new(pos + Vector3.new(0, SPRITE_Y - 0.04, 0)) * CFrame.Angles(0, -GUI_YAW, 0)
+		end
+		if #v.fx > 0 then
+			placeFx(v, look, pos, yaw, turretH)
+		end
 	end
 end
 
@@ -422,6 +620,14 @@ end
 function UnitRenderer.setSelected(selected: { [number]: boolean })
 	for id, v in views do
 		v.ring.Transparency = if selected[id] then 0.3 else 1
+		v.selected = selected[id] == true
+		if v.halo then
+			v.halo.Transparency = 1
+			local gui = v.halo:FindFirstChildOfClass("SurfaceGui")
+			if gui then
+				gui.Enabled = not v.selected -- the game hides the halo of a selected unit
+			end
+		end
 	end
 end
 

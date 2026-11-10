@@ -682,7 +682,7 @@ Bot: bridges (2026-11-10), traced from the game's _h / v7e / kUe / nat / Yst / X
 - Stopping a unit now also ends a sabotage job.
 
 ## Next
-1. You run Studio tests B18–B84 (defences, mortar, artillery, scout) and commit.
+1. You run Studio tests B18–B85 (defences, mortar, artillery, scout) and commit.
 2. Done since: engineers' repair, vehicle steering, the bot's HQ push, shared group routes,
    separation, the 100/250/500-unit performance check (`lune run tools/perf.luau 250`) and the
    convoy rules (spacing, town/bridge/off-road pace, held and stranded trucks), airfield drops and
@@ -784,6 +784,21 @@ turreted unit has 3 more rows for the turret; men sheet: 48 px, same 3 rows a po
 - Gameplay effect: a tank caught from behind now pauses up to about 2.5 s before its first shot. The
   bot-vs-bot check run (d5r) now ends "winner 1" instead of "winner 2".
 - Test: "a tank turns its turret at turretDegSec ..." (150 pass). Studio: B84.
+
+## Unit rims, shadows and glow like the game (2026-11-10)
+- Traced from the game's unit drawer (S9 with ree, kke, xke and Of). Under every sprite unit, bottom to
+  top: a glow in the side colour (1.7 sizes wide, 0.7 as deep, alpha 0.6; hidden while selected), the
+  shadow (the shape row at 1/3 size, alpha 0.34, the turret's at x 0.55, moved half its reach away from
+  the sun and stretched along that line by (l + reach) / l, reach = size x za.shadow.tall x the sun's
+  length), the dark rim (the shape round a 3 px circle, #06080b, alpha 0.78; a 6 px one halved when the
+  unit is drawn under 72 px), the body, the turret's shadow on the hull (alpha 0.42, 0.035 sizes south),
+  the turret.
+- pack_original.py bakes the rim, half rim, plain shape and shadow from the shape strips (new strip
+  operations); docs/private/sprite_spec_fx.json lists the 15 modules (Orig*Rim, Orig*RimHalf,
+  Orig*Shade), all local only. SpriteBank returns them as look.fx; UnitRenderer draws them.
+- APPROX: the same fixed noon sun as the town bake (shadow 0.74 south); the game turns the sun and
+  fades shadows at night. The stretch is applied after the facing's small leftover turn.
+- Studio: B85. Not yet: soot on damaged vehicles, wrecks, men's shadows.
 
 ## Open questions
 1. Rights scope: answered for the art (see Original art above). Still open: audio and voice, and

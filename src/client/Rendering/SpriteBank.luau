@@ -14,7 +14,11 @@
 	table (fa.units), 1.3 its unit scale (za.scale), which every unit size is multiplied by.
 	Men (men-top.png, 48 px frames): SpriteBank.figure("rifle", "leader", "gunner", ... "tube") gives each pose's colour and
 	paint strips; SquadMen places them.
-	Not drawn yet: the shape row (the game uses it for the dark rim and shadow), wrecks.
+	The shape row feeds three looks the game derives at run time, baked by pack_original.py into modules
+	of their own: <module>Rim (the dark rim, plus the turret's plain shape), <module>RimHalf (the rim the
+	game swaps in when units are drawn small) and <module>Shade (the soft shadow, 1/3 size). They come
+	back as look.fx; a kind without them is drawn without rim and shadow.
+	Not drawn yet: wrecks.
 ]]
 local AssetService = game:GetService("AssetService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -25,7 +29,8 @@ local PixelCodec = require(Shared.Assets.PixelCodec)
 
 local SpriteBank = {}
 
-export type Layer = { content: Content, colour: number, paint: number }
+export type Layer = { content: Content, colour: number, paint: number, base: string }
+export type FxSheet = { content: Content, frame: number, columns: number, strips: { [string]: number } }
 export type Look = {
 	frame: number, -- pixels per frame side
 	columns: number,
@@ -33,6 +38,10 @@ export type Look = {
 	body: Layer,
 	turret: Layer?,
 	empty: Layer?, -- trucks: the look while driving out or carrying nothing
+	size: number, -- the unit's size in cells (fa cells x za.scale): what the game's shadow is worked from
+	artH: number, -- fa art.h / art.w: the body's depth over its length
+	tall: number, -- za.shadow.tall: how far the shadow reaches, in sizes
+	fx: { rim: FxSheet, rimHalf: FxSheet?, shade: FxSheet? }?,
 }
 
 -- kind -> module, strips, game cells and art.w (fa.units in the bundle)
@@ -42,12 +51,13 @@ local FIGURES = {
 	loader = "OrigMenLoader", mortarman = "OrigMenMortarman", bearer = "OrigMenBearer", tube = "OrigMenTube",
 }
 
-local KINDS: { [string]: { module: string, body: string, turret: string?, empty: string?, cells: number, artW: number } } = {
-	tank = { module = "OrigTank", body = "hull", turret = "turret", cells = 1, artW = 0.492 },
-	truck = { module = "OrigTruck", body = "full", empty = "empty", cells = 0.8, artW = 0.4 },
-	scout = { module = "OrigScout", body = "body", cells = 0.62, artW = 0.317 },
-	artillery = { module = "OrigArtillery", body = "body", cells = 1.4, artW = 0.683 },
-	infantry = { module = "OrigInfantry", body = "body", cells = 0.78, artW = 0.5 },
+-- tall: za.shadow.tall (rest 0.3 for kinds it does not list)
+local KINDS: { [string]: { module: string, body: string, turret: string?, empty: string?, cells: number, artW: number, artH: number, tall: number } } = {
+	tank = { module = "OrigTank", body = "hull", turret = "turret", cells = 1, artW = 0.492, artH = 0.283, tall = 0.32 },
+	truck = { module = "OrigTruck", body = "full", empty = "empty", cells = 0.8, artW = 0.4, artH = 0.167, tall = 0.36 },
+	scout = { module = "OrigScout", body = "body", cells = 0.62, artW = 0.317, artH = 0.2, tall = 0.36 },
+	artillery = { module = "OrigArtillery", body = "body", cells = 1.4, artW = 0.683, artH = 0.267, tall = 0.24 },
+	infantry = { module = "OrigInfantry", body = "body", cells = 0.78, artW = 0.5, artH = 0.5, tall = 0.5 },
 }
 
 local pages: { [string]: any } = {} -- module name -> { content, meta } or false when unavailable
@@ -100,12 +110,20 @@ function SpriteBank.look(kind: string): Look?
 		if c == nil or q == nil then
 			return nil
 		end
-		return { content = p.content, colour = c, paint = q }
+		return { content = p.content, colour = c, paint = q, base = base }
 	end
 	local body = layer(k.body)
 	if not body then
 		return nil
 	end
+	local function sheet(suffix: string): FxSheet?
+		local f = page(k.module .. suffix)
+		if not f then
+			return nil
+		end
+		return { content = f.content, frame = f.meta.frame, columns = f.meta.columns, strips = f.meta.strips }
+	end
+	local rim = sheet("Rim")
 	local look: Look = {
 		frame = p.meta.frame,
 		columns = p.meta.columns,
@@ -113,6 +131,10 @@ function SpriteBank.look(kind: string): Look?
 		body = body,
 		turret = if k.turret then layer(k.turret) else nil,
 		empty = if k.empty then layer(k.empty) else nil,
+		size = k.cells * UNIT_SCALE,
+		artH = k.artH / k.artW,
+		tall = k.tall,
+		fx = if rim then { rim = rim, rimHalf = sheet("RimHalf"), shade = sheet("Shade") } else nil,
 	}
 	looks[kind] = look
 	return look

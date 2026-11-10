@@ -8,6 +8,16 @@ Usage:
   python tools/asset_pipeline/pack_original.py <spec.json>
 spec.json (kept local, e.g. docs/private/sprite_spec.json):
   { "OrigTank": { "frame": 120, "strips": [["hull", "assets/sprites/source/original/unit_tank/r1/hull_colour.png"], ...] }, ... }
+
+A strip can name a third field, an operation the game does to the shape row at run time (traced from its
+unit drawer), so the derived look is baked here instead:
+  "rim"      the dark rim (its ree): the shape drawn 16 times round a 3 px circle and once in place, then
+             filled #06080b. The game draws it under the unit at alpha 0.78.
+  "rim_half" the rim the game uses when units are drawn small (under 0.6 x the frame): a 6 px circle,
+             then halved. Strips with it go in a module with "scale": 2.
+  "plain"    the shape filled #06080b (the game's turret shadow on the hull).
+  "shade"    the shadow sheet (its kke): the shape at 1/3 size, smoothed. Module "scale": 3.
+All strips of one module must give the same frame size (frame / scale).
 """
 import json
 import os
@@ -21,23 +31,64 @@ from pack_atlas import rle_rgba  # noqa: E402
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 OUT = os.path.join(ROOT, "src", "client", "DevAssets")
 MAX_PAGE = 1024  # EditableImage limit
+RIM = (6, 8, 11)  # za.rim.colour #06080b
 
 
-def pack(name, frame, strips, cols=8):
+def shifted(cell, dx, dy):
+    # canvas drawImage at a fractional offset: bilinear
+    return cell.transform(cell.size, Image.AFFINE, (1, 0, -dx, 0, 1, -dy), resample=Image.BILINEAR)
+
+
+def derive(cell, op):
+    import math
+
+    import numpy as np
+
+    if op in ("rim", "rim_half"):
+        px = 3 if op == "rim" else 6
+        keep = np.ones(cell.size[::-1], dtype=np.float64)
+        for k in range(16):
+            v = k / 16 * math.pi * 2
+            a = np.asarray(shifted(cell, math.cos(v) * px, math.sin(v) * px).getchannel("A"), dtype=np.float64) / 255
+            keep *= 1 - a
+        keep *= 1 - np.asarray(cell.getchannel("A"), dtype=np.float64) / 255
+        alpha = Image.fromarray(np.round((1 - keep) * 255).astype(np.uint8), "L")
+        out = Image.new("RGBA", cell.size, RIM + (0,))
+        out.putalpha(alpha)
+        if op == "rim_half":
+            out = out.resize((cell.size[0] // 2, cell.size[1] // 2), Image.BOX)
+        return out
+    if op == "plain":
+        out = Image.new("RGBA", cell.size, RIM + (0,))
+        out.putalpha(cell.getchannel("A"))
+        return out
+    if op == "shade":
+        return cell.resize((cell.size[0] // 3, cell.size[1] // 3), Image.BOX)
+    raise SystemExit(f"unknown operation {op}")
+
+
+def pack(name, frame, strips, cols=8, scale=1):
     rows = 16 // cols
+    src_frame, frame = frame, frame // scale
     w = cols * frame
     h = len(strips) * rows * frame
     if w > MAX_PAGE or h > MAX_PAGE:
         raise SystemExit(f"{name}: page {w}x{h} is over {MAX_PAGE}; split it")
     page = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     layout = []
-    for k, (label, path) in enumerate(strips):
+    for k, strip in enumerate(strips):
+        label, path = strip[0], strip[1]
+        op = strip[2] if len(strip) > 2 else None
         src = Image.open(os.path.join(ROOT, path)).convert("RGBA")
-        if src.size != (16 * frame, frame):
-            raise SystemExit(f"{path}: {src.size}, expected {(16 * frame, frame)}")
+        if src.size != (16 * src_frame, src_frame):
+            raise SystemExit(f"{path}: {src.size}, expected {(16 * src_frame, src_frame)}")
         y0 = k * rows * frame
         for d in range(16):
-            cell = src.crop((d * frame, 0, (d + 1) * frame, frame))
+            cell = src.crop((d * src_frame, 0, (d + 1) * src_frame, src_frame))
+            if op:
+                cell = derive(cell, op)
+            if cell.size != (frame, frame):
+                raise SystemExit(f"{name}/{label}: frame {cell.size}, the module's is {frame}")
             page.paste(cell, ((d % cols) * frame, y0 + (d // cols) * frame))
         layout.append((label, y0))
     rle = rle_rgba(page)  # already base64
@@ -61,7 +112,7 @@ def pack(name, frame, strips, cols=8):
 def main():
     spec = json.load(open(sys.argv[1]))
     for name, s in spec.items():
-        w, h, n = pack(name, s["frame"], s["strips"], s.get("columns", 8))
+        w, h, n = pack(name, s["frame"], s["strips"], s.get("columns", 8), s.get("scale", 1))
         print(f"{name}: {w}x{h}, {len(s['strips'])} strips, {n // 1024} KB")
 
 
