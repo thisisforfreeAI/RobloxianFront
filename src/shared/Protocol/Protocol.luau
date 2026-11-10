@@ -39,9 +39,11 @@ export type DropPickIntent = { kind: "dropPick", x: number, y: number } -- where
 export type DropReadyIntent = { kind: "dropReady" } -- done picking
 export type CancelQueueIntent = { kind: "cancelQueue", structureId: number?, index: number } -- call off a queued unit (index 0 = the last; no id = the HQ)
 export type DemolishIntent = { kind: "demolish", structureId: number } -- cancel a building going up, or pull a finished one down
+export type DigIntent = { kind: "dig", unitIds: { number }, pts: { number } } -- engineers dig a trench along a line
+export type FillIntent = { kind: "fill", unitIds: { number }, x: number, y: number } -- engineers fill a gap in a trench
 export type NightOpsIntent = { kind: "nightOps", on: boolean } -- switch your night operations towers on or off
 export type LayMinesIntent = { kind: "layMines", pts: { number } } -- a minefield along a stroke: x1, y1, x2, y2, ... in cells
-export type Intent = MoveIntent | StopIntent | AttackIntent | ProduceIntent | TruckIntent | BuildIntent | ReconIntent | GarrisonIntent | RepairIntent | ForwardIntent | RoadRepairIntent | SabotageIntent | PowerIntent | DetonateIntent | BarrageIntent | BoardIntent | UnloadIntent | DropPickIntent | DropReadyIntent | CancelQueueIntent | DemolishIntent | LayMinesIntent | NightOpsIntent
+export type Intent = MoveIntent | StopIntent | AttackIntent | ProduceIntent | TruckIntent | BuildIntent | ReconIntent | GarrisonIntent | RepairIntent | ForwardIntent | RoadRepairIntent | SabotageIntent | PowerIntent | DetonateIntent | BarrageIntent | BoardIntent | UnloadIntent | DropPickIntent | DropReadyIntent | CancelQueueIntent | DemolishIntent | LayMinesIntent | NightOpsIntent | DigIntent | FillIntent
 
 local function finite(n: any): boolean
 	return type(n) == "number" and n == n and n ~= math.huge and n ~= -math.huge
@@ -187,6 +189,25 @@ function Protocol.parse(raw: any, mapWidth: number, mapHeight: number): (Intent?
 		return { kind = "recon", unitIds = ids }, nil
 	elseif raw.kind == "detonate" then
 		return { kind = "detonate", unitIds = ids } :: any, nil
+	elseif raw.kind == "dig" then
+		local pts = raw.pts
+		if type(pts) ~= "table" or #pts < 2 or #pts > 1200 or #pts % 2 ~= 0 then
+			return nil, "pts must be 1 to 600 x, y pairs"
+		end
+		local out = table.create(#pts)
+		for k = 1, #pts do
+			local v = pts[k]
+			if not finite(v) or v < 0 or v >= (if k % 2 == 1 then mapWidth else mapHeight) then
+				return nil, "line outside the map"
+			end
+			out[k] = v
+		end
+		return { kind = "dig", unitIds = ids, pts = out } :: any, nil
+	elseif raw.kind == "fill" then
+		if not finite(raw.x) or not finite(raw.y) or raw.x < 0 or raw.y < 0 or raw.x >= mapWidth or raw.y >= mapHeight then
+			return nil, "target outside the map"
+		end
+		return { kind = "fill", unitIds = ids, x = raw.x, y = raw.y } :: any, nil
 	elseif raw.kind == "unload" then
 		return { kind = "unload", unitIds = ids } :: any, nil
 	elseif raw.kind == "board" then

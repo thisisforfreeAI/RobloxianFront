@@ -11,7 +11,7 @@ Last updated: 2026-11-09
 Phase 1. Milestone 1A done (Studio tests 1–7 pass). Pilot sprite REQ-0001 approved. Milestone 1B (gameplay loop) rewritten for WarFront parity and tested outside Studio; Studio tests B1–B9 pending.
 
 ## Verified outside Studio (actually run, Linux container)
-- Lune 0.11.1 `tests/run`: 119 passed, 0 failed (latest run) (including the 2 that read the GameData generated from your install).
+- Lune 0.11.1 `tests/run`: 121 passed, 0 failed (latest run) (including the 2 that read the GameData generated from your install).
 - Rojo 7.4.4 `rojo build` succeeds. All .luau files compile (syntax only).
 - Synthetic atlas: 16 × 120 px frames pack to 960×240 (8×2, no padding); validator passes on dimensions,
   rectangles, direction order, pixel identity, pivot, partial alpha, edge bleed, arrow orientation, manifest.
@@ -459,8 +459,21 @@ each match draws the hour the drop arrives from its own seed, day 40 : dawn 18 :
 drop banner says which. Not ported: the opening scene (a picture only), the operation name and intel
 tip (game text), and the opening conditions (they need the events system, off in skirmish).
 
+Trenches, part 1 (2026-11-10), traced from the game's digTrench / qY / ZY / Uie / sD / GY / lI / MWe / LWe /
+SWe / F7e / wWe / vWe / bWe: select engineers, press 7 and drag a line. The line is simplified and
+smoothed (up to 102 cells); its ends are trimmed to ground they may dig (open, no building or trench,
+not enemy ground, off rigs); it needs 6 good cells. Up to 3 engineers within reach of the next cells
+dig it at 0.53 s a cell for 0.73 oil (cells by a road get barbed wire: 1.33 s, 2 oil); without oil the
+work stops with a notice. Each dug cell blocks the way for every unit and building (wire on a road
+cuts it; oil routes are redone). With the cursor on a trench, 8 sends selected engineers to fill a
+9-cell gap (0.8 s a cell, wire 1.67 s). A line nobody is digging any more is cut back to what was dug,
+and an existing line can be carried on from its far end. APPROX: diggers walk to the next cell (the
+game picks a side of the line to stand on); the game's seal extension (zie) is not ported. Not ported
+yet: flooding near water, the trench kinds (fire trench, traps, wire belt), manning trenches, shell
+damage and mending, breaching charges, and the bot's digging (from 300 s).
+
 ## Next
-1. You run Studio tests B18–B54 (defences, mortar, artillery, scout) and commit.
+1. You run Studio tests B18–B55 (defences, mortar, artillery, scout) and commit.
 2. Done since: engineers' repair, vehicle steering, the bot's HQ push, shared group routes,
    separation, the 100/250/500-unit performance check (`lune run tools/perf.luau 250`) and the
    convoy rules (spacing, town/bridge/off-road pace, held and stranded trucks), airfield drops and

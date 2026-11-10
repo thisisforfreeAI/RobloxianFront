@@ -26,6 +26,7 @@ local KEYS = { [Enum.KeyCode.B] = "barracks", [Enum.KeyCode.F] = "factory", [Enu
 local stroke: { { x: number, y: number } } = {}
 local drawing = false
 local strokeParts: { Part } = {}
+local trenchIds: { number } = {} -- engineers digging the line being drawn (placing == "trench")
 local placing: string? = nil
 local lastPlaced = -1
 local ghost: Part
@@ -79,7 +80,7 @@ function BuildController.start(mapWidth: number, send: (any) -> ())
 	ghost.Parent = workspace
 
 	RunService.RenderStepped:Connect(function()
-		if placing == "minefield" then
+		if placing == "minefield" or placing == "trench" then
 			ghost.Transparency = 1
 			if drawing then
 				local hit = groundPoint(UserInputService:GetMouseLocation())
@@ -129,7 +130,7 @@ function BuildController.start(mapWidth: number, send: (any) -> ())
 			end
 			return
 		end
-		if placing == "minefield" and input.UserInputType == Enum.UserInputType.MouseButton1 and not processed then
+		if (placing == "minefield" or placing == "trench") and input.UserInputType == Enum.UserInputType.MouseButton1 and not processed then
 			table.clear(stroke)
 			drawing = true
 			return
@@ -152,7 +153,7 @@ function BuildController.start(mapWidth: number, send: (any) -> ())
 	end)
 
 	UserInputService.InputEnded:Connect(function(input)
-		if placing == "minefield" and drawing and input.UserInputType == Enum.UserInputType.MouseButton1 then
+		if (placing == "minefield" or placing == "trench") and drawing and input.UserInputType == Enum.UserInputType.MouseButton1 then
 			drawing = false
 			local pts = {}
 			for _, p in stroke do
@@ -160,7 +161,11 @@ function BuildController.start(mapWidth: number, send: (any) -> ())
 				table.insert(pts, math.floor(p.y * 10 + 0.5) / 10)
 			end
 			if #pts > 0 then
-				sendIntent({ kind = "layMines", pts = pts })
+				if placing == "trench" then
+					sendIntent({ kind = "dig", unitIds = trenchIds, pts = pts })
+				else
+					sendIntent({ kind = "layMines", pts = pts })
+				end
 			end
 			lastPlaced = os.clock()
 			local shift = UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) or UserInputService:IsKeyDown(Enum.KeyCode.RightShift)
@@ -173,6 +178,12 @@ end
 
 function BuildController.begin(kind: string)
 	placing = kind
+end
+
+-- engineers dig a trench along the line dragged next
+function BuildController.beginTrench(ids: { number })
+	trenchIds = ids
+	placing = "trench"
 end
 
 -- True while placing, and just after, so the click that placed or cancelled does not also select or order.

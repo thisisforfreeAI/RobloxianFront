@@ -74,7 +74,7 @@ test("accepts a valid move", function()
 end)
 test("intents without unit ids parse (drop pick, ready, cancel, demolish, mines)", function()
 	for _, raw in { { kind = "dropPick", x = 10, y = 10 }, { kind = "dropReady" }, { kind = "cancelQueue", index = 0 },
-		{ kind = "demolish", structureId = 3 }, { kind = "layMines", pts = { 1, 2, 3, 4 } }, { kind = "nightOps", on = false } } do
+		{ kind = "demolish", structureId = 3 }, { kind = "layMines", pts = { 1, 2, 3, 4 } }, { kind = "nightOps", on = false }, { kind = "dig", unitIds = { 1 }, pts = { 1, 2, 5, 6 } }, { kind = "fill", unitIds = { 1 }, x = 3, y = 4 } } do
 		local i, err = Protocol.parse(raw, 100, 100)
 		assert(i and i.kind == raw.kind, `{raw.kind}: {err}`)
 	end
@@ -1979,6 +1979,96 @@ if fs.isFile(matchPath) then
 		assert(gone and gone >= 5.9 and gone <= 6.1, `down after 6 s: {gone}`)
 		eq(b2.alive, false)
 		eq(back, math.floor(price * 0.6 + 0.5), "60% back")
+	end)
+	test("trenches: engineers dig a drawn line cell by cell for oil; dug cells block the way; filling opens a gap", function()
+		local sim = newSim()
+		clearUnits(sim, {})
+		local sd = sim.sides[1]
+		sd.oil = 500
+		local engs = {}
+		for i = 0, 2 do
+			table.insert(engs, sim.spawnUnit("engineer", 1, 58.5, 44.5 + i))
+		end
+		local ids = { engs[1].id, engs[2].id, engs[3].id }
+		eq(select(2, sim.orderDig(1, ids, { { x = 62.5, y = 45.5 } })), "lineShort")
+		local lay = sim.trenchLayout(1, { { x = 62.5, y = 38.5 }, { x = 62.5, y = 52.5 } })
+		eq(#lay.cells, 15, "one cell per row")
+		eq(lay.good, 15)
+		eq((sim.orderDig(1, ids, { { x = 62.5, y = 38.5 }, { x = 62.5, y = 52.5 } })), 3)
+		local t = nil
+		for _, tr in sim.trenches do
+			t = tr
+		end
+		assert(t, "a trench")
+		run(sim, 30)
+		eq(t.dug, 15, "all dug")
+		for i = 1, 15 do
+			eq(t.state[i], sim.TRENCH.dug)
+		end
+		-- the same match without the trench, for the income
+		local ctl = newSim()
+		clearUnits(ctl, {})
+		ctl.sides[1].oil = 500
+		for i = 0, 2 do
+			ctl.spawnUnit("engineer", 1, 58.5, 44.5 + i)
+		end
+		run(ctl, 30)
+		local spent = ctl.sides[1].oil - sd.oil
+		assert(math.abs(spent - 15 * sim.num("trenches.oilPerCell")) < 0.5, `oil per cell: {spent}`)
+		eq(sim.roads.passable(t.cells[5]), false, "a dug cell blocks the way")
+		eq(sim.placeProblem(t.cells[5], "barracks") ~= nil, true, "no building on it")
+		for _, e in engs do
+			eq(e.trenchJob, nil, "diggers done")
+		end
+		-- fill round the middle: gapCells (9) cells open again
+		eq((sim.orderFill(1, ids, t.cells[8])), 3)
+		run(sim, 30)
+		local open = 0
+		for i = 1, 15 do
+			if t.state[i] == sim.TRENCH.gone then
+				open += 1
+			end
+		end
+		eq(open, 9, "a 9-cell gap")
+		eq(sim.roads.passable(t.cells[8]), true)
+		eq(sim.roads.passable(t.cells[1]), false, "the rest stays")
+	end)
+	test("trenches: wire near roads, stall without oil, an abandoned line keeps what was dug", function()
+		local sim = newSim()
+		clearUnits(sim, {})
+		local sd = sim.sides[1]
+		sd.oil = 1000
+		local e = sim.spawnUnit("engineer", 1, 70.5, 27.5)
+		local lay = sim.trenchLayout(1, { { x = 72.5, y = 26.5 }, { x = 72.5, y = 34.5 } })
+		local wired = 0
+		for _, w in lay.wire do
+			if w then
+				wired += 1
+			end
+		end
+		assert(wired >= 3 and wired < #lay.cells, `wire only by the road: {wired} of {#lay.cells}`)
+		eq((sim.orderDig(1, { e.id }, { { x = 72.5, y = 26.5 }, { x = 72.5, y = 34.5 } })), 1)
+		local t = nil
+		for _, tr in sim.trenches do
+			t = tr
+		end
+		run(sim, 8)
+		assert(t.dug >= 1, `some dug: {t.dug}`)
+		sd.oil = 0
+		local stalled = false
+		for _ = 1, 20 * 10 do
+			sim.step(0.05)
+			for _, ev in sim.takeEvents() do
+				if ev.type == "trenchStalled" then
+					stalled = true
+				end
+			end
+		end
+		assert(stalled, "stalls without oil")
+		local dug = t.dug
+		e.trenchJob = nil
+		run(sim, 0.1)
+		eq(#t.cells, dug, "cut back to what was dug")
 	end)
 	test("armies: only the coalition fields mortars, only the republic lays minefields", function()
 		local sim = newSim({ armies = { "republic", "coalition" } })

@@ -171,4 +171,24 @@ function AirOverlay.applyMines(list: { any }, mapWidth: number)
 	end
 end
 
+local trenchPool: { Part } = {}
+-- trenches you can see: { owner, cell, state, cell, state, ... }; state 1 dug (a dark ditch), 5 wire
+-- (grey), 0 planned (a faint marker, own only). PLACEHOLDER visuals.
+function AirOverlay.applyTrenches(list: { any }, mapWidth: number)
+	local n = 0
+	for _, row in list do
+		for k = 2, #row - 1, 2 do
+			local c, st = row[k], row[k + 1]
+			n += 1
+			local color = if st == 1 then Color3.fromRGB(70, 52, 34) elseif st == 5 then Color3.fromRGB(150, 150, 150) else Color3.fromRGB(230, 210, 120)
+			local p = pooled(trenchPool, n, color, Vector3.new(0.95 * S, 0.12, 0.95 * S))
+			p.Transparency = if st == 0 then 0.7 else 0.1
+			p.CFrame = CFrame.new(World.toWorld(c % mapWidth + 0.5, c // mapWidth + 0.5, 0.12))
+		end
+	end
+	for i = n + 1, #trenchPool do
+		trenchPool[i].Transparency = 1
+	end
+end
+
 return AirOverlay

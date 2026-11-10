@@ -236,8 +236,17 @@ function Roads.build(cfg: Config)
 	local blocked = buffer.create(n)
 	local buildingAt: { [number]: number } = {}
 	local groundEpoch = 0
+	-- dug trench cells (the game's trench grid: id + 1, 0 none) block the way like buildings
+	local trench: { [number]: number } = {}
 	function self.passable(c: number): boolean
-		return buffer.readu8(blocked, c) == 0 and (pass[c + 1] or buffer.readu8(road, c) == 1)
+		return buffer.readu8(blocked, c) == 0 and trench[c] == nil and (pass[c + 1] or buffer.readu8(road, c) == 1)
+	end
+	function self.setTrench(c: number, id: number)
+		trench[c] = if id >= 0 then id else nil
+		groundEpoch += 1
+	end
+	function self.trenchAt(c: number): number
+		return trench[c] or -1
 	end
 	-- id >= 0 marks the cell as covered by that building, -1 clears it
 	function self.setBlocked(c: number, id: number)

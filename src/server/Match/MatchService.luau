@@ -226,6 +226,20 @@ local function onIntent(player: Player, raw: any)
 		if not ok then
 			Net.sendState(player, { notice = "nothingQueued" })
 		end
+	elseif i.kind == "dig" then
+		local pts = {}
+		for k = 1, #i.pts, 2 do
+			table.insert(pts, { x = i.pts[k], y = i.pts[k + 1] })
+		end
+		local n, why = sim.orderDig(side, i.unitIds, pts)
+		if n == 0 then
+			Net.sendState(player, { notice = why })
+		end
+	elseif i.kind == "fill" then
+		local n, why = sim.orderFill(side, i.unitIds, math.floor(i.y) * sim.roads.width + math.floor(i.x))
+		if n == 0 then
+			Net.sendState(player, { notice = why })
+		end
 	elseif i.kind == "nightOps" then
 		-- the game's nvOff switch, for every tower the side has
 		local n = 0
@@ -523,6 +537,17 @@ local function alertsFor(ev: any)
 		if ev.owner ~= ev.side then
 			alertSide(ev.owner, `A mine took out part of an enemy {rules:text(`units.{ev.kind}.name`)}`)
 		end
+	elseif t == "trenchDug" then
+		alertSide(ev.side, `Trench dug: {ev.n} cells`)
+	elseif t == "trenchStalled" then
+		alertSide(ev.side, "Trench work stopped: not enough oil")
+	elseif t == "trenchClosed" then
+		alertSide(ev.side, "Gap filled in the trench")
+	elseif t == "trenchGapped" then
+		alertSide(ev.side, "Engineers cut a gap in a trench")
+		if ev.owner ~= ev.side then
+			alertSide(ev.owner, "The enemy cut a gap in your trench")
+		end
 	elseif t == "minefieldSpent" then
 		alertSide(ev.side, "A minefield is used up")
 	elseif t == "demolished" then
@@ -713,6 +738,27 @@ local function privateState()
 				end
 			end
 			payload.mines = mines
+			-- trenches this side can see: owner, then cell, state pairs (dug / wire / planned, own planned only)
+			local trenches = {}
+			for _, t in sim.trenches do
+				local row = { t.owner }
+				for k, c in t.cells do
+					local st = t.state[k]
+					local shown = st == sim.TRENCH.dug or st == sim.TRENCH.wire or (st == sim.TRENCH.plan and t.owner == side)
+					if shown and (t.owner == side or not viewer or viewer.grid[c + 1] == 2 or (viewer.trenchSeen and viewer.trenchSeen[c])) then
+						if t.owner ~= side and viewer then
+							viewer.trenchSeen = viewer.trenchSeen or {}
+							viewer.trenchSeen[c] = true
+						end
+						table.insert(row, c)
+						table.insert(row, st)
+					end
+				end
+				if #row > 1 then
+					table.insert(trenches, row)
+				end
+			end
+			payload.trenches = trenches
 			payload.time = sim.time
 			-- the opening drop: phase, seconds left, own pick (and whether a road there reaches the rigs);
 			-- while it runs the planes fly on the drop clock

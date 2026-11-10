@@ -1013,8 +1013,8 @@ function Sim.new(deps: Deps)
 		end
 		for _, c in footprintCells(cell, a) do
 			local key = `terrain.{roads.terrain(c)}.buildable`
-			if not (r:has(key) and r:flag(key)) then
-				return "terrain"
+			if not (r:has(key) and r:flag(key)) or roads.trenchAt(c) >= 0 then
+				return "terrain" -- the game's buildable: no building on a trench
 			end
 		end
 		local clear = math.max(1, math.floor(a * num("production.roadClearShare") + 0.5)) + num("production.roadClearPad")
@@ -1317,6 +1317,7 @@ function Sim.new(deps: Deps)
 		e.repairId, e.roadJob, e.sabotageCell = nil, nil, nil -- any new order also ends a repair job (the game's clearOrders)
 		e.barrage = nil -- and a rocket barrage order
 		e.boarding = nil -- and boarding a carrier
+		e.trenchJob = nil -- and digging or filling a trench
 	end
 	-- the game's deployRecon (qJe): the scout stops and sees intel.scoutReconRadius around it for
 	-- intel.scoutDeploySec. Returns (count deployed, reason when none).
@@ -6152,6 +6153,578 @@ function Sim.new(deps: Deps)
 		end
 	end
 
+	-- Trenches (the game's digTrench / fillTrench: E7e / qY / iWe / Nie / ZY / Uie / lWe / Sg / sD / GY / lI /
+	-- I7e / MWe / LWe / SWe / F7e / wWe / vWe / bWe / KY / YY): engineers dig a ditch along a line drawn
+	-- for them, simplified (0.4 x cellScale) and smoothed, at most maxCells long, its ends trimmed to
+	-- ground they may dig (open, not a building or trench, not enemy ground, off rigs). Cells within
+	-- roadGap of a road get barbed wire instead. Up to crewMax engineers within reach of the next
+	-- leadCells cells work it: secPerCell (wireSecPerCell) each, paying oilPerCell (wireOilPerCell) as
+	-- each cell is done; without oil the work stalls. A dug cell blocks the way for everyone (a wire cell
+	-- on a road cuts it). Engineers sent to a trench fill gapCells of it (fillSecPerCell, wire
+	-- wireClearSecPerCell); a trench nobody is digging any more is cut back to what was dug.
+	-- APPROX: diggers walk to the next cell (the game picks a side to stand on); flooding, the
+	-- trenchWorks kinds (fire trench, traps, wire belt), manning, shell damage and the bot's digging are
+	-- not ported yet.
+	do
+		local T: any = {}
+		self.trenches = {} :: { [number]: any }
+		local nextTrench = 1
+		local WIRE, DUG, GONE, BAD, PLAN = 5, 1, 3, 4, 0
+		self.TRENCH = { plan = PLAN, dug = DUG, gone = GONE, bad = BAD, wire = WIRE }
+		function T.line(x0: number, y0: number, x1: number, y1: number): { number }
+			-- the game's Sg: cells along a segment, one step at a time
+			local a, b = math.floor(x0), math.floor(y0)
+			local i, l = math.floor(x1), math.floor(y1)
+			local c, h = math.abs(i - a), math.abs(l - b)
+			local u, d = if a < i then 1 else -1, if b < l then 1 else -1
+			local out = {}
+			local function put()
+				if a >= 0 and b >= 0 and a < W and b < H then
+					table.insert(out, b * W + a)
+				end
+			end
+			put()
+			local g, m = 0, 0
+			while g < c or m < h do
+				if (0.5 + g) / c < (0.5 + m) / h then
+					a += u
+					g += 1
+				else
+					b += d
+					m += 1
+				end
+				put()
+			end
+			return out
+		end
+		function T.simplify(pts: { any }, eps: number): { any }
+			if #pts < 3 then
+				return table.clone(pts)
+			end
+			local keep = { [1] = true, [#pts] = true }
+			local stack = { { 1, #pts } }
+			while #stack > 0 do
+				local seg = table.remove(stack) :: { number }
+				local s0, s1 = seg[1], seg[2]
+				local rx, ry = pts[s0].x, pts[s0].y
+				local lx, ly = pts[s1].x - rx, pts[s1].y - ry
+				local hl = math.sqrt(lx * lx + ly * ly)
+				if hl == 0 then
+					hl = 1e-6
+				end
+				local best, at = eps, -1
+				for f = s0 + 1, s1 - 1 do
+					local dd = math.abs((pts[f].x - rx) * ly - (pts[f].y - ry) * lx) / hl
+					if dd > best then
+						best, at = dd, f
+					end
+				end
+				if at >= 0 then
+					keep[at] = true
+					table.insert(stack, { s0, at })
+					table.insert(stack, { at, s1 })
+				end
+			end
+			local out = {}
+			for i, p in pts do
+				if keep[i] then
+					table.insert(out, p)
+				end
+			end
+			return out
+		end
+		function T.smooth(pts: { any }): { any }
+			if #pts < 3 then
+				return table.clone(pts)
+			end
+			local out = { pts[1] }
+			for i = 1, #pts - 1 do
+				local a, b = pts[i], pts[i + 1]
+				table.insert(out, { x = a.x * 0.75 + b.x * 0.25, y = a.y * 0.75 + b.y * 0.25 })
+				table.insert(out, { x = a.x * 0.25 + b.x * 0.75, y = a.y * 0.25 + b.y * 0.75 })
+			end
+			table.insert(out, pts[#pts])
+			return out
+		end
+		-- the game's qY
+		function T.prepare(pts: { any }): { any }
+			local n = T.smooth(T.smooth(T.simplify(pts, 0.4 * num("match.cellScale"))))
+			local maxC, sum = num("trenches.maxCells"), 0
+			for i = 2, #n do
+				local l = math.sqrt((n[i].x - n[i - 1].x) ^ 2 + (n[i].y - n[i - 1].y) ^ 2)
+				if sum + l > maxC then
+					local k = (maxC - sum) / (if l == 0 then 1 else l)
+					n[i] = { x = n[i - 1].x + (n[i].x - n[i - 1].x) * k, y = n[i - 1].y + (n[i].y - n[i - 1].y) * k }
+					for j = #n, i + 1, -1 do
+						n[j] = nil
+					end
+					break
+				end
+				sum += l
+			end
+			return n
+		end
+		-- the game's sD: may this side dig here?
+		function self.trenchCellProblem(side: number, c: number): string?
+			if c < 0 or c >= W * H or roads.trenchAt(c) >= 0 or roads.buildingAt(c) >= 0 then
+				return "blocked"
+			end
+			if not roads.passable(c) then
+				return "terrain"
+			end
+			local o = territoryAt(c)
+			if o and o > 0 and o ~= side then
+				return "outsideBase"
+			end
+			local x, y = c % W + 0.5, c // W + 0.5
+			local rr = num("rigs.radius")
+			for _, rig in rigList do
+				if (rig.x - x) ^ 2 + (rig.y - y) ^ 2 <= rr * rr then
+					return "onRig"
+				end
+			end
+			return nil
+		end
+		-- the game's GY: on or within roadGap of a road (wire goes there)
+		function T.nearRoad(c: number): boolean
+			if roads.isRoad(c) then
+				return true
+			end
+			local x, y = c % W, c // W
+			local g = num("trenches.roadGap")
+			local k = math.ceil(g)
+			for yy = y - k, y + k do
+				for xx = x - k, x + k do
+					if xx >= 0 and yy >= 0 and xx < W and yy < H and (xx - x) ^ 2 + (yy - y) ^ 2 <= g * g and roads.isRoad(yy * W + xx) then
+						return true
+					end
+				end
+			end
+			return false
+		end
+		-- the game's lI: an own trench end within joinCells
+		function T.joinAt(side: number, x: number, y: number): any
+			local best, bd = nil, num("trenches.joinCells") ^ 2
+			for _, t in self.trenches do
+				if t.owner == side and #t.pts >= 2 then
+					for k = 1, 2 do
+						local p = if k == 2 then t.pts[#t.pts] else t.pts[1]
+						local d = (p.x - x) ^ 2 + (p.y - y) ^ 2
+						if d < bd or (not best and d <= bd) then
+							bd, best = d, { t = t, far = k == 2, x = p.x, y = p.y }
+						end
+					end
+				end
+			end
+			return best
+		end
+		-- the game's Uie: the cells of a line, ends trimmed to good ground
+		function self.trenchLayout(side: number, pts: { any }): { [string]: any }
+			local line = T.prepare(pts)
+			local join = if #line > 0 then T.joinAt(side, line[1].x, line[1].y) else nil
+			local cells, seen = {}, {}
+			local skip = {}
+			if join then
+				for _, c in join.t.cells do
+					skip[c] = true
+				end
+			end
+			for i = 2, #line do
+				for _, c in T.line(line[i - 1].x, line[i - 1].y, line[i].x, line[i].y) do
+					if not seen[c] and not skip[c] then
+						seen[c] = true
+						table.insert(cells, c)
+					end
+				end
+			end
+			local why = {}
+			for i, c in cells do
+				why[i] = self.trenchCellProblem(side, c) or false
+			end
+			local a, b = 1, #cells
+			while a <= b and why[a] do
+				a += 1
+			end
+			while b >= a and why[b] do
+				b -= 1
+			end
+			local stopped = nil
+			for _, w in why do
+				if w then
+					stopped = w
+					break
+				end
+			end
+			local out, ow, wire, good = {}, {}, {}, 0
+			for i = a, b do
+				table.insert(out, cells[i])
+				table.insert(ow, why[i])
+				table.insert(wire, not why[i] and T.nearRoad(cells[i]))
+				if not why[i] then
+					good += 1
+				end
+			end
+			return { cells = out, why = ow, wire = wire, good = good, stopped = stopped, pts = line, join = join }
+		end
+		function T.crew(side: number, ids: { number }?, x: number, y: number): { Entity }
+			local crew = {}
+			if ids and #ids > 0 then
+				for _, id in ids do
+					local e = self.entities[id]
+					if e and orderable(e, side) and isEngineer(e :: Entity) then
+						table.insert(crew, e)
+					end
+				end
+			else
+				for _, e in self.list do
+					if orderable(e, side) and isEngineer(e) and not e.repairId and not e.roadJob and not e.sabotageCell
+						and not e.attackId and not e.trenchJob and not e.path then
+						table.insert(crew, e)
+					end
+				end
+			end
+			table.sort(crew, function(p: Entity, q: Entity)
+				return sq(p.x, p.y, x, y) < sq(q.x, q.y, x, y)
+			end)
+			for i = #crew, num("trenches.crewMax") + 1, -1 do
+				crew[i] = nil
+			end
+			return crew
+		end
+		function T.skipBad(t: any)
+			while t.dug < #t.cells and t.state[t.dug + 1] == BAD do
+				t.dug += 1
+			end
+		end
+		-- the game's digTrench
+		function self.orderDig(side: number, ids: { number }?, pts: { any }): (number, string?)
+			if #pts < 2 then
+				return 0, "lineShort"
+			end
+			local lay = self.trenchLayout(side, pts)
+			if lay.good < num("trenches.minCells") then
+				return 0, if lay.good > 0 then "lineShort" else (lay.stopped or "badLine")
+			end
+			local cx, cy = centre(lay.cells[1])
+			local crew = T.crew(side, ids, cx, cy)
+			if #crew == 0 then
+				return 0, "noEngineers"
+			end
+			local t
+			if lay.join and lay.join.far then
+				t = lay.join.t
+				for i = 2, #lay.pts do
+					table.insert(t.pts, lay.pts[i])
+				end
+				local whole = t.dug >= #t.cells
+				local had = #t.cells
+				for i, c in lay.cells do
+					table.insert(t.cells, c)
+					table.insert(t.state, if lay.why[i] then BAD else PLAN)
+					table.insert(t.wire, lay.wire[i])
+					table.insert(t.work, 0)
+				end
+				if whole then
+					t.dug, t.progress = had, 0
+				end
+				t.stalled = false
+			else
+				t = { id = nextTrench, owner = side, pts = lay.pts, cells = lay.cells, state = {}, wire = lay.wire, work = {},
+					dug = 0, progress = 0, stalled = false, startedAt = self.time }
+				nextTrench += 1
+				for i in lay.cells do
+					t.state[i] = if lay.why[i] then BAD else PLAN
+					t.work[i] = 0
+				end
+				self.trenches[t.id] = t
+			end
+			T.skipBad(t)
+			for _, e in crew do
+				clearRecon(e)
+				e.target, e.attackId, e.chasing = nil, nil, nil
+				e.trenchJob = { kind = "dig", id = t.id }
+				T.walk(e, e.trenchJob)
+			end
+			return #crew, nil
+		end
+		function T.dugState(st: number): boolean
+			return st == DUG or st == WIRE
+		end
+		function T.firstDug(t: any, from: number, to: number): number
+			for i = from, math.min(to, #t.cells) do
+				if T.dugState(t.state[i]) then
+					return i
+				end
+			end
+			return -1
+		end
+		function self.trenchAtCell(c: number): any
+			local id = roads.trenchAt(c)
+			if id >= 0 then
+				return self.trenches[id]
+			end
+			for _, t in self.trenches do
+				if table.find(t.cells, c) then
+					return t
+				end
+			end
+			return nil
+		end
+		-- the game's fillTrench: gapCells of it round the cell
+		function self.orderFill(side: number, ids: { number }?, cell: number): (number, string?)
+			local t = self.trenchAtCell(cell)
+			if not t then
+				return 0, "noTrench"
+			end
+			local r = table.find(t.cells, cell)
+			if not r or not T.dugState(t.state[r]) then
+				return 0, "noTrench"
+			end
+			local half = math.max(0, math.floor(num("trenches.gapCells") / 2))
+			local cx, cy = centre(cell)
+			local crew = T.crew(side, ids, cx, cy)
+			if #crew == 0 then
+				return 0, "noEngineers"
+			end
+			for _, e in crew do
+				clearRecon(e)
+				e.target, e.attackId, e.chasing = nil, nil, nil
+				e.trenchJob = { kind = "fill", id = t.id, from = math.max(1, r - half), to = math.min(#t.cells, r + half) }
+				T.walk(e, e.trenchJob)
+			end
+			return #crew, nil
+		end
+		function T.reachOf(): number
+			return num("trenches.reach") + math.sqrt(0.5)
+		end
+		function T.near(e: Entity, t: any, i: number, rr: number): boolean
+			if i < 1 or i > #t.cells then
+				return false
+			end
+			local x, y = centre(t.cells[i])
+			return (e.x - x) ^ 2 + (e.y - y) ^ 2 <= rr * rr
+		end
+		-- the game's z_: within reach of one of the next leadCells cells
+		function T.atWork(e: Entity, t: any, rr: number): boolean
+			for i = t.dug + 1, math.min(#t.cells, t.dug + 1 + num("trenches.leadCells")) do
+				if T.near(e, t, i, rr) then
+					return true
+				end
+			end
+			return false
+		end
+		function T.walk(e: Entity, job: any)
+			local t = self.trenches[job.id]
+			if not t then
+				return
+			end
+			local i = if job.kind == "dig" then math.min(#t.cells, t.dug + 1) else T.firstDug(t, job.from, job.to)
+			if i < 1 then
+				return
+			end
+			local x, y = centre(t.cells[i])
+			walkNear(e, x, y, num("trenches.reach"))
+		end
+		-- a cell is dug (the game's wWe / vWe): it blocks the way; units on it step off (KY), routes
+		-- through it re-plan (YY), oil routes over it are redone
+		function T.close(t: any, i: number, wire: boolean)
+			local c = t.cells[i]
+			t.state[i] = if wire then WIRE else DUG
+			roads.setTrench(c, t.id)
+			gridTick = -1
+			for _, e in self.list do
+				if e.alive and e.cat == "unit" and not e.inside and not e.carrier then
+					if cellAt(e.x, e.y) == c then
+						e.x, e.y = freePointNear(e.x, e.y)
+						e.px, e.py = e.x, e.y
+						if e.path then
+							planLater(e)
+						end
+					elseif e.path and e.pathIndex then
+						for k = e.pathIndex, #e.path do
+							if e.path[k] == c then
+								if e.kind == TRUCK then
+									e.reroute = true
+								else
+									planLater(e)
+								end
+								break
+							end
+						end
+					end
+				end
+			end
+			for _, rig in rigList do
+				if rig.route and table.find(rig.route, c) then
+					resetRoute(rig)
+				end
+			end
+		end
+		-- the game's bWe: a filled cell is open again
+		function T.open(t: any, i: number)
+			local c = t.cells[i]
+			t.state[i] = GONE
+			t.work[i] = 0
+			if roads.trenchAt(c) == t.id then
+				roads.setTrench(c, -1)
+			end
+			gridTick = -1
+			for _, rig in rigList do
+				if not rig.route then
+					resetRoute(rig)
+				end
+			end
+		end
+		-- the game's xWe, every tick
+		function self.trenchTick(dt: number)
+			if next(self.trenches) == nil then
+				return
+			end
+			local rr = T.reachOf()
+			local digs, fills, sent = {}, {}, {}
+			for _, e in self.list do
+				local job = e.trenchJob
+				if e.alive and job then
+					local t = self.trenches[job.id]
+					if not t then
+						e.trenchJob = nil
+					else
+						if job.kind == "dig" then
+							sent[t.id] = true
+							if T.atWork(e, t, rr) then
+								digs[t.id] = (digs[t.id] or 0) + 1
+							elseif not e.path then
+								T.walk(e, job)
+							end
+						else
+							local key = `{t.id}:{job.from}:{job.to}`
+							fills[key] = fills[key] or { t = t, from = job.from, to = job.to, by = e.side, crew = 0 }
+							if T.near(e, t, T.firstDug(t, job.from, job.to), rr) then
+								fills[key].crew += 1
+							elseif not e.path then
+								T.walk(e, job)
+							end
+						end
+					end
+				end
+			end
+			-- fills (the game's SWe)
+			for _, f in fills do
+				local t = f.t
+				local i = T.firstDug(t, f.from, f.to)
+				if i < 0 then
+					for _, e in self.list do
+						local j = e.trenchJob
+						if e.alive and j and j.kind == "fill" and j.id == t.id and j.from == f.from and j.to == f.to then
+							e.trenchJob = nil
+						end
+					end
+				else
+					local n = math.min(f.crew, num("trenches.crewMax"))
+					if n > 0 then
+						local per = if t.state[i] == WIRE then num("trenches.wireClearSecPerCell") else num("trenches.fillSecPerCell")
+						t.work[i] += dt / per * n
+						if t.work[i] >= 1 then
+							T.open(t, i)
+							if T.firstDug(t, f.from, f.to) < 0 then
+								local x, y = centre(t.cells[i])
+								event({ type = if f.by == t.owner then "trenchClosed" else "trenchGapped", side = f.by, owner = t.owner, x = x, y = y })
+							end
+						end
+					end
+				end
+			end
+			for id, t in self.trenches do
+				if t.dug < #t.cells and not sent[id] then
+					-- the game's F7e: nobody digs it any more; keep what was dug
+					local o = math.min(t.dug, #t.cells)
+					while o > 0 and t.state[o] == BAD do
+						o -= 1
+					end
+					if o <= 0 then
+						self.trenches[id] = nil
+					else
+						for k = #t.cells, o + 1, -1 do
+							t.cells[k], t.state[k], t.wire[k], t.work[k] = nil, nil, nil, nil
+						end
+						t.dug, t.progress, t.stalled = o, 0, false
+					end
+				end
+				if self.trenches[id] then
+					T.dig(t, dt, digs[id] or 0)
+					local left = false
+					for k = 1, #t.cells do
+						if t.state[k] ~= GONE and t.state[k] ~= BAD then
+							left = true
+							break
+						end
+					end
+					if t.dug >= #t.cells and not left then
+						self.trenches[id] = nil
+					end
+				end
+			end
+		end
+		-- the game's LWe
+		function T.dig(t: any, dt: number, n: number)
+			if t.dug >= #t.cells then
+				return
+			end
+			local crew = math.min(n, num("trenches.crewMax"))
+			if crew <= 0 then
+				return
+			end
+			local wireNext = t.wire[t.dug + 1]
+			t.progress += dt / (if wireNext then num("trenches.wireSecPerCell") else num("trenches.secPerCell")) * crew
+			while t.progress >= 1 and t.dug < #t.cells do
+				local i = t.dug + 1
+				if self.trenchCellProblem(t.owner, t.cells[i]) then
+					t.state[i] = BAD
+					t.dug += 1
+					T.skipBad(t)
+					t.progress = math.min(t.progress, 1)
+				else
+					local wire = t.wire[i] or T.nearRoad(t.cells[i])
+					local cost = if wire then num("trenches.wireOilPerCell") else num("trenches.oilPerCell")
+					local sd = self.sides[t.owner]
+					if not sd or sd.oil < cost then
+						t.progress = 1
+						if not t.stalled then
+							t.stalled = true
+							local x, y = centre(t.cells[i])
+							event({ type = "trenchStalled", side = t.owner, x = x, y = y })
+						end
+						return
+					end
+					sd.oil -= cost
+					t.stalled = false
+					t.progress -= 1
+					t.wire[i] = wire
+					T.close(t, i, wire)
+					t.dug += 1
+					T.skipBad(t)
+					if t.dug >= #t.cells then
+						local x, y = centre(t.cells[#t.cells])
+						local k = 0
+						for _, st in t.state do
+							if T.dugState(st) then
+								k += 1
+							end
+						end
+						event({ type = "trenchDug", side = t.owner, n = k, x = x, y = y })
+						for _, e in self.list do
+							if e.alive and e.trenchJob and e.trenchJob.kind == "dig" and e.trenchJob.id == t.id then
+								e.trenchJob = nil
+								e.path = nil
+							end
+						end
+						return
+					end
+				end
+			end
+		end
+	end
+
 	-- Armies (the game's nations[].army, allows, N$ and armyUnits): each side fights as the coalition
 	-- (the default) or the republic. Only the coalition fields mortars; only the republic lays
 	-- minefields (and has the sea units, not in the slice).
@@ -6521,6 +7094,7 @@ function Sim.new(deps: Deps)
 		self.deployTick()
 		self.demolishTick()
 		self.minesTick(dt)
+		self.trenchTick(dt)
 		checkHeadless()
 		landStrikes()
 		structuresFire(dt)

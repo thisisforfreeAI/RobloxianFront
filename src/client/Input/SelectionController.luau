@@ -12,6 +12,8 @@
 	Right click on one of your damaged buildings with engineers selected: they repair it (PROVISIONAL).
 	Right click on a road cut or worn road with engineers selected: they mend it (PROVISIONAL).
 	V with engineers selected and the cursor on a road: they sabotage it (PROVISIONAL key).
+	7 with engineers selected: drag a line for them to dig a trench; 8 with the cursor on a trench:
+	they fill a gap in it (PROVISIONAL keys).
 	P / J / L at the cursor: the capital's paratroopers / bomb truck, or a drop from your nearest ready
 	airfield town; O sends the recon drone there. N: selected bomb trucks blow up. I: selected rocket
 	artillery fires a barrage at the cursor. (PROVISIONAL keys)
@@ -96,7 +98,7 @@ end
 
 -- opts.busy(): true while a building is being placed (clicks belong to the placement);
 -- opts.onProducer(id, kind): a building was picked as the producer (nil = back to the HQ).
-function SelectionController.start(mySide: number, sendIntent: (any) -> (), opts: { busy: () -> boolean, onProducer: (number?, string?) -> () })
+function SelectionController.start(mySide: number, sendIntent: (any) -> (), opts: { busy: () -> boolean, onProducer: (number?, string?) -> (), digLine: ({ number }) -> () })
 	local gui = Instance.new("ScreenGui")
 	gui.Name = "WarFrontSelection"
 	gui.IgnoreGuiInset = true
@@ -301,6 +303,26 @@ function SelectionController.start(mySide: number, sendIntent: (any) -> (), opts
 			end
 			if #ids > 0 then
 				sendIntent({ kind = "recon", unitIds = ids })
+			end
+		elseif (input.KeyCode == Enum.KeyCode.Seven or input.KeyCode == Enum.KeyCode.Eight) and next(selected) then
+			local ids = {}
+			for id in selected do
+				local v = UnitRenderer.each()[id]
+				if v and v.kind == "engineer" then
+					table.insert(ids, id)
+				end
+			end
+			if #ids == 0 then
+				return
+			end
+			if input.KeyCode == Enum.KeyCode.Seven then
+				opts.digLine(ids)
+			else
+				local hit = groundPoint(UserInputService:GetMouseLocation())
+				if hit then
+					local x, y = World.toCell(hit)
+					sendIntent({ kind = "fill", unitIds = ids, x = x, y = y })
+				end
 			end
 		elseif input.KeyCode == Enum.KeyCode.V and next(selected) then
 			-- V with the cursor on a road: selected engineers plant a charge there (PROVISIONAL key)

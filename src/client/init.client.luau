@@ -100,6 +100,9 @@ do
 		if state.mines then
 			AirOverlay.applyMines(state.mines, map.width)
 		end
+		if state.trenches then
+			AirOverlay.applyTrenches(state.trenches, map.width)
+		end
 		if state.worn then
 			RoadOverlay.applyWorn(state.worn)
 		end
@@ -107,6 +110,7 @@ do
 	SelectionController.start(info.side, send, {
 		busy = BuildController.busy,
 		onProducer = Hud.selectProducer,
+		digLine = BuildController.beginTrench,
 	})
 	if DevFlags.OWNERSHIP_PROBE then
 		require(script.Dev.OwnershipProbe).start(info.side, UnitRenderer.each, function(payload)
