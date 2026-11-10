@@ -36,6 +36,13 @@
 	            otherwise the best-scoring rig (neutral rigs only before bots.graceSec) or, after
 	            bots.cityAfter, settlement (cityValue x (0.5 + defence) for neutral ones, scored down by
 	            distance from its army and from home; at most cityHeld / maxOccupied x (0.5 + defence)).
+	  refinery  (the game's Ist) see refinery() below: a refinery in the held town most of our
+	            trucking rigs would reach well before the HQ.
+	  signs     (the game's iat) a truck held by the enemy for bots.signAfterSec gets a road sign a
+	            little ahead of it, taken down after bots.signHoldSec.
+	  trenches  (the game's JUe) see Sim.botTrenches: fire trench lines in front of the HQ once it has
+	            trenchWorks.bots.digFrom oil, idle infantry man them, and trenches cutting the way to an
+	            enemy HQ are breached or filled.
 	Unit worth = hp / 100 x dps / 8 x 30. Influence map: blocks of 6 x cell scale, reach 14 x cell scale.
 
 	Intel: like the game's bots (intel.fog and bots.fog are on) it sees only with its own vision and
@@ -52,6 +59,7 @@ export type Persona = { id: string, attackMargin: number, home: number, defence:
 
 function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 	local num = sim.num
+	sim.sides[side].bot = true -- the game's !isPlayer: e.g. its cut supply routes re-route themselves
 	local rules = sim.deps.rules
 	local pid = personaId or "balanced"
 	if not rules:has(`bots.personaDefaults.{pid}.attackMargin`) then
@@ -97,6 +105,11 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 		resent = {} :: { [number]: number },
 		muster = {} :: { [number]: boolean }, -- units gathering for the capital assault
 		rigStruck = {} :: { [number]: number }, -- rig id -> when our rockets last hit it
+		mending = {} :: { [number]: { city: number, tries: number } }, -- hurt units sent to heal in a town
+		mendRest = {} :: { [number]: number }, -- unit id -> not sent to heal again before
+		nextMend = -math.huge,
+		guards = {} :: { [number]: { key: number, post: number } }, -- bridge guards (nat)
+		lastBlow = -math.huge, -- when an engineer last went to blow a bridge (Yst)
 		musterSince = -1,
 		musterRest = -math.huge,
 		avoid = {} :: { [string]: number },
@@ -402,6 +415,73 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 		end
 		return total
 	end
+	-- the game's YQ: fresh enemy army the bot knows of within r of (x, y): total worth and its centre
+	local function armyNear(x: number, y: number, r: number): (number, number, number)
+		local w, sx, sy = 0, 0, 0
+		local function add(px: number, py: number, f: number)
+			if f > 0 and (px - x) ^ 2 + (py - y) ^ 2 <= r * r then
+				w += f
+				sx += px * f
+				sy += py * f
+			end
+		end
+		for _, u in intel.units do
+			local k = `units.{u.kind}`
+			if sim.time - u.t <= num("bots.armyFreshSec") and canAttack(side, u.owner) and text(k .. ".armour") ~= "air" and text(k .. ".move") ~= "sea" then
+				add(u.x, u.y, unitWorth(u.kind))
+			end
+		end
+		for _, ct in intel.contacts do
+			if not ct.air then
+				add(ct.x, ct.y, num(`bots.contactWorth.{ct.strength}`))
+			end
+		end
+		if w > 0 then
+			return w, sx / w, sy / w
+		end
+		return 0, x, y
+	end
+	-- the game's v7e: bridge spans that matter to us: on one of our rig routes, or within near +
+	-- sqrt(span size) of our territory
+	local function ourBridges(near: number): { any }
+		local onRoute: { [number]: boolean } = {}
+		for _, r in sim.rigs do
+			if r.side == side and r.route then
+				for _, c in r.route do
+					onRoute[c] = true
+				end
+			end
+		end
+		local out = {}
+		local W = sim.roads.width
+		for _, sp in sim.bridgeSpans() do
+			local ok = false
+			for _, c in sp.cells do
+				if onRoute[c] then
+					ok = true
+					break
+				end
+			end
+			if not ok then
+				local rr = near + math.sqrt(#sp.cells)
+				for yy = math.max(0, math.floor(sp.y - rr)), math.min(sim.roads.height - 1, math.ceil(sp.y + rr)) do
+					for xx = math.max(0, math.floor(sp.x - rr)), math.min(W - 1, math.ceil(sp.x + rr)) do
+						if (xx + 0.5 - sp.x) ^ 2 + (yy + 0.5 - sp.y) ^ 2 <= rr * rr and sim.territoryAt(yy * W + xx) == side then
+							ok = true
+							break
+						end
+					end
+					if ok then
+						break
+					end
+				end
+			end
+			if ok then
+				table.insert(out, sp)
+			end
+		end
+		return out
+	end
 	local function marginH(): number
 		return persona.attackMargin * diff.margin
 	end
@@ -497,6 +577,10 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 		end
 		for _, st in sim.list do
 			if st.alive and st.side == side and st.kind == "factory" and not sim.inactiveReason(st) then
+				-- a full queue gives up its last unit to make room (the game's cancelQueued)
+				if st.queue and #st.queue >= num("production.maxQueue") then
+					sim.cancelQueued(side, st.id, #st.queue)
+				end
 				sim.orderProduce(side, "command", st.id)
 				return true
 			end
@@ -1030,6 +1114,9 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 		for _, r in myRigs() do
 			table.insert(points, { x = r.x, y = r.y })
 		end
+		for _, st in myCities() do -- held towns are fall-back points too (zV in the game's rat)
+			table.insert(points, { x = st.x, y = st.y })
+		end
 		local safe = {}
 		for _, p in points do
 			if mineAt(p.x, p.y) >= threatAt(p.x, p.y) then
@@ -1074,6 +1161,167 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 		end
 	end
 
+	---------------------------------------------------------------- mending (hat)
+
+	-- the game's hat: every bots.mendEverySec, hurt units (below mendBelow of their hp; idle, or moving and
+	-- armed; quiet for mendQuietSec, nobody hostile in sight, not on a job at their order's target) go to
+	-- the nearest of our secured towns that heals their kind and has no known enemy near (within
+	-- mendReach x cellScale), up to mendShare of the army at once. Sent units are watched: one in contact,
+	-- or that can't get there, rests mendRetrySec; healed ones go back to the pool.
+	local function mendUnits()
+		local cfg = "bots."
+		local secured = {}
+		for _, st in sim.settlements do
+			if st.owner == side and sim.cityStatus(st) == "secured" then
+				table.insert(secured, st)
+			end
+		end
+		local function isSecured(st: any): boolean
+			return table.find(secured, st) ~= nil
+		end
+		local function inReach(u: any, st: any): boolean
+			return (u.x - st.x) ^ 2 + (u.y - st.y) ^ 2 <= (st.radius + num("cities.repairReach")) ^ 2
+		end
+		local function inContact(u: any): boolean
+			return u.firing == true or (u.hitAt ~= nil and sim.time - u.hitAt < num("movement.contactSec"))
+		end
+		local function rest(id: number)
+			self.mending[id] = nil
+			self.mendRest[id] = sim.time + num(cfg .. "mendRetrySec")
+		end
+		local function stillOrMoving(u: any): (boolean, boolean)
+			local still = u.target == nil and u.attackId == nil
+			local moving = u.target ~= nil and u.attackId == nil and not u.chasing
+			return still, moving
+		end
+		for id, m in self.mending do
+			local u = sim.entities[id]
+			local st = sim.settlements[m.city]
+			local still, moving = if u then stillOrMoving(u) else false, false
+			if not u or not u.alive or u.side ~= side or u.inside or not (still or moving) or u.hp >= u.maxHp or not st or not isSecured(st) then
+				self.mending[id] = nil
+			elseif inContact(u) then
+				rest(id)
+			elseif still and not inReach(u, st) then
+				if m.tries >= 1 then
+					rest(id)
+				else
+					sim.orderMove(side, { id }, st.x, st.y)
+					if u.path and #u.path > 0 then
+						m.tries += 1
+					else
+						rest(id)
+					end
+				end
+			end
+		end
+		if sim.time < self.nextMend then
+			return
+		end
+		self.nextMend = sim.time + num(cfg .. "mendEverySec")
+		for id, t in self.mendRest do
+			local u = sim.entities[id]
+			if sim.time >= t or not u or not u.alive then
+				self.mendRest[id] = nil
+			end
+		end
+		if #secured == 0 then
+			return
+		end
+		local mendingCount = 0
+		for _ in self.mending do
+			mendingCount += 1
+		end
+		local left = math.ceil(#army() * num(cfg .. "mendShare")) - mendingCount
+		if left <= 0 then
+			return
+		end
+		local safe = {}
+		for _, st in secured do
+			if enemyNear(st.x, st.y, st.radius * 2) <= 0 then
+				table.insert(safe, st)
+			end
+		end
+		if #safe == 0 then
+			return
+		end
+		local reach = scaled(num(cfg .. "mendReach"))
+		local groups: { [number]: { st: any, ids: { number } } } = {}
+		local order: { number } = {}
+		for _, u in sim.list do
+			if left <= 0 then
+				break
+			end
+			if not u.alive or u.side ~= side or u.cat ~= "unit" or u.kind == "truck" or u.inside or self.mending[u.id] or self.mendRest[u.id] then
+				continue
+			end
+			local k = `units.{u.kind}`
+			local still, moving = stillOrMoving(u)
+			if u.hp >= u.maxHp * num(cfg .. "mendBelow") or text(k .. ".armour") == "air" or text(k .. ".move") == "sea"
+				or text(k .. ".nato") == "recon" or u.kind == "demo" or u.kind == "command"
+				or not (still or (moving and num(k .. ".dps") > 0)) or u.barrage or inContact(u)
+				or sim.time - math.max(u.hitAt or -999, u.firedAt or -999) < num(cfg .. "mendQuietSec") then
+				continue
+			end
+			local hostile = false
+			for _, o in sim.unitsNear(u.x, u.y, num(k .. ".sight")) do
+				local ok = `units.{o.kind}`
+				if o.alive and o.cat == "unit" and canAttack(side, o.side) and num(ok .. ".dps") > 0 and text(ok .. ".armour") ~= "air"
+					and text(ok .. ".move") ~= "sea" and (o.x - u.x) ^ 2 + (o.y - u.y) ^ 2 <= num(k .. ".sight") ^ 2 then
+					hostile = true
+					break
+				end
+			end
+			if hostile then
+				continue
+			end
+			local t = self.orders[u.id]
+			local at = if t and t.kind ~= "structure" then orderTarget(t) else nil
+			if at then
+				local r = if t.kind == "city" then at.radius else num("rigs.radius")
+				if hypot(u.x - at.x, u.y - at.y) <= r then
+					continue -- on its job
+				end
+			end
+			local foot = text(k .. ".move") == "foot"
+			local best, bd = nil, reach
+			for _, st in safe do
+				local d = hypot(st.x - u.x, st.y - u.y)
+				local heals = num(`cities.{if foot then "repairMen" else "repairVehicles"}.{st.kind}`) > 0
+				if d <= bd and heals then
+					best, bd = st, d
+				end
+			end
+			if not best then
+				continue
+			end
+			left -= 1
+			self.orders[u.id], self.resent[u.id], self.muster[u.id], self.guards[u.id] = nil, nil, nil, nil
+			if still and inReach(u, best) then
+				self.mending[u.id] = { city = best.id, tries = 0 }
+				continue
+			end
+			local gk = best.id * 2 + (if foot then 1 else 0)
+			if not groups[gk] then
+				groups[gk] = { st = best, ids = {} }
+				table.insert(order, gk)
+			end
+			table.insert(groups[gk].ids, u.id)
+		end
+		for _, gk in order do
+			local g = groups[gk]
+			sim.orderMove(side, g.ids, g.st.x, g.st.y)
+			for _, id in g.ids do
+				local u = sim.entities[id]
+				if u and ((u.path and #u.path > 0) or inReach(u, g.st)) then
+					self.mending[id] = { city = g.st.id, tries = 0 }
+				else
+					self.mendRest[id] = sim.time + num(cfg .. "mendRetrySec")
+				end
+			end
+		end
+	end
+
 	---------------------------------------------------------------- idle army (oat)
 
 	local function idleArmy(): { any }
@@ -1087,7 +1335,7 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 		local all = army()
 		local free = {}
 		for _, u in all do
-			if idle(u) and not self.orders[u.id] and not self.muster[u.id] then
+			if idle(u) and not self.orders[u.id] and not self.muster[u.id] and not self.mending[u.id] and not self.guards[u.id] then
 				table.insert(free, u)
 			end
 		end
@@ -1186,6 +1434,98 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 				local i = enemyNear(r.x, r.y, num("rigs.radius") * 3)
 				if i > 0 then
 					dispatch(pool, { kind = "rig", id = r.id }, r.x, r.y, i * num("bots.margin"))
+				end
+			end
+		end
+		-- the game's sat, last part: a truck of ours held up by the enemy for bots.truckHeldSec (the one
+		-- from the rig with the most trucks) gets enough units sent to clear the way
+		local held = nil
+		for _, t in sim.list do
+			if t.alive and t.side == side and t.kind == "truck" and t.stopped == "enemy" and (t.from or -1) > 0
+				and (t.waiting or 0) >= num("bots.truckHeldSec") then
+				if not held then
+					held = t
+				else
+					local a, b = sim.trucksOf(t.from), sim.trucksOf(held.from)
+					if a > b or (a == b and t.id < held.id) then
+						held = t
+					end
+				end
+			end
+		end
+		if held then
+			local i = enemyNear(held.x, held.y, num("convoys.lookAhead") * 1.5)
+			if i > 0 then
+				dispatch(pool, { kind = "rig", id = held.from }, held.x, held.y, i * num("bots.margin"))
+			end
+		end
+	end
+
+	---------------------------------------------------------------- bridge guards (nat)
+
+	-- the game's nat: the bridgeGuardSpans spans of ours nearest the HQ each get bridgeGuards units
+	-- posted at the span's end nearest the HQ, while the army has at least bridgeGuardMinArmy units and
+	-- at most bridgeGuardShare of it guards; an idle guard that wandered more than 3 x cellScale off
+	-- walks back. Guards leave the idle pool.
+	local function bridgeGuards(pool: { any })
+		local hq = sim.hqOf(side)
+		if not hq then
+			return
+		end
+		local spans = ourBridges(scaled(num("bots.bridgeNearCells")))
+		table.sort(spans, function(a: any, b: any)
+			return hypot(a.x - hq.x, a.y - hq.y) < hypot(b.x - hq.x, b.y - hq.y)
+		end)
+		local keep: { [number]: any } = {}
+		for i = 1, math.min(#spans, num("bots.bridgeGuardSpans")) do
+			keep[spans[i].key] = spans[i]
+		end
+		local W = sim.roads.width
+		local back = scaled(3)
+		local count = 0
+		for id, g in self.guards do
+			local u = sim.entities[id]
+			if not u or not u.alive or u.side ~= side or not keep[g.key] then
+				self.guards[id] = nil
+			else
+				count += 1
+				local px, py = g.post % W + 0.5, g.post // W + 0.5
+				if u.target == nil and u.attackId == nil and hypot(u.x - px, u.y - py) > back then
+					sim.orderMove(side, { id }, px, py)
+				end
+			end
+		end
+		local n = #army()
+		if n < num("bots.bridgeGuardMinArmy") then
+			return
+		end
+		local cap = math.floor(n * num("bots.bridgeGuardShare"))
+		for i = 1, math.min(#spans, num("bots.bridgeGuardSpans")) do
+			local sp = spans[i]
+			local have = 0
+			for _, g in self.guards do
+				if g.key == sp.key then
+					have += 1
+				end
+			end
+			local post = sim.bridgeEnd(sp, hq.x, hq.y)
+			if post >= 0 then
+				local px, py = post % W + 0.5, post // W + 0.5
+				while have < num("bots.bridgeGuards") and count < cap and #pool > 0 do
+					local bi, bd = 1, math.huge
+					for k, u in pool do
+						local d = (u.x - px) ^ 2 + (u.y - py) ^ 2
+						if d < bd then
+							bi, bd = k, d
+						end
+					end
+					local u = table.remove(pool, bi)
+					sim.orderMove(side, { u.id }, px, py)
+					if u.path then
+						self.guards[u.id] = { key = sp.key, post = post }
+						have += 1
+						count += 1
+					end
 				end
 			end
 		end
@@ -1522,9 +1862,10 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 	-- the game's engineer think (zst), then raids (Jst): idle engineers first mend road cuts near our rigs or HQ (within
 	-- 40 x cellScale) or on a rig's road home, unless a crew of the paying side is already on it; then
 	-- the most worn cell (at least bots.wearMendFrom) on our rig routes; then the first own built
-	-- structure below 70% hp. A cut it could not reach is left for bots.bridgeHoldSec.
-	-- Not in the slice: trenches, raids and the other engineer jobs the game checks first; the game's
-	-- "enemy near the cut" (Kst) and reachability (Rb) checks are APPROX (reachability only).
+	-- structure below 70% hp; then damaged rigs (kat). A cut it could not reach is left for bots.bridgeHoldSec.
+	-- Before all that a defensive bot may blow a threatened bridge (Yst); it leaves bridges it blew
+	-- itself unmended while the threat lasts (Kst). The game's reachability check (Rb) is APPROX: a
+	-- path was found, or it is already there.
 	local cutHold: { [number]: number } = {}
 	local lastSabotage = -math.huge
 	local function mend()
@@ -1549,6 +1890,58 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 			return best
 		end
 		local W = sim.roads.width
+		-- the game's Yst: a defensive bot (persona defence >= bridgeBlowMinDefence), now and then
+		-- (bridgeBlowEverySec, chance defence x bridgeBlowChance), blows one of its bridges that a
+		-- known enemy force (bridgeThreatWorth within bridgeThreatCells) is massing beyond: the
+		-- nearest idle engineer plants a charge on the span's road cell nearest our HQ
+		do
+			local hq0 = sim.hqOf(side)
+			if hq0 and persona.defence >= num("bots.bridgeBlowMinDefence") and sim.time - self.lastBlow >= num("bots.bridgeBlowEverySec")
+				and rand() <= persona.defence * num("bots.bridgeBlowChance") then
+				local planted: { [number]: boolean } = {}
+				for _, sb in sim.sabotages do
+					if sb.side == side then
+						planted[sb.cell] = true
+					end
+				end
+				for _, e in sim.list do
+					if e.alive and e.side == side and e.sabotageCell then
+						planted[e.sabotageCell] = true
+					end
+				end
+				for _, sp in ourBridges(scaled(num("bots.bridgeNearCells"))) do
+					local taken = sp.blown
+					for _, c in sp.cells do
+						if planted[c] then
+							taken = true
+						end
+					end
+					if not taken then
+						local worth, tx, ty = armyNear(sp.x, sp.y, scaled(num("bots.bridgeThreatCells")))
+						if worth >= num("bots.bridgeThreatWorth") and hypot(tx - hq0.x, ty - hq0.y) > hypot(sp.x - hq0.x, sp.y - hq0.y) then
+							local cell, bd = sp.cells[1], math.huge -- the game's Xst
+							for _, c in sp.cells do
+								if sim.roads.isRoad(c) then
+									local d = (c % W + 0.5 - hq0.x) ^ 2 + (c // W + 0.5 - hq0.y) ^ 2
+									if d < bd then
+										cell, bd = c, d
+									end
+								end
+							end
+							local e = nearest(sp.x, sp.y)
+							if sim.orderSabotage(side, cell, { e.id }) > 0 then
+								local rr = num("sabotage.reach")
+								if e.path or (e.x - (cell % W + 0.5)) ^ 2 + (e.y - (cell // W + 0.5)) ^ 2 <= rr * rr then
+									self.lastBlow = sim.time
+									return
+								end
+								sim.orderStop(side, { e.id })
+							end
+						end
+					end
+				end
+			end
+		end
 		local reach = 40 * num("match.cellScale")
 		local hq = sim.entities[sim.sides[side].hqId]
 		local onRoute: { [number]: boolean } = {}
@@ -1580,8 +1973,33 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 				end
 			end
 		end
+		-- the game's Kst: a bridge we blew ourselves is left alone for bridgeHoldSec, then mended once no
+		-- known enemy force (bridgeThreatWorth within bridgeThreatCells) is near it, and after
+		-- bridgeHoldMaxSec in any case
+		local function holdOwnBlow(cut: any): boolean
+			if cut.by ~= side then
+				return false
+			end
+			local deck = false
+			for _, c in cut.cells do
+				if sim.deckGround(c) then
+					deck = true
+					break
+				end
+			end
+			if not deck then
+				return false
+			end
+			if sim.time - cut.at < num("bots.bridgeHoldSec") then
+				return true
+			end
+			if sim.time - cut.at > num("bots.bridgeHoldMaxSec") then
+				return false
+			end
+			return (armyNear(cut.x, cut.y, scaled(num("bots.bridgeThreatCells")))) >= num("bots.bridgeThreatWorth")
+		end
 		for id, cut in sim.roadCuts do
-			if manned[id] or (cutHold[id] or -1) > sim.time then
+			if manned[id] or (cutHold[id] or -1) > sim.time or holdOwnBlow(cut) then
 				continue
 			end
 			local ours = closeToUs(cut.x, cut.y)
@@ -1627,7 +2045,45 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 					return
 				end
 			end
-		end		-- the game's Jst: now and then the last idle engineer goes to sabotage an enemy rig's road home,
+		end
+		-- the game's kat: damaged rigs of ours that nobody contests, wrecked first, then the lowest hp,
+		-- each get the nearest idle engineer unless one of ours already mends it; one it can't reach
+		-- is called off
+		local hurt = {}
+		for _, rg in sim.rigs do
+			if rg.side == side and rg.hp < rg.maxHp and not rg.contested and not rg.capture then
+				table.insert(hurt, rg)
+			end
+		end
+		table.sort(hurt, function(a: any, b: any)
+			if (a.wrecked and 1 or 0) ~= (b.wrecked and 1 or 0) then
+				return a.wrecked == true
+			end
+			if a.hp ~= b.hp then
+				return a.hp < b.hp
+			end
+			return a.id < b.id
+		end)
+		for _, rg in hurt do
+			local busy = false
+			for _, e in sim.list do
+				if e.alive and e.side == side and e.repairId == rg.id then
+					busy = true
+					break
+				end
+			end
+			if not busy then
+				local e = nearest(rg.x, rg.y)
+				if sim.orderRepair(side, rg.id, { e.id }) > 0 then
+					local rr = num("rigs.radius") + num("engineers.reach")
+					if e.path or (e.x - rg.x) ^ 2 + (e.y - rg.y) ^ 2 <= rr * rr then
+						return
+					end
+					sim.orderStop(side, { e.id })
+				end
+			end
+		end
+		-- the game's Jst: now and then the last idle engineer goes to sabotage an enemy rig's road home,
 		-- 30-70% of the way along it, picking among the rigs with the most trucks in sight.
 		-- APPROX: the rig's owner is taken as known.
 		if #idleEng < num("bots.sabotageSpare") or sim.time < num("bots.graceSec")
@@ -1912,7 +2368,7 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 	---------------------------------------------------------------- rocket barrages (Gst / Gbe)
 
 	-- the game's Gbe: enemy rigs worth a strike (after bots.graceSec, at least rigStrike.farCells x
-	-- cellScale from our HQ, not struck in the last againSec): pump rate x paySec
+	-- cellScale from our HQ, not struck in the last againSec, not a wreck seen lately): pump rate x paySec
 	local function rigStrikes(): { any }
 		if not sim.rules:flag("bots.rigStrike.on") or sim.time < num("bots.graceSec") then
 			return {}
@@ -1923,6 +2379,7 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 			local o = rigOwner(rg)
 			if o > 0 and o ~= side and canAttack(side, o)
 				and not (hq and hypot(rg.x - hq.x, rg.y - hq.y) < scaled(num("bots.rigStrike.farCells")))
+				and not (rg.wrecked and fresh(rg.x, rg.y)) -- a wreck seen lately is left alone
 				and sim.time - (self.rigStruck[rg.id] or -math.huge) >= num("bots.rigStrike.againSec") then
 				table.insert(out, { rig = rg, x = rg.x, y = rg.y, worth = sim.pumpRate(rg) * num("bots.rigStrike.paySec") })
 			end
@@ -2123,6 +2580,85 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 		end
 	end
 
+	---------------------------------------------------------------- refineries
+	-- the game's Ist, every refinery.bots.everySec: with refinery.cost + bots.keepOil oil and none of
+	-- ours going up, build one in the held town that the most of our trucking rigs (not already
+	-- hauling to a refinery) would reach at least saveShare closer, and saveCells x cell scale
+	-- closer, than the HQ
+	self.refineryAt = 0
+	local function refinery()
+		if not (sim.rules:has("refinery.on") and sim.rules:flag("refinery.on")) or sim.time < self.refineryAt then
+			return
+		end
+		self.refineryAt = sim.time + num("refinery.bots.everySec")
+		local hq = sim.hqOf(side)
+		if not hq then
+			return
+		end
+		local keep = 1 - num("refinery.bots.saveShare")
+		local cells = num("refinery.bots.saveCells") * num("match.cellScale")
+		if sim.sides[side].oil < num("refinery.cost") + num("refinery.bots.keepOil") then
+			return
+		end
+		for _, st in sim.settlements do
+			if st.refinery and st.refinery.owner == side and st.refinery.built < 1 then
+				return
+			end
+		end
+		local rigs = {}
+		for _, rg in sim.rigs do
+			if rg.side == side and rg.connected and rg.route and #rg.route > 0 and sim.trucksOf(rg.id) > 0 then
+				table.insert(rigs, rg)
+			end
+		end
+		local best, bestN = nil, 0
+		for _, st in sim.settlements do
+			if st.owner == side and not sim.refineryProblem(side, st.id) then
+				local n = 0
+				for _, rg in rigs do
+					local toTown = hypot(rg.x - st.x, rg.y - st.y)
+					local toHq = hypot(rg.x - hq.x, rg.y - hq.y)
+					if rg.refinery == nil and toTown <= toHq * keep and toHq - toTown >= cells then
+						n += 1
+					end
+				end
+				if n > bestN then
+					best, bestN = st, n
+				end
+			end
+		end
+		if best then
+			sim.buildRefinery(side, best.id)
+		end
+	end
+
+	---------------------------------------------------------------- road signs
+	-- the game's iat: signs it put up come down after bots.signHoldSec (or once gone); a truck of ours
+	-- held by the enemy for bots.signAfterSec gets a sign on the road a little ahead of it (one a think)
+	self.signs = {} :: { [number]: number }
+	local function roadSigns()
+		for id, untilT in self.signs do
+			if sim.time >= untilT or not sim.roadSigns[id] then
+				sim.removeRoadSign(side, id)
+				self.signs[id] = nil
+			end
+		end
+		local ahead = math.floor(num("convoys.stopShortCells") + num("signs.radius") + 0.5)
+		for _, t in sim.list do
+			if t.alive and t.side == side and t.kind == "truck" and t.stopped == "enemy" and (t.waiting or 0) >= num("bots.signAfterSec")
+				and t.path and #t.path > 0 then
+				local c = t.path[math.min(#t.path, (t.pathIndex or 1) + ahead)]
+				if c and sim.roads.isRoad(c) then
+					local id = sim.placeRoadSign(side, c)
+					if id then
+						self.signs[id] = sim.time + num("bots.signHoldSec")
+						return
+					end
+				end
+			end
+		end
+	end
+
 	---------------------------------------------------------------- think loop
 
 	local function think()
@@ -2134,8 +2670,10 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 		self.inf = buildInfluence()
 		local housing = rehouse()
 		local p = if housing then nil else plan()
+		roadSigns()
 		local saving = not housing and trucks()
 		if not housing and not saving then
+			refinery()
 			placeBuilding(p)
 			training(p)
 		end
@@ -2144,14 +2682,17 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 		drone()
 		barrages()
 		artyStrikes()
+		mendUnits()
 		fallBack()
 		local pool = idleArmy()
 		transports(pool)
+		bridgeGuards(pool)
 		defence(pool)
 		garrison(pool)
 		capital(pool)
 		airPowers()
 		attack(pool)
+		sim.botTrenches(side) -- the game's JUe: trench lines, clearing the way, manning
 	end
 	self.think = think
 

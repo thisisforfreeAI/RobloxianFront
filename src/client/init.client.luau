@@ -100,6 +100,15 @@ do
 		if state.mines then
 			AirOverlay.applyMines(state.mines, map.width)
 		end
+		if state.refineries then
+			AirOverlay.applyRefineries(state.refineries, map.width)
+		end
+		if state.rallies then
+			AirOverlay.applyRallies(state.rallies)
+		end
+		if state.signs then
+			AirOverlay.applySigns(state.signs, map.width)
+		end
 		if state.trenches then
 			AirOverlay.applyTrenches(state.trenches, map.width)
 		end
@@ -116,6 +125,8 @@ do
 		cycleTrench = function()
 			Hud.note(TRENCH_NAMES[BuildController.cycleTrenchKind()])
 		end,
+		note = Hud.note,
+		lookAt = CameraController.lookAt,
 	})
 	if DevFlags.OWNERSHIP_PROBE then
 		require(script.Dev.OwnershipProbe).start(info.side, UnitRenderer.each, function(payload)

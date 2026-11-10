@@ -11,7 +11,7 @@ Last updated: 2026-11-09
 Phase 1. Milestone 1A done (Studio tests 1–7 pass). Pilot sprite REQ-0001 approved. Milestone 1B (gameplay loop) rewritten for WarFront parity and tested outside Studio; Studio tests B1–B9 pending.
 
 ## Verified outside Studio (actually run, Linux container)
-- Lune 0.11.1 `tests/run`: 123 passed, 0 failed (latest run) (including the 2 that read the GameData generated from your install).
+- Lune 0.11.1 `tests/run`: 145 passed, 0 failed (latest run) (including the 2 that read the GameData generated from your install).
 - Rojo 7.4.4 `rojo build` succeeds. All .luau files compile (syntax only).
 - Synthetic atlas: 16 × 120 px frames pack to 960×240 (8×2, no padding); validator passes on dimensions,
   rectangles, direction order, pixel identity, pivot, partial alpha, edge bleed, arrow orientation, manifest.
@@ -287,14 +287,37 @@ Sabotage (2026-11-09), traced from the game's XX / _me / DZe / FZe / Jst: engine
 dies, is hit or gets another order ends it. Then it is armed, the crew walks off to the nearest own
 building, and 6-8 s later it blows and cuts the road like shellfire. Now and then (at most every 180 s
 after the first 240 s, more often for the warlord) the bot sends its last idle engineer to sabotage an
-enemy rig's road home, 30-70% of the way along it. APPROX: the bot knows who owns each rig; the game's
-"saboteurs spotted" warning and the reveal strip it gives the victim are not in the slice. Bot-vs-bot
+enemy rig's road home, 30-70% of the way along it. APPROX: the bot knows who owns each rig. Since
+2026-11-10 (the game's _me / VZe): with fog on, a side whose rig route the charge would cut is warned
+once ("saboteurs spotted") when it sees one of the crew while they plant; when the charge blows, each
+victim sees 7.5 cells round the cut and round every other cell of its rig routes for 42 cells either
+side of it, for 25 s. Bot-vs-bot
 after this: warlord v balanced about 15 min, balanced v turtle about 27 min.
 
 Traffic (2026-11-09), traced from the game's FWe / UWe / NWe: a truck on a road with a tracked or
 wheeled unit on the road within 3.6 cells drives at 55% pace; a tracked or wheeled unit on a road with
 a truck that close keeps only 40% of its road bonus. Foot units don't cause jams. Not in the slice:
-road signs, convoy spacing and merging. Bot-vs-bot after this: about 15 min and 23 min.
+convoy spacing and merging. Road signs came later (below).
+
+Road signs (2026-11-10), traced from the game's G7e / GWe / ZWe / WWe / qWe / jWe / $g / iat: = with the
+cursor on a road puts up a sign (or takes yours down there). It shuts the road cells within 7.5 cells to
+your own trucks (their route costs treat them as blocked); rig routes through it re-plan. At most 8
+signs; a sign that would leave one of your rigs with no way home is refused. A beaten side's signs go.
+The bot signs the road 9 cells ahead of a truck the enemy has held for 12 s (one a think) and takes it
+down after 150 s.
+
+Refineries (2026-11-10), traced from the game's TX / Ape / _pe / _Ge / X_ / k4 / J_ / EGe / PGe / Rpe / Ppe
+/ LD / Ist: [ with the cursor on a village, town or city you hold builds a refinery there (145 oil,
+30 s, 900 hp). It goes on the best free 3x3 spot round the town: off and clear of roads but within 3
+cells of one, away from rigs, buildings and other refineries, preferring the town's edge. While it is
+finished and you hold the town, each of your rigs picks the shortest route among the HQ and your
+working refineries (re-picked when that set changes), and its trucks unload there; new trucks for
+such a rig start at the refinery. Losing the town stops it (rigs go back to the HQ, with a notice);
+retaking it starts it again; a ruined town or shells (blasts within reach of its footprint) destroy
+it. The bot, every 20 s with 145 + 250 oil and none going up, builds one in the held town the most of
+its trucking rigs would reach 30% and 24 cells closer than its HQ. Hand-picked haul routes: see Cut
+supply routes below (Alt+T). Not ported: power (power plants are off in the game's match rules). Bot-vs-bot: the
+winning side built two. Bot-vs-bot after this: about 15 min and 23 min.
 
 Convoys (2026-11-09), traced from the game's kme / gUe / wUe / SZe / MZe: trucks drive at a quarter
 pace off road, 60% on a bridge, 70% in town and slow to 55% into a sharp bend. They pull away over 3 s
@@ -402,8 +425,8 @@ R: it stops and after 10 s becomes an HQ on a free cell within 12 cells, preferr
 reaches the rigs, with the truck's share of hp. Moving cancels it. The new HQ is your HQ. A side with
 a command truck is never headless, and the grace clock waits while one is being built. The bot, once
 its HQ is gone, deploys its truck where it stands if a road there reaches the rigs, otherwise drives
-it back to the old HQ's site; with no truck it orders one at a working factory. APPROX: the game
-first trims a full queue to fit it; not ported. Bot-vs-bot after this: about 15, 24 and 19 min.
+it back to the old HQ's site; with no truck it orders one at a working factory, first calling off the
+last unit of a full queue to make room (the game's cancelQueued). Bot-vs-bot after this: about 15, 24 and 19 min.
 
 Opening drop (2026-11-10), traced from the game's u9e / lk / cD / f9e / p9e / nq / vqe / G_ / bqe / hX /
 g9e: a match now starts with no HQs or squads. The war clock waits while each side picks where to
@@ -467,9 +490,12 @@ dig it at 0.53 s a cell for 0.73 oil (cells by a road get barbed wire: 1.33 s, 2
 work stops with a notice. Each dug cell blocks the way for every unit and building (wire on a road
 cuts it; oil routes are redone). With the cursor on a trench, 8 sends selected engineers to fill a
 9-cell gap (0.8 s a cell, wire 1.67 s). A line nobody is digging any more is cut back to what was dug,
-and an existing line can be carried on from its far end. APPROX: diggers walk to the next cell (the
-game picks a side of the line to stand on); the game's seal extension (zie) is not ported. Not ported
-yet: manning trenches, shell damage and mending, breaching charges, and the bot's digging (from 300 s).
+and an existing line can be carried on from its far end. Diggers stand 3.6 cells to one side of the
+line, level with the cell 6 ahead, on a route that does not cross the cells still to dig (the game's
+mWe). Seal (the game's zie): an end that stops within 6 cells short of water, other ground nobody can
+cross or the map edge (ahead of the line, along a straight run of cells that may be dug) is carried on
+to it. Not ported
+yet: nothing (see parts 2-4).
 
 Trenches, part 2 (2026-11-10), traced from the game's FY / zY / k7e / _Ue / _We / zUe: key 9 picks the kind
 dug next. A ditch blocks every unit; a fire trench (0.37 s, 0.5 oil a cell) lets infantry cross at half
@@ -480,12 +506,177 @@ A ditch or fire trench cell next to impassable water, or next to a flooded cell,
 cell): it then blocks the way, fills in 3x slower, and the owner gets one notice per trench. A caved
 ditch cell (damage 1) is crossed like a fire trench; damage itself comes with part 3 (shelling).
 
+Trenches, part 3 (2026-11-10), traced from the game's NUe / FM / UUe / XUe / _7e / VUe / Tf / iI / EUe /
+FUe / OUe / DUe / lv / L7e / S7e / P7e / ZUe / GUe:
+- Shelling: every blast that wears roads also wears dug cells within 3.6 cells by damage / 150; at 1
+  a cell caves in (a ditch becomes crossable like a fire trench, traps and wire are gone) and the
+  owner is told (at most every 30 s a trench). A hit of 40 or more smashes dug and wired cells within
+  its splash (at least 1.2 cells) flat. APPROX: for direct artillery hits on units the size check uses
+  the hit's damage after armour and cover (the game passes the shell's own damage).
+- Mending (key 0 with engineers, cursor on the trench): up to 3 engineers mend everything within 9
+  cells either side; each works alone, re-digging a smashed cell in 0.83 s or taking 1.2 damage a
+  second off a worn one; "Trench mended" when done.
+- Manning (key 0 with infantry selected): foot units spread along the fire trench at or near the
+  cursor, one to a cell within 21 cells, nearest unit to each cell. Foot units on an intact fire-trench
+  cell (or on open ground round a finished bunker or AT gun that touches one) are in the trench: they
+  take 0.4 of bullet hits and 0.5 of shell or splash hits, and are hidden from an enemy side (fog,
+  intel and target picking) unless it has a unit or building within 7.5 cells or they fired in the
+  last 3 s. APPROX: they walk there on normal routes (the game routes ones already in the trench along
+  it); separation can nudge one off its cell.
+- Breaching (V with engineers on a dug or wired trench cell): planting takes 6 s within 6.1 cells; when
+  it blows, 4 cells either side are smashed open (wire on a road reopens it), the owner sees 12 cells
+  round the spot for 20 s, and both sides are told. A ditch or fire trench with water within 7.5 cells
+  that has not flooded yet floods there instead ("bank broken"). A flooded cell can't be breached.
+- A cell turning into a trench some units can't cross (a fire trench for vehicles, say) moves those
+  standing on it to the nearest cell round it they can stand on, and those routed through it stop
+  (if it was their goal) or plan again (the game's RUe / PUe).
+
+Trenches, part 4: the bot (2026-11-10), traced from the game's JUe / oWe / nWe / tWe / eWe / QUe / C7e /
+rI, run at the end of each bot think:
+- Digging: with fewer than 2 own trenches, all of them dug, and at least 300 oil (trenchWorks.bots.
+  digFrom is oil, not seconds), the nearest idle engineers dig fire trench lines 42 cells out from the
+  HQ towards the nearest enemy HQ, 48 cells long across that way, clear of roads (tried at 1, 0.8, 1.2
+  and 0.65 of the distance and turned 0, +0.35 and -0.35 rad; the longest one or two stretches that
+  lay out without wire and with at least 6 good cells). APPROX: with one engineer the game queues the
+  second line; here it is dug on a later think.
+- Manning: idle armed foot units (not artillery) within 48 cells of an own fire trench man it.
+- Clearing the way: when trenches split the ground a tank could cross between the HQ and an enemy HQ,
+  the first trench on the straight line between them is breached by the nearest engineer (an enemy
+  trench that is not flooded) or filled in, unless own engineers already work on it.
+
+Rally points (2026-11-10), traced from the game's rallyOf / doorEdge / doorOf / setRally / clearRally /
+sendToRally; replaces the APPROX "appear towards the map centre":
+- A producer with no rally sends new units production.rallyCells x cellScale beyond its footprint
+  (+0.5), towards the nearest road cell within rallyRoadCells x cellScale outside the footprint, else
+  the map centre (production.rallyToRoad), clamped to the map.
+- The unit appears just outside the footprint edge that faces the rally, offset along the edge by up to
+  doorSpan of the half-width, then walks to the next of 8 ring slots round the rally (one slot per unit
+  made, in turn). With no path it stays where it appeared.
+- ] at the cursor sets the rally of the last own producer clicked (the HQ when none); Shift+] clears it.
+  Refused on enemy buildings, buildings that train nothing, and ground units can't stand on. Your set
+  rallies show as small green posts.
+- APPROX: when the door cell is blocked the game picks random points 1-4 x cellScale out; here the
+  nearest free cell is used. Naval yards' rallies are not in the slice.
+
+Releasing trucks (2026-11-10), traced from the game's releaseTruck / WX / yme / gme: Shift+T over your
+rig takes one truck off it: the one least along (loading, then heading out, then unloading, then the
+rest; then the least oil aboard; the back of the loading queue first). It drives home with what it
+carries, unloads, and joins the idle trucks the next T uses. Refused with no trucks on the rig.
+
+Retreat and waypoints (2026-11-10), traced from the game's orderRetreat / queueMove / arrive:
+- \ sends the selected units back to their nearest finished HQ: each to its own ring slot at least
+  ceil(footprint) + 1 cells from the HQ's centre. While walking there they move at movement.retreatPace
+  (1.25x), hold fire and don't stop for enemies in the way. Any new order ends it; refused with no HQ.
+- Alt + right click adds a stop after the current move (one ring slot per unit round the point, up to
+  movement.waypointCap = 8); units not under a move order go there at once. On arrival a unit walks on
+  to its next stop. (This was Shift + right click until the direct-move batch below; the game uses Alt.)
+- APPROX: the game's waypoint line drawing is not ported; ships are not in the slice.
+
+Straight moves (2026-11-10), traced from the game's direct move (orderMove(.., direct), moveTable(..,
+true), straightWay, lineCells): Shift + right click sends the selection "straight over the land", the
+game's Shift modifier. If the straight line to a unit's slot is open it walks that line cell by cell.
+Otherwise it routes on a table with no off-road bias where a road costs what the land under it costs
+(1 where that land can't be walked, as on a bridge), then pulls the route straight: from each corner it
+looks up to movement.directLookCells (24) x cell scale cells ahead (halving) for the farthest cell it
+can reach in a line. Direct units don't join a shared group route. Alt + Shift + right click queues a
+straight stop; each stop keeps its own flag. Any other order ends it.
+- APPROX: the game also tries the group's shared route and a path guide before its plain search here.
+- Bot fall-back (the game's rat) now also counts the bot's held towns as safe points, not only its HQ
+  and rigs (the game's zV list). Bot demolition trucks, airfield calls, paratroopers and the demo power
+  were checked against the game's pat / w0e / y0e and already matched.
+
+Control groups (2026-11-10), traced from the game's QV / xxe / b5t / k5t / Cxe / $ee / eF (client only,
+like the game): Ctrl + 1-5 makes a group from the selected units (or, with no units selected, the
+building you last clicked; with nothing selected it clears the group), Shift + number adds the
+selection to it (units replace a building group and the other way round), the number alone selects
+the group (a building group picks its first building, as the producer if it trains), and pressing the
+number twice within 400 ms also moves the camera to the group's centre. Dead units and lost buildings
+drop out. A notice says "Group n: count" or "Group n cleared".
+- APPROX: only groups 1-5 have keys (the game has 1-9), because 6 trains the sixth unit and 7-0 are
+  the trench keys here. The game's group chips on the HUD are not ported.
+- Bot: when it loses its HQ with a full factory queue, it now calls off the last unit to fit the
+  command truck (the game's Fst).
+
+Click selecting (2026-11-10), traced from the game's selectAt / unitsInView / addSameTypeInView: a
+second click on the same unit within 350 ms picks every unit of yours of that kind on screen (with
+Ctrl held, every unit of yours on screen). Shift + click now adds the unit (it used to toggle it), and
+when its kind is already in the selection it adds every unit of that kind on screen too.
+- APPROX: the game's M (select everything on screen) has no key here, as M trains a unit.
+
+Rig upgrades for players (2026-11-10), traced from the game's upgradeRig (qX / wme): the Sim (and the
+bot) already had them; now a player can buy them. Ctrl+T over your rig upgrades its pump (120 oil,
+pumps 1.5x), Ctrl+Shift+T its tank (60 oil, holds 2x). Each once per rig, paid up front; refused with
+"Already upgraded" or "Not enough oil". APPROX: the game uses buttons on the rig's panel; these keys
+are PROVISIONAL.
+
+Withdrawing a garrison (2026-11-10), traced from the game's withdraw ($I / Bwe / _m): Shift+H on a
+town you hold brings everyone inside out (the Sim also takes a count, last in first out, or one unit
+by id). Each steps out at a random point on the rim (radius + 0.5), or the nearest free spot to it.
+APPROX: the random angle is not the game's sequence.
+
+Cut supply routes and rerouting (2026-11-10), traced from the game's wh / OGe / jm / BGe / FGe / EGe;
+replaces "a cut redoes the rig routes at once":
+- A road cut no longer wipes the rig routes over it. The next route check finds the route crosses a cell
+  trucks can't use: it is marked cut, no trucks leave on it (loading trucks wait, Ordering trucks says
+  no route), and it can't be changed for convoys.rerouteCutSec (45 s). Trucks already on the road find
+  their own way round as before.
+- After that a bot's rig re-routes by itself (then locked convoys.rerouteAgainSec, 8 s). A player's
+  route stays cut until they pick a new one: Alt+T over the rig switches to the next of up to
+  convoys.routeChoices (3) different ways home (each further search costs cells already used x
+  routePenalty 4, and a way sharing more than routeOverlap 0.8 of its cells with a listed one is
+  dropped). Alt+T also works on an uncut route to pick another way (hand-picked; kept when the depots
+  change unless a new depot is nearer than it). An alert says when a route is cut.
+- Alt+T steps through every way on offer, like the game's haulChoices list: each route to the HQ,
+  then the best route to each working refinery of yours (the game's haulTo); a notice names the town.
+- Bots are marked when Bot.new runs (the game's !isPlayer); a player taking over side 2 clears it.
+
+Rig damage (2026-11-10), traced from the game's uD / dX / Lqe / Sqe / Tqe / Aqe and the bot's kat:
+- Rigs have rigs.damage.hp (800). A shell, rocket or bomb landing within rigs.damage.hitCells hits them
+  for its damage x blastShare; a rocket's splash reaches rigs out to its radius beyond that at 1 down to
+  a half; a bomb truck hits enemy rigs within its blast past hitCells with the building falloff. A side's
+  own blasts spare its own rigs (neutral rigs can be hit).
+- At 0 hp the rig is wrecked: its tank empties, it pumps nothing, its trucks drive home and no trucks
+  can be sent ("not working"). The owner gets an alert while it is shelled (every 30 s at most), when
+  it is wrecked and when it is repaired; the attacker hears it was knocked out.
+- Engineers repair rigs (right click it with engineers selected): rigs.damage.hp x crew / repairSec
+  (60 s for one engineer) from rigs.radius + engineers.reach away; a wreck works again once whole.
+- The bot sends its nearest idle engineer to its damaged rigs (wrecked first, then the lowest hp) after
+  its other repairs, and its rocket launchers no longer target an enemy wreck it has seen lately.
+- Rigs show DAMAGED with a bar, or DESTROYED. Not ported: blowouts (map events, off in a skirmish).
+- Stopping a unit now also ends its repair or road job (the game's clearOrders).
+
+Bot: mending and escorts (2026-11-10), traced from the game's hat and the end of sat:
+- Every bots.mendEverySec (6 s) hurt units below mendBelow (75%) of their hp, idle or moving and armed,
+  quiet for mendQuietSec, with no armed enemy in sight and not on the job their order sent them to,
+  walk to the nearest of the bot's secured towns that heals their kind (repairMen / repairVehicles),
+  with no known enemy within twice its radius, within mendReach x cellScale; at most mendShare (35%) of
+  the army at once. One that comes under fire or can't get there is left alone for mendRetrySec (45 s);
+  healed ones go back to the pool. Units being mended are not used for other orders.
+- A truck of the bot held up by the enemy for bots.truckHeldSec (6 s) (the one from the rig with the
+  most trucks) gets enough units sent to it to beat what the bot knows is near (convoys.lookAhead x 1.5).
+
+Bot: bridges (2026-11-10), traced from the game's _h / v7e / kUe / nat / Yst / Xst / Kst / YQ:
+- Bridge spans are the 4-way groups of road (or cut road) cells on ground units can't stand on; a span
+  with a cut cell is blown. The bot's bridges are those on its rig routes or within bridgeNearCells x
+  cellScale (+ sqrt of the span size) of its territory.
+- Guards: with at least bridgeGuardMinArmy (6) units, the bridgeGuardSpans (2) nearest the HQ each get
+  bridgeGuards (1) unit posted at the span's end nearest the HQ (at most bridgeGuardShare of the army);
+  an idle guard more than 3 x cellScale off its post walks back. Guards are kept out of other orders.
+- Blowing: before its other engineer jobs, a bot with persona defence >= bridgeBlowMinDefence (balanced
+  and turtle), at most every bridgeBlowEverySec (240 s) and with chance defence x bridgeBlowChance,
+  sends its nearest idle engineer to blow a span of its own when a known enemy force worth
+  bridgeThreatWorth (300) is within bridgeThreatCells x cellScale and further from the HQ than the span:
+  the charge goes on the span's road cell nearest the HQ.
+- It leaves a bridge it blew itself unmended for bridgeHoldSec (150 s), then while such a force is still
+  near, and mends it after bridgeHoldMaxSec (480 s) in any case.
+- Stopping a unit now also ends a sabotage job.
+
 ## Next
-1. You run Studio tests B18–B56 (defences, mortar, artillery, scout) and commit.
+1. You run Studio tests B18–B76 (defences, mortar, artillery, scout) and commit.
 2. Done since: engineers' repair, vehicle steering, the bot's HQ push, shared group routes,
    separation, the 100/250/500-unit performance check (`lune run tools/perf.luau 250`) and the
    convoy rules (spacing, town/bridge/off-road pace, held and stranded trucks), airfield drops and
-   the capital's paratroopers and bomb truck, the recon drone and SAM sites, rocket artillery, the artillery base, the night operations tower, veterancy, IFV transport, the command truck, the opening drop, cancel and demolish, armies and minefields, the republic missile launcher, the opening deck, trenches parts 1-2.
+   the capital's paratroopers and bomb truck, the recon drone and SAM sites, rocket artillery, the artillery base, the night operations tower, veterancy, IFV transport, the command truck, the opening drop, cancel and demolish, armies and minefields, the republic missile launcher, the opening deck, trenches parts 1-4.
 3. Next: more of the game's land units and buildings that the slice still passes over.
 
 ## Open questions

@@ -134,6 +134,15 @@ function StructureRenderer.apply(tick: number, structures: { any })
 				v.bar.Size = UDim2.fromScale(math.clamp(capProgress, 0, 1), 1)
 				v.bar.BackgroundColor3 = SIDE_COLOR[capSide] or Color3.new(1, 1, 1)
 				v.text.Text = "capturing"
+			elseif hp and maxHp and hp <= 0 then
+				-- wrecked: pumps nothing until engineers repair it
+				v.barBack.Visible = false
+				v.text.Text = "DESTROYED"
+			elseif hp and maxHp and hp < maxHp then
+				v.barBack.Visible = true
+				v.bar.Size = UDim2.fromScale(math.clamp(hp / maxHp, 0, 1), 1)
+				v.bar.BackgroundColor3 = Color3.fromRGB(220, 120, 60)
+				v.text.Text = if side == 0 then "DAMAGED" else `DAMAGED · oil {math.floor(store)}`
 			else
 				v.barBack.Visible = false
 				v.text.Text = if side == 0 then "" else `oil {math.floor(store)}`

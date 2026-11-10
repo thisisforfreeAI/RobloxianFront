@@ -18,8 +18,10 @@ Protocol.BUILDABLE = { barracks = true, factory = true, bunker = true, atgun = t
 
 Protocol.MAX_UNITS_PER_ORDER = 64
 
-export type MoveIntent = { kind: "move", unitIds: { number }, x: number, y: number }
+export type MoveIntent = { kind: "move", unitIds: { number }, x: number, y: number, direct: boolean? } -- direct: straight over the land
 export type StopIntent = { kind: "stop", unitIds: { number } }
+export type WaypointIntent = { kind: "waypoint", unitIds: { number }, x: number, y: number, direct: boolean? } -- add a stop after the current move
+export type RetreatIntent = { kind: "retreat", unitIds: { number } } -- fall back to the nearest HQ
 export type AttackIntent = { kind: "attack", unitIds: { number }, targetId: number }
 export type ProduceIntent = { kind: "produce", item: string, structureId: number? } -- no id = the HQ
 export type BuildIntent = { kind: "build", structure: string, x: number, y: number } -- footprint centre cell
@@ -29,7 +31,8 @@ export type ForwardIntent = { kind: "forward", cityId: number, item: string } --
 export type RepairIntent = { kind: "repair", unitIds: { number }, targetId: number } -- engineers mend an own building
 export type RoadRepairIntent = { kind: "roadRepair", unitIds: { number }, x: number, y: number } -- engineers mend a road cut or worn road at a point
 export type SabotageIntent = { kind: "sabotage", unitIds: { number }, x: number, y: number } -- engineers plant a charge on a road
-export type TruckIntent = { kind: "truck", rigId: number } -- send an idle truck to a rig, or buy one
+export type UpgradeRigIntent = { kind: "upgradeRig", rigId: number, upgrade: string } -- "pump" or "tank" (the game's upgradeRig)
+export type TruckIntent = { kind: "truck", rigId: number, release: boolean?, reroute: boolean? } -- send an idle truck to a rig, or buy one (release: take one off it; reroute: its trucks take the next route on offer)
 export type PowerIntent = { kind: "power", power: string, x: number, y: number } -- paratroopers, bomb truck, an airfield drop, the recon drone, or an artillery base barrage / flares at a point
 export type BarrageIntent = { kind: "barrage", unitIds: { number }, x: number, y: number } -- rocket artillery fires on a point
 export type DetonateIntent = { kind: "detonate", unitIds: { number } } -- blow up selected bomb trucks
@@ -40,10 +43,14 @@ export type DropReadyIntent = { kind: "dropReady" } -- done picking
 export type CancelQueueIntent = { kind: "cancelQueue", structureId: number?, index: number } -- call off a queued unit (index 0 = the last; no id = the HQ)
 export type DemolishIntent = { kind: "demolish", structureId: number } -- cancel a building going up, or pull a finished one down
 export type DigIntent = { kind: "dig", unitIds: { number }, pts: { number }, trench: string? } -- engineers dig a trench along a line
-export type FillIntent = { kind: "fill", unitIds: { number }, x: number, y: number } -- engineers fill a gap in a trench
+export type FillIntent = { kind: "fill" | "mend" | "man", unitIds: { number }, x: number, y: number } -- engineers fill a gap in a trench, or mend shell damage
 export type NightOpsIntent = { kind: "nightOps", on: boolean } -- switch your night operations towers on or off
+export type RefineryIntent = { kind: "refinery", x: number, y: number } -- build a refinery in the town at the point
+export type RallyIntent = { kind: "rally", structureId: number?, x: number?, y: number? } -- set a producer's rally point (no point = clear it; no id = the HQ)
+export type WithdrawIntent = { kind: "withdraw", x: number, y: number, count: number? } -- bring units out of the held settlement at the point (all when no count)
+export type RoadSignIntent = { kind: "roadSign", x: number, y: number } -- put up (or take down) a road-closed sign for your trucks
 export type LayMinesIntent = { kind: "layMines", pts: { number } } -- a minefield along a stroke: x1, y1, x2, y2, ... in cells
-export type Intent = MoveIntent | StopIntent | AttackIntent | ProduceIntent | TruckIntent | BuildIntent | ReconIntent | GarrisonIntent | RepairIntent | ForwardIntent | RoadRepairIntent | SabotageIntent | PowerIntent | DetonateIntent | BarrageIntent | BoardIntent | UnloadIntent | DropPickIntent | DropReadyIntent | CancelQueueIntent | DemolishIntent | LayMinesIntent | NightOpsIntent | DigIntent | FillIntent
+export type Intent = MoveIntent | StopIntent | AttackIntent | ProduceIntent | TruckIntent | BuildIntent | ReconIntent | GarrisonIntent | RepairIntent | ForwardIntent | RoadRepairIntent | SabotageIntent | PowerIntent | DetonateIntent | BarrageIntent | BoardIntent | UnloadIntent | DropPickIntent | DropReadyIntent | CancelQueueIntent | DemolishIntent | LayMinesIntent | NightOpsIntent | DigIntent | FillIntent | RoadSignIntent | RefineryIntent | RallyIntent | WaypointIntent | RetreatIntent | WithdrawIntent
 
 local function finite(n: any): boolean
 	return type(n) == "number" and n == n and n ~= math.huge and n ~= -math.huge
@@ -129,6 +136,39 @@ function Protocol.parse(raw: any, mapWidth: number, mapHeight: number): (Intent?
 	if raw.kind == "dropReady" then
 		return { kind = "dropReady" } :: any, nil
 	end
+	if raw.kind == "refinery" then
+		if not finite(raw.x) or not finite(raw.y) or raw.x < 0 or raw.y < 0 or raw.x >= mapWidth or raw.y >= mapHeight then
+			return nil, "point outside the map"
+		end
+		return { kind = "refinery", x = raw.x, y = raw.y } :: any, nil
+	end
+	if raw.kind == "rally" then
+		if raw.structureId ~= nil and (not finite(raw.structureId) or raw.structureId % 1 ~= 0) then
+			return nil, "structureId must be an integer"
+		end
+		if raw.x == nil and raw.y == nil then
+			return { kind = "rally", structureId = raw.structureId } :: any, nil
+		end
+		if not finite(raw.x) or not finite(raw.y) or raw.x < 0 or raw.y < 0 or raw.x >= mapWidth or raw.y >= mapHeight then
+			return nil, "point outside the map"
+		end
+		return { kind = "rally", structureId = raw.structureId, x = raw.x, y = raw.y } :: any, nil
+	end
+	if raw.kind == "withdraw" then
+		if not finite(raw.x) or not finite(raw.y) or raw.x < 0 or raw.y < 0 or raw.x >= mapWidth or raw.y >= mapHeight then
+			return nil, "point outside the map"
+		end
+		if raw.count ~= nil and (not finite(raw.count) or raw.count % 1 ~= 0 or raw.count < 1) then
+			return nil, "count must be a whole number of at least 1"
+		end
+		return { kind = "withdraw", x = raw.x, y = raw.y, count = raw.count } :: any, nil
+	end
+	if raw.kind == "roadSign" then
+		if not finite(raw.x) or not finite(raw.y) or raw.x < 0 or raw.y < 0 or raw.x >= mapWidth or raw.y >= mapHeight then
+			return nil, "sign outside the map"
+		end
+		return { kind = "roadSign", x = raw.x, y = raw.y } :: any, nil
+	end
 	if raw.kind == "dropPick" then
 		if not finite(raw.x) or not finite(raw.y) or raw.x < 0 or raw.y < 0 or raw.x >= mapWidth or raw.y >= mapHeight then
 			return nil, "landing outside the map"
@@ -165,24 +205,41 @@ function Protocol.parse(raw: any, mapWidth: number, mapHeight: number): (Intent?
 		end
 		return { kind = "demolish", structureId = raw.structureId } :: any, nil
 	end
+	if raw.kind == "upgradeRig" then
+		if not finite(raw.rigId) or raw.rigId % 1 ~= 0 then
+			return nil, "rigId must be an integer"
+		end
+		if raw.upgrade ~= "pump" and raw.upgrade ~= "tank" then
+			return nil, "upgrade must be pump or tank"
+		end
+		return { kind = "upgradeRig", rigId = raw.rigId, upgrade = raw.upgrade } :: any, nil
+	end
 	if raw.kind == "truck" then
 		if not finite(raw.rigId) or raw.rigId % 1 ~= 0 then
 			return nil, "rigId must be an integer"
 		end
-		return { kind = "truck", rigId = raw.rigId }, nil
+		if raw.release ~= nil and type(raw.release) ~= "boolean" or raw.reroute ~= nil and type(raw.reroute) ~= "boolean" then
+			return nil, "release and reroute must be true or false"
+		end
+		return { kind = "truck", rigId = raw.rigId, release = raw.release, reroute = raw.reroute }, nil
 	end
 	local ids, err = readIds(raw.unitIds)
 	if not ids then
 		return nil, err
 	end
-	if raw.kind == "move" then
+	if raw.kind == "move" or raw.kind == "waypoint" then
 		if not finite(raw.x) or not finite(raw.y) then
 			return nil, "target must be numbers"
 		end
 		if raw.x < 0 or raw.y < 0 or raw.x >= mapWidth or raw.y >= mapHeight then
 			return nil, "target outside the map"
 		end
-		return { kind = "move", unitIds = ids, x = raw.x, y = raw.y }, nil
+		if raw.direct ~= nil and type(raw.direct) ~= "boolean" then
+			return nil, "direct must be a boolean"
+		end
+		return { kind = raw.kind, unitIds = ids, x = raw.x, y = raw.y, direct = raw.direct == true } :: any, nil
+	elseif raw.kind == "retreat" then
+		return { kind = "retreat", unitIds = ids } :: any, nil
 	elseif raw.kind == "stop" then
 		return { kind = "stop", unitIds = ids }, nil
 	elseif raw.kind == "recon" then
@@ -207,11 +264,11 @@ function Protocol.parse(raw: any, mapWidth: number, mapHeight: number): (Intent?
 			return nil, "unknown trench kind"
 		end
 		return { kind = "dig", unitIds = ids, pts = out, trench = tk } :: any, nil
-	elseif raw.kind == "fill" then
+	elseif raw.kind == "fill" or raw.kind == "mend" or raw.kind == "man" then
 		if not finite(raw.x) or not finite(raw.y) or raw.x < 0 or raw.y < 0 or raw.x >= mapWidth or raw.y >= mapHeight then
 			return nil, "target outside the map"
 		end
-		return { kind = "fill", unitIds = ids, x = raw.x, y = raw.y } :: any, nil
+		return { kind = raw.kind, unitIds = ids, x = raw.x, y = raw.y } :: any, nil
 	elseif raw.kind == "unload" then
 		return { kind = "unload", unitIds = ids } :: any, nil
 	elseif raw.kind == "board" then

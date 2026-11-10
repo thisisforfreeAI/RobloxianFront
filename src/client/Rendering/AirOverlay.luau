@@ -200,4 +200,57 @@ function AirOverlay.applyTrenches(list: { any }, mapWidth: number)
 	end
 end
 
+local signPostPool: { Part } = {}
+local signCellPool: { Part } = {}
+-- your road signs: { { postCell, { shut cells } }, ... }: a red post and a faint red tint on the road
+-- it shuts. PLACEHOLDER visuals.
+function AirOverlay.applySigns(list: { any }, mapWidth: number)
+	local np, nc = 0, 0
+	for _, sg in list do
+		np += 1
+		local c = sg[1]
+		local p = pooled(signPostPool, np, Color3.fromRGB(220, 50, 40), Vector3.new(0.35 * S, 1.2, 0.35 * S))
+		p.CFrame = CFrame.new(World.toWorld(c % mapWidth + 0.5, c // mapWidth + 0.5, 0.9))
+		for _, q in sg[2] do
+			nc += 1
+			local t = pooled(signCellPool, nc, Color3.fromRGB(220, 60, 50), Vector3.new(0.9 * S, 0.06, 0.9 * S))
+			t.Transparency = 0.75
+			t.CFrame = CFrame.new(World.toWorld(q % mapWidth + 0.5, q // mapWidth + 0.5, 0.42))
+		end
+	end
+	for i = np + 1, #signPostPool do
+		signPostPool[i].Transparency = 1
+	end
+	for i = nc + 1, #signCellPool do
+		signCellPool[i].Transparency = 1
+	end
+end
+
+local refineryPool: { Part } = {}
+-- refineries you can see: { { cell, owner, built } }: a 3x3 block (see-through while going up).
+-- PLACEHOLDER visuals.
+function AirOverlay.applyRefineries(list: { any }, mapWidth: number)
+	for i, rf in list do
+		local p = pooled(refineryPool, i, if rf[2] == mySide then Color3.fromRGB(90, 140, 200) else Color3.fromRGB(200, 90, 80), Vector3.new(2.8 * S, 1.6, 2.8 * S))
+		p.Transparency = if rf[3] < 1 then 0.6 else 0
+		p.CFrame = CFrame.new(World.toWorld(rf[1] % mapWidth + 0.5, rf[1] // mapWidth + 0.5, 1))
+	end
+	for i = #list + 1, #refineryPool do
+		refineryPool[i].Transparency = 1
+	end
+end
+
+local rallyPool: { Part } = {}
+-- your producers' set rally points: { { x, y } }: a small flag post. PLACEHOLDER visuals.
+function AirOverlay.applyRallies(list: { any })
+	for i, rp in list do
+		local p = pooled(rallyPool, i, Color3.fromRGB(120, 230, 140), Vector3.new(0.25 * S, 2.2, 0.25 * S))
+		p.Transparency = 0.15
+		p.CFrame = CFrame.new(World.toWorld(rp[1], rp[2], 1.1))
+	end
+	for i = #list + 1, #rallyPool do
+		rallyPool[i].Transparency = 1
+	end
+end
+
 return AirOverlay

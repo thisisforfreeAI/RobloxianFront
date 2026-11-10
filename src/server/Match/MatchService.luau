@@ -61,6 +61,7 @@ local function updateBots()
 		print(`[Match] side 2 is played by the {BOT_PERSONA} bot ({BOT_LEVEL}) until a second player joins`)
 	elseif taken[2] and bots[2] then
 		bots[2] = nil
+		sim.sides[2].bot = nil
 		sim.sides[2].oilMult = 1 -- a player's nation has no difficulty or persona oil edge
 		print("[Match] side 2 handed from the bot to a player")
 	end
@@ -79,9 +80,17 @@ local function onIntent(player: Player, raw: any)
 	local i = intent :: any
 	local refused: { number } = {}
 	if i.kind == "move" then
-		refused = sim.orderMove(side, i.unitIds, i.x, i.y)
+		refused = sim.orderMove(side, i.unitIds, i.x, i.y, i.direct)
 	elseif i.kind == "stop" then
 		refused = sim.orderStop(side, i.unitIds)
+	elseif i.kind == "waypoint" then
+		local n, why = sim.queueMove(side, i.unitIds, i.x, i.y, i.direct)
+		if not n then
+			Net.sendState(player, { notice = why })
+		end
+	elseif i.kind == "retreat" then
+		local n, why = sim.orderRetreat(side, i.unitIds)
+		Net.sendState(player, { notice = if n then "retreating" else (if why == "blocked" then "noHq" else why) })
 	elseif i.kind == "attack" then
 		local why
 		refused, why = sim.orderAttack(side, i.unitIds, i.targetId)
@@ -235,8 +244,61 @@ local function onIntent(player: Player, raw: any)
 		if n == 0 then
 			Net.sendState(player, { notice = why })
 		end
-	elseif i.kind == "fill" then
-		local n, why = sim.orderFill(side, i.unitIds, math.floor(i.y) * sim.roads.width + math.floor(i.x))
+	elseif i.kind == "refinery" then
+		-- the town at (or nearest) the point, within its radius
+		local best, bd = nil, math.huge
+		for _, st in sim.settlements do
+			local d = math.sqrt((st.x - i.x) ^ 2 + (st.y - i.y) ^ 2)
+			if d <= math.max(st.radius, st.urbanR or 0) + 3 and d < bd then
+				best, bd = st, d
+			end
+		end
+		if not best then
+			Net.sendState(player, { notice = "noTown" })
+		else
+			local c, why = sim.buildRefinery(side, best.id)
+			Net.sendState(player, { notice = if c then "refineryStarted" else why })
+		end
+	elseif i.kind == "rally" then
+		local id = i.structureId or sim.sides[side].hqId
+		local why = if i.x then sim.setRally(side, id, i.x, i.y) else sim.clearRally(side, id)
+		Net.sendState(player, { notice = why or (if i.x then "rallySet" else "rallyCleared") })
+	elseif i.kind == "withdraw" then
+		-- the settlement whose centre is nearest the point, within twice its radius
+		local best, bd = nil, math.huge
+		for _, st in sim.settlements do
+			local d = (st.x - i.x) ^ 2 + (st.y - i.y) ^ 2
+			if d <= (st.radius * 2) ^ 2 and d < bd then
+				best, bd = st, d
+			end
+		end
+		if not best then
+			Net.sendState(player, { notice = "noSettlement" })
+		else
+			local n, why = sim.withdraw(side, best.id, i.count)
+			Net.sendState(player, { notice = if n then "withdrawn" else why })
+		end
+	elseif i.kind == "roadSign" then
+		-- toggles: on one of your signs it comes down, elsewhere one goes up
+		local cell = math.floor(i.y) * sim.roads.width + math.floor(i.x)
+		local here = sim.roadSignAt(side, cell)
+		if here then
+			sim.removeRoadSign(side, here.id)
+			Net.sendState(player, { notice = "signRemoved" })
+		else
+			local id, why = sim.placeRoadSign(side, cell)
+			Net.sendState(player, { notice = if id then "signPlaced" else why })
+		end
+	elseif i.kind == "fill" or i.kind == "mend" or i.kind == "man" then
+		local cell = math.floor(i.y) * sim.roads.width + math.floor(i.x)
+		local n, why
+		if i.kind == "fill" then
+			n, why = sim.orderFill(side, i.unitIds, cell)
+		elseif i.kind == "man" then
+			n, why = sim.orderMan(side, i.unitIds, cell)
+		else
+			n, why = sim.orderMend(side, i.unitIds, cell)
+		end
 		if n == 0 then
 			Net.sendState(player, { notice = why })
 		end
@@ -309,6 +371,39 @@ local function onIntent(player: Player, raw: any)
 		elseif not deployed and why then
 			Net.sendState(player, { notice = why })
 		end
+	elseif i.kind == "upgradeRig" then
+		local ok, why = sim.upgradeRig(side, i.rigId, i.upgrade)
+		Net.sendState(player, { notice = if ok then (if i.upgrade == "pump" then "pumpUpgraded" else "tankUpgraded") else why })
+	elseif i.kind == "truck" and i.reroute then
+		-- the next of the ways on offer (the game's haulChoices): each route to the HQ, then each working
+		-- refinery town; the first when the current one is not among them (or is cut)
+		local rig = sim.entities[i.rigId]
+		local choices = if rig and rig.kind == "rig" and rig.side == side then sim.haulChoices(rig) else {}
+		local pick = choices[1]
+		if rig and rig.route and not rig.routeCutAt then
+			for k, c in choices do
+				if c.now then
+					pick = choices[k % #choices + 1]
+					break
+				end
+			end
+		end
+		if not pick then
+			Net.sendState(player, { notice = if rig and rig.kind == "rig" and rig.side == side then "noWayRound" else "notOwned" })
+		else
+			local n, why = sim.reroute(side, i.rigId, pick.road, if pick.dest < 0 then 0 else pick.dest)
+			if n then
+				local town = if pick.dest >= 0 then sim.settlements[pick.dest] else nil
+				Net.sendState(player, { notice = if town then `Trucks haul to the refinery in {town.name}` else `rerouted{pick.road}` })
+			elseif why == "cooldown" and rig then
+				Net.sendState(player, { notice = "rerouteWait", wait = math.ceil(sim.rerouteReadyIn(rig)) })
+			else
+				Net.sendState(player, { notice = if why == "noRoute" then "noWayRound" else why })
+			end
+		end
+	elseif i.kind == "truck" and i.release then
+		local id, why = sim.releaseTruck(side, i.rigId)
+		Net.sendState(player, { notice = if id then "truckReleased" else why })
 	elseif i.kind == "truck" then
 		local ok, why = sim.orderTruck(side, i.rigId)
 		if not ok then
@@ -359,7 +454,7 @@ local function unitStatus(e: any): number
 		return 9
 	end
 	if e.trenchJob then
-		return if e.trenchJob.kind == "dig" then 10 else 11
+		return if e.trenchJob.kind == "dig" then 10 elseif e.trenchJob.kind == "mend" then 12 else 11
 	end
 	if e.repairId or e.roadJob then
 		return 5
@@ -384,6 +479,9 @@ local function unitStatus(e: any): number
 		if (e.still or 0) < setup then
 			return 3
 		end
+	end
+	if e.inTrench then
+		return 13
 	end
 	return 0
 end
@@ -515,6 +613,15 @@ local function alertsFor(ev: any)
 	end
 	if t == "rigUnderAttack" then
 		alertSide(ev.side, `{rigName(ev.id)} is under attack`)
+	elseif t == "rigUnderFire" then
+		alertSide(ev.side, `{rigName(ev.id)} is being shelled`)
+	elseif t == "rigDestroyed" then
+		alertSide(ev.side, `{rigName(ev.id)} destroyed: it pumps nothing until engineers repair it (right click it with engineers)`)
+		if ev.by and ev.by > 0 and ev.by ~= ev.side then
+			alertSide(ev.by, `{rigName(ev.id)} knocked out`)
+		end
+	elseif t == "rigRepaired" then
+		alertSide(ev.side, `{rigName(ev.id)} repaired: pumping again`)
 	elseif t == "rigCaptureStarted" then
 		alertSide(ev.side, `{rigName(ev.id)} is being captured`)
 	elseif t == "rigCaptured" then
@@ -546,6 +653,16 @@ local function alertsFor(ev: any)
 		alertSide(ev.side, `Trench dug: {ev.n} cells`)
 	elseif t == "trenchStalled" then
 		alertSide(ev.side, "Trench work stopped: not enough oil")
+	elseif t == "trenchBlown" then
+		alertSide(ev.side, "Charge blown: the trench is open there")
+	elseif t == "trenchBreached" then
+		alertSide(ev.side, "The enemy blew a gap in your trench")
+	elseif t == "trenchBankBroken" then
+		alertSide(ev.side, "A charge broke a trench's bank: water is pouring in")
+	elseif t == "trenchCaved" then
+		alertSide(ev.side, "Shells caved in part of your trench")
+	elseif t == "trenchMended" then
+		alertSide(ev.side, "Trench mended")
 	elseif t == "trenchFlooded" then
 		alertSide(ev.side, "Water is seeping into your trench")
 	elseif t == "trenchClosed" then
@@ -599,6 +716,16 @@ local function alertsFor(ev: any)
 		alertSide(ev.side, `{townOf(ev.id)} taken`)
 	elseif t == "cityLost" then
 		alertSide(ev.side, `{townOf(ev.id)} lost`)
+	elseif t == "refineryBuilt" then
+		alertSide(ev.side, `Refinery in {ev.name} finished`)
+	elseif t == "refineryWorking" then
+		alertSide(ev.side, `Refinery in {ev.name} working again`)
+	elseif t == "refineryTownLost" then
+		alertSide(ev.side, `Refinery in {ev.name} stopped: we no longer hold the town`)
+	elseif t == "refineryDestroyed" then
+		alertSide(ev.side, `Refinery in {ev.name} destroyed`)
+	elseif t == "refineryHaulEnded" then
+		alertSide(ev.side, `Trucks no longer haul to the refinery in {ev.name}`)
 	elseif t == "settlementDestroyed" then
 		alertSide(ev.side, `{townOf(ev.id)} lies in ruins`)
 	elseif t == "built" then
@@ -611,6 +738,8 @@ local function alertsFor(ev: any)
 		alertSide(ev.side, `{nameOf(ev.kind)} destroyed`)
 	elseif t == "repaired" then
 		alertSide(ev.side, `{nameOf(ev.kind)} repaired`)
+	elseif t == "routeCut" then
+		alertSide(ev.side, `Supply route from {ev.name or "a rig"} cut: no trucks leave. Reroute it with Alt+T over the rig once 45 s have passed`)
 	elseif t == "roadCut" or t == "bridgeDown" then
 		local text = if t == "bridgeDown" then "A bridge is down" else "A road was cut"
 		alertSide(ev.side, text)
@@ -620,7 +749,9 @@ local function alertsFor(ev: any)
 			end
 		end
 	elseif t == "roadSabotaged" then
-		alertSide(ev.side, "Your supply road was sabotaged")
+		alertSide(ev.side, "Your supply road was sabotaged: you can see along it for a while")
+	elseif t == "saboteursSpotted" then
+		alertSide(ev.side, "Enemy saboteurs spotted planting a charge")
 	elseif t == "roadRepaired" then
 		alertSide(ev.side, "Road repaired")
 	elseif t == "roadMended" then
@@ -755,19 +886,19 @@ local function privateState()
 				end
 			end
 			-- trenches this side can see: owner, then cell, look pairs. Looks: 0 planned (own only), 1 ditch,
-			-- 2 flooded, 5 wire by a road, 6 fire trench, 7 traps, 8 wire belt, 9 caved / flattened
+			-- 2 flooded, 5 wire by a road, 6 fire trench, 7 traps, 8 wire belt, 9 caved / flattened / smashed
 			local trenches = {}
 			for _, t in sim.trenches do
 				local row = { t.owner }
 				for k, c in t.cells do
 					local st = t.state[k]
-					local shown = st == sim.TRENCH.dug or st == sim.TRENCH.wire or st == sim.TRENCH.wet or (st == sim.TRENCH.plan and t.owner == side)
+					local shown = st == sim.TRENCH.dug or st == sim.TRENCH.wire or st == sim.TRENCH.wet or st == sim.TRENCH.smashed or (st == sim.TRENCH.plan and t.owner == side)
 					if shown and (t.owner == side or not viewer or viewer.grid[c + 1] == 2 or (viewer.trenchSeen and viewer.trenchSeen[c])) then
 						if t.owner ~= side and viewer then
 							viewer.trenchSeen = viewer.trenchSeen or {}
 							viewer.trenchSeen[c] = true
 						end
-						local look = st
+						local look = if st == sim.TRENCH.smashed then 9 else st
 						if st == sim.TRENCH.dug then
 							local caved = (t.damage and t.damage[k] or 0) >= 1
 							look = if caved then 9 elseif t.kind == "fire" then 6 elseif t.kind == "traps" then 7 elseif t.kind == "wire" then 8 else 1
@@ -781,6 +912,14 @@ local function privateState()
 				end
 			end
 			payload.trenches = trenches
+			-- your road signs: post cell, then the cells they shut
+			local signs = {}
+			for _, sg in sim.roadSigns do
+				if sg.side == side then
+					table.insert(signs, { sg.cell, sg.cells })
+				end
+			end
+			payload.signs = signs
 			payload.time = sim.time
 			-- the opening drop: phase, seconds left, own pick (and whether a road there reaches the rigs);
 			-- while it runs the planes fly on the drop clock
@@ -871,6 +1010,23 @@ local function privateState()
 				table.insert(cities, { st.id, seenOwners[st.id] or 0, 0, 0, 1, 0, 0, st.trait or "", 0, -1, 0 })
 			end
 		end
+		-- refineries you can see: cell, owner, built (0..1)
+		local refineries = {}
+		for _, st in sim.settlements do
+			local ref = st.refinery
+			if ref and (ref.owner == side or not viewer or viewer.visibleAt(ref.cell % sim.roads.width + 0.5, ref.cell // sim.roads.width + 0.5)) then
+				table.insert(refineries, { ref.cell, ref.owner, math.floor(ref.built * 100) / 100 })
+			end
+		end
+		payload.refineries = refineries
+		-- your producers' set rally points
+		local rallies = {}
+		for _, e in sim.list do
+			if e.alive and e.side == side and e.rally then
+				table.insert(rallies, { math.floor(e.rally.x * 10) / 10, math.floor(e.rally.y * 10) / 10 })
+			end
+		end
+		payload.rallies = rallies
 		local ck = HttpService:JSONEncode(cities)
 		if sentCities[player] ~= ck then
 			sentCities[player] = ck

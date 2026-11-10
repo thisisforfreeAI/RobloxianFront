@@ -52,7 +52,8 @@ function Fog.newViewer(sim: any, side: number)
 		self.seq = (self.seq or 0) + 1
 		local seq = self.seq
 		for _, e in sim.list do
-			if e.alive and e.cat == "unit" and e.side ~= side and e.side > 0 and not e.inside then
+			if e.alive and e.cat == "unit" and e.side ~= side and e.side > 0 and not e.inside
+				and not (e.inTrench and sim.trenchHidden and sim.trenchHidden(e, side)) then
 				local c = sim.roads.cellAt(e.x, e.y)
 				if c >= 0 and grid[c + 1] == 2 then
 					local m = self.unitIntel[e.id]
@@ -99,7 +100,8 @@ function Fog.newViewer(sim: any, side: number)
 	end
 
 	function self.unitVisible(e: any): boolean
-		return e.side == side or self.visibleAt(e.x, e.y)
+		-- the game's lv: troops quiet in a trench stay hidden with nothing of ours close by
+		return e.side == side or (self.visibleAt(e.x, e.y) and not (e.inTrench and sim.trenchHidden and sim.trenchHidden(e, side)))
 	end
 
 	-- "seen", "stale" or "hidden"

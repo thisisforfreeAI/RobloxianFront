@@ -128,7 +128,7 @@ local NOTICE_TEXT: { [string]: string } = {
 	onRoad = "Too close to a road",
 	onRig = "Too close to an oil rig",
 	nearEnemy = "Too close to the enemy",
-	terrain = "Can't build on that ground",
+	terrain = "Can't use that ground",
 	sealsWay = "Would block the way",
 	notSecured = "Needs a full garrison first",
 	notHeld = "You don't hold this town",
@@ -163,6 +163,38 @@ local NOTICE_TEXT: { [string]: string } = {
 	lineShort = "Too short: drag a longer line for the trench",
 	badLine = "Engineers can't dig there",
 	noTrench = "No trench there",
+	notCaved = "Nothing to mend there",
+	signPlaced = "Road sign up: your trucks keep off this stretch",
+	refineryStarted = "Refinery going up: nearby rigs will unload there",
+	noTown = "Put the cursor on a town you hold",
+	notHeld = "You don't hold that town",
+	refineryHere = "You already have a refinery there",
+	townRuined = "That town lies in ruins",
+	signRemoved = "Road sign taken down",
+	rallySet = "Rally point set: new units gather there",
+	rallyCleared = "Rally point cleared",
+	withdrawn = "Troops coming out",
+	noSettlement = "Put the cursor on a town",
+	garrisonEmpty = "Nobody inside",
+	retreating = "Falling back to HQ",
+	noHq = "No HQ to fall back to",
+	waypointsFull = "No room for more waypoints",
+	pumpUpgraded = "Pump upgraded: the rig pumps 1.5x",
+	tankUpgraded = "Tank upgraded: the rig holds 2x",
+	maxLevel = "Already upgraded",
+	rerouted1 = "Trucks take the main route",
+	rerouted2 = "Trucks take the second route",
+	rerouted3 = "Trucks take the third route",
+	noWayRound = "No way home from that rig",
+	refineryOff = "That refinery isn't working",
+	truckReleased = "Truck called off: it drives home and waits",
+	noTrucks = "No trucks on that rig",
+	signHere = "You already shut this road",
+	limitReached = "No more road signs: take one down first",
+	noRoute = "A sign there would leave a rig with no way home",
+	trenchWet = "That trench is flooded: a charge won't open it",
+	notFireTrench = "No fire trench there (infantry man fire trenches)",
+	noUnits = "Select infantry",
 	cannotDemolish = "That can't be pulled down (the HQ, or already coming down)",
 	tooClose = "Too close for rockets",
 	droneOut = "The drone is already out",
@@ -370,7 +402,7 @@ function Hud.update(state: { [string]: any }, mySide: number)
 		refreshQueue()
 	end
 	if state.notice then
-		notice.Text = NOTICE_TEXT[state.notice] or state.notice
+		notice.Text = if state.notice == "rerouteWait" then `Can't reroute yet: {state.wait or "?"} s` else NOTICE_TEXT[state.notice] or state.notice
 		notice.Visible = true
 		noticeUntil = os.clock() + 2.5
 		task.delay(2.6, function()

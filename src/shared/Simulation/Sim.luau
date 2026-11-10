@@ -96,10 +96,10 @@
 	        nearby when an enemy is in range (seekCover). APPROX: unarmed units are
 	        not slid round enemies, and smoke does not hide chase targets.
 	Engineers (orderRepair below): mend a damaged own structure, footprint + engineers.reach away, at
-	        maxHp x engineers.structureSharePerSec per engineer per second (up to crewMax). Not in the
-	        slice: road wear and cuts, rig blowouts, rail, sabotage, trenches, building with engineers.
+	        maxHp x engineers.structureSharePerSec per engineer per second (up to crewMax); a damaged
+	        rig at rigs.damage.hp x crew / repairSec. Not in the slice: rig blowouts (map events), rail.
 	Fog: visionFor / nightAmount below; the server filters snapshots per side (Shared.Simulation.Fog).
-	Not in the slice: line of sight (the game's only blockers are settlement buildings), weather, veterancy, smoke, rig damage,
+	Not in the slice: line of sight (the game's only blockers are settlement buildings), weather, veterancy, smoke,
 	        settlement traits and damage, refineries, rail, events, SAM, radar, rocket artillery (salvo barrages),
 	        drones, craters, the command truck, power lines and dams.
 ]]
@@ -483,17 +483,6 @@ function Sim.new(deps: Deps)
 	self.rigs = rigList
 
 	local centerX, centerY = W / 2, H / 2
-	-- APPROX: produced units appear production.rallyCells beyond the footprint towards the map centre.
-	local function rallyPoint(hq: Entity, slot: number): (number, number)
-		local dx, dy = centerX - hq.x, centerY - hq.y
-		local d = math.max(1e-6, math.sqrt(dx * dx + dy * dy))
-		local foot = if hq.kind == "hq" then hqFoot else num("production.footprint.facility")
-		local cells = foot + num("production.rallyCells")
-		local px, py = -dy / d, dx / d
-		local spread = ((slot % 5) - 2) * 1.2
-		return hq.x + dx / d * cells + px * spread, hq.y + dy / d * cells + py * spread
-	end
-	self.rallyPoint = rallyPoint
 	-- start infantry: evenly round the HQ at footprint + 1.4 x cellScale, starting at 0.6 rad (game)
 	for _, s in if deps.drop then {} else self.sides do
 		local hq = self.entities[s.hqId]
@@ -1211,29 +1200,666 @@ function Sim.new(deps: Deps)
 
 	local function resetRoute(rig: Entity)
 		rig.route, rig.back, rig.routeHq, rig.routeRetryAt = nil, nil, nil, -math.huge
+		rig.routeCutAt, rig.handRoute, rig.choices = nil, nil, nil -- the game's SD
+		rig.rerouteReadyAt = self.time
+	end
+	-- the game's X_: a settlement's refinery works while it is finished, its builder holds the
+	-- (unruined) town and is still in the game
+	function self.refineryWorks(st: Entity): boolean
+		local ref = st.refinery
+		return ref ~= nil and r:has("refinery.on") and r:flag("refinery.on") and ref.built >= 1 and not st.destroyed and st.owner == ref.owner
+			and alive(ref.owner)
+	end
+	-- the game's k4: where a rig's trucks unload: its refinery while that works, else the HQ
+	function self.depotCell(rig: Entity): number?
+		if rig.refinery then
+			local st = settlements[rig.refinery]
+			if st and st.refinery and st.refinery.owner == rig.side and self.refineryWorks(st) then
+				return st.refinery.cell
+			end
+		end
+		local hq = hqOf(rig.side)
+		return if hq then hq.cell else nil
 	end
 
 	local function updateRoutes()
 		for i, rig in rigList do
 			if rig.side > 0 and rig.connected and self.ticks % 10 == i % 10 then -- APPROX refresh cadence
 				local hq = hqOf(rig.side)
-				if hq and (not rig.route or rig.routeHq ~= hq.cell) and self.time >= rig.routeRetryAt then
-					local path = roads.truckRoute(rig.cell, hq.cell)
+				-- the game's EGe: when the places it could haul to change (HQ, working refineries of
+				-- ours), the rig takes the shortest route among them
+				local places = {}
+				if hq then
+					table.insert(places, { id = nil, cell = hq.cell })
+					for _, st in settlements do
+						if st.refinery and st.refinery.owner == rig.side and self.refineryWorks(st) then
+							table.insert(places, { id = st.id, cell = st.refinery.cell })
+						end
+					end
+				end
+				local key = ""
+				for _, pl in places do
+					key ..= `{pl.cell},`
+				end
+				if hq and rig.haulKey ~= key and self.time >= rig.routeRetryAt then
+					local oldKey = rig.haulKey
+					rig.haulKey = key
+					local best, bestId, bestCell = nil, nil, nil
+					local closed = self.signClosed(rig.side)
+					for _, pl in places do
+						local path = roads.truckRoute(rig.cell, pl.cell, closed)
+						if path and #path > 0 and (not best or #path < #best) then
+							best, bestId, bestCell = path, pl.id, pl.cell
+						end
+					end
+					-- a hand-picked route that still works and still ends at its depot is only given up for
+					-- a shorter one to a place that is new
+					local hand = rig.handRoute and rig.route and not rig.routeCutAt and rig.routeHq == self.depotCell(rig)
+					if hand then
+						best = nil
+						for _, pl in places do
+							if not string.find("," .. (oldKey or ""), "," .. pl.cell .. ",", 1, true) then
+								local path = roads.truckRoute(rig.cell, pl.cell, closed)
+								if path and #path > 0 and (not best or #path < #best) then
+									best, bestId, bestCell = path, pl.id, pl.cell
+								end
+							end
+						end
+						if best and #best >= #rig.route then
+							best = nil
+						end
+					end
+					if best then
+						if rig.refinery ~= bestId or rig.routeHq ~= bestCell then
+							rig.refinery = bestId
+							rig.route, rig.routeHq, rig.back = best, bestCell, nil
+							rig.routeCutAt, rig.handRoute = nil, nil
+						end
+					end
+				end
+				local dest = self.depotCell(rig)
+				if dest and (not rig.route or rig.routeHq ~= dest) and self.time >= rig.routeRetryAt then
+					local path = roads.truckRoute(rig.cell, dest, self.signClosed(rig.side))
+					rig.routeCutAt, rig.handRoute, rig.choices = nil, nil, nil
 					if path and #path > 0 then
-						rig.route, rig.routeHq, rig.back = path, hq.cell, nil
+						rig.route, rig.routeHq, rig.back = path, dest, nil
 					else
 						rig.route, rig.routeRetryAt = nil, self.time + num("convoys.retrySec")
 					end
 				end
+				-- the game's OGe: a route that now crosses a cell trucks can't use is cut. Trucks stop
+				-- leaving on it; after convoys.rerouteCutSec a bot re-routes by itself, a player picks
+				-- a new route (self.reroute).
+				if rig.route and rig.routeHq and rig.routeHq == dest then
+					local cost = roads.truckCostFn(rig.cell, rig.routeHq, self.signClosed(rig.side))
+					local cut = false
+					for _, c in rig.route do
+						if cost(c) == math.huge then
+							cut = true
+							break
+						end
+					end
+					if cut then
+						if not rig.routeCutAt then
+							rig.routeCutAt = self.time
+							rig.rerouteReadyAt = math.max(rig.rerouteReadyAt or 0, self.time + num("convoys.rerouteCutSec"))
+							event({ type = "routeCut", side = rig.side, rig = rig.id, name = rig.name })
+						end
+						rig.handRoute = nil
+						local sd = self.sides[rig.side]
+						if sd and sd.bot and self.time >= rig.rerouteReadyAt and self.time >= rig.routeRetryAt then
+							local path = roads.truckRoute(rig.cell, rig.routeHq, self.signClosed(rig.side))
+							if path and #path > 0 then
+								rig.route, rig.back, rig.routeCutAt, rig.choices = path, nil, nil, nil
+								rig.rerouteReadyAt = self.time + num("convoys.rerouteAgainSec")
+							else
+								rig.routeRetryAt = self.time + num("convoys.retrySec")
+							end
+						end
+					else
+						rig.routeCutAt = nil
+					end
+				end
+				-- the routes on offer when re-routing are worked out again whenever the roads may differ
+				rig.choices = nil
 			end
 		end
 	end
 	self.updateRoutes = updateRoutes
 
-	local function routeOf(rig: Entity): { number }?
+	-- the game's jm: up to convoys.routeChoices different ways from the rig to `dest` (its depot when
+	-- nil): each next search costs cells already used x routePenalty, and a way sharing more than
+	-- routeOverlap of its cells with one already listed is dropped (at most routeChoices + 3 searches)
+	function self.routeChoices(rig: Entity, dest: number?, count: number?): { { number } }
+		local to = dest or self.depotCell(rig)
+		if not to or rig.side <= 0 then
+			return {}
+		end
+		local n = count or num("convoys.routeChoices")
+		local cacheKey = `{to}:{n}`
+		rig.choices = rig.choices or {}
+		if rig.choices[cacheKey] then
+			return rig.choices[cacheKey]
+		end
+		local out, sets, used = {}, {}, {}
+		local pen = math.max(1, num("convoys.routePenalty"))
+		local closed = self.signClosed(rig.side)
+		local function mult(c: number): number
+			return if used[c] then pen else 1
+		end
+		for _ = 1, n + 3 do
+			if #out >= n then
+				break
+			end
+			local path = roads.truckRoute(rig.cell, to, closed, if #out > 0 then mult else nil)
+			if not path or #path == 0 then
+				break
+			end
+			for _, c in path do
+				used[c] = true
+			end
+			local same = false
+			for _, set in sets do
+				local k = 0
+				for _, c in path do
+					if set[c] then
+						k += 1
+					end
+				end
+				if k / math.max(1, #path) > num("convoys.routeOverlap") then
+					same = true
+					break
+				end
+			end
+			if not same then
+				table.insert(out, path)
+				local set = {}
+				for _, c in path do
+					set[c] = true
+				end
+				table.insert(sets, set)
+			end
+		end
+		rig.choices[cacheKey] = out
+		return out
+	end
+	-- the game's haulChoices (VGe): every way the rig's trucks could be sent. First each route on offer
+	-- to the HQ (dest -1, road 1..), then the best route to each working refinery of the side (dest = the
+	-- town's id, road 1). `now` marks the one the trucks drive (same cells as rig.route).
+	function self.haulChoices(rig: Entity): { { dest: number, road: number, path: { number }, now: boolean } }
+		if rig.side <= 0 then
+			return {}
+		end
+		local function same(a: { number }?, b: { number }): boolean
+			if not a or #a ~= #b then
+				return false
+			end
+			for k = 1, #a do
+				if a[k] ~= b[k] then
+					return false
+				end
+			end
+			return true
+		end
+		local current = nil
+		if rig.refinery then
+			local st = settlements[rig.refinery]
+			if st and st.refinery and st.refinery.owner == rig.side and self.refineryWorks(st) then
+				current = st
+			end
+		end
+		local out = {}
 		local hq = hqOf(rig.side)
-		if not hq or not rig.route or rig.routeHq ~= hq.cell then
+		if hq then
+			for r, path in self.routeChoices(rig, hq.cell) do
+				table.insert(out, { dest = -1, road = r, path = path, now = current == nil and same(rig.route, path) })
+			end
+		end
+		for _, st in settlements do
+			if st.refinery and st.refinery.owner == rig.side and self.refineryWorks(st) then
+				local path = self.routeChoices(rig, st.refinery.cell, 1)[1]
+				if path and #path > 0 then
+					table.insert(out, { dest = st.id, road = 1, path = path, now = current == st and same(rig.route, path) })
+				end
+			end
+		end
+		return out
+	end
+	-- seconds until the rig's route can be changed again
+	function self.rerouteReadyIn(rig: Entity): number
+		return math.max(0, (rig.rerouteReadyAt or 0) - self.time)
+	end
+	-- the game's BGe (reroute) and FGe (haulTo): send the rig's trucks along route choice `index` (1 =
+	-- the first) to its depot, or to settlement `toTown`'s working refinery (0 = the HQ). Locked for
+	-- convoys.rerouteAgainSec after, and while a cut route waits out rerouteCutSec.
+	function self.reroute(side: number, rigId: number, index: number, toTown: number?): (number?, string?)
+		local rig = self.entities[rigId]
+		if not rig or rig.kind ~= "rig" or rig.side ~= side then
+			return nil, "notOwned"
+		end
+		if self.time < (rig.rerouteReadyAt or 0) then
+			return nil, "cooldown"
+		end
+		local dest, refinery
+		if toTown == nil then
+			dest, refinery = self.depotCell(rig), rig.refinery
+		elseif toTown <= 0 then
+			local hq = hqOf(side)
+			if not hq then
+				return nil, "noHq"
+			end
+			dest = hq.cell
+		else
+			local st = settlements[toTown]
+			if not st or not st.refinery or st.refinery.owner ~= side or not self.refineryWorks(st) then
+				return nil, "refineryOff"
+			end
+			dest, refinery = st.refinery.cell, toTown
+		end
+		if not dest then
+			return nil, "noHq"
+		end
+		local path = self.routeChoices(rig, dest, if toTown and toTown > 0 then 1 else nil)[index]
+		if not path or #path == 0 then
+			return nil, "noRoute"
+		end
+		rig.refinery = refinery
+		rig.route, rig.routeHq, rig.back = path, dest, nil
+		rig.handRoute, rig.routeCutAt = true, nil
+		rig.rerouteReadyAt = self.time + num("convoys.rerouteAgainSec")
+		return #path, nil
+	end
+
+	---------------------------------------------------------------- road signs
+	-- The game's road signs (G7e / GWe / ZWe / WWe / qWe / jWe): a side shuts the road cells within
+	-- signs.radius of a road cell to its own trucks (at most signs.max signs); a sign that would leave
+	-- one of its rigs with no way home is refused ("noRoute"). Rigs whose route crosses it re-plan.
+	self.roadSigns = {} :: { [number]: any }
+	do
+		local S: any = { nextId = 1, epoch = 0, cacheEpoch = -1, closed = {} }
+		function self.signClosed(side: number): { [number]: boolean }?
+			if next(self.roadSigns) == nil then
+				return nil
+			end
+			if S.cacheEpoch ~= S.epoch then
+				S.closed, S.cacheEpoch = {}, S.epoch
+				for _, sg in self.roadSigns do
+					local m = S.closed[sg.side] or {}
+					S.closed[sg.side] = m
+					for _, c in sg.cells do
+						m[c] = true
+					end
+				end
+			end
+			return S.closed[side]
+		end
+		function S.cellsAt(cell: number): { number }
+			local out = {}
+			local rr = num("signs.radius")
+			local x, y = centre(cell)
+			for cy = math.max(0, math.floor(y - rr)), math.min(H - 1, math.ceil(y + rr)) do
+				for cx = math.max(0, math.floor(x - rr)), math.min(W - 1, math.ceil(x + rr)) do
+					local c = cy * W + cx
+					if (cx + 0.5 - x) ^ 2 + (cy + 0.5 - y) ^ 2 <= rr * rr and roads.isRoad(c) then
+						table.insert(out, c)
+					end
+				end
+			end
+			return out
+		end
+		function S.rigsThrough(side: number, cells: { number }): { Entity }
+			local set = {}
+			for _, c in cells do
+				set[c] = true
+			end
+			local out = {}
+			for _, rig in rigList do
+				if rig.side == side and rig.route then
+					for _, c in rig.route do
+						if set[c] then
+							table.insert(out, rig)
+							break
+						end
+					end
+				end
+			end
+			return out
+		end
+		-- the game's G7e
+		function self.roadSignProblem(side: number, cell: number): string?
+			if cell < 0 or cell >= W * H or not roads.isRoad(cell) then
+				return "notRoad"
+			end
+			local closed = self.signClosed(side)
+			if closed and closed[cell] then
+				return "signHere"
+			end
+			local n = 0
+			for _, sg in self.roadSigns do
+				if sg.side == side then
+					n += 1
+				end
+			end
+			if n >= num("signs.max") then
+				return "limitReached"
+			end
+			local cells = S.cellsAt(cell)
+			local rigs = S.rigsThrough(side, cells)
+			if #rigs == 0 then
+				return nil
+			end
+			-- try it: every rig it touches must still find a way home
+			self.roadSigns[-1] = { id = -1, side = side, cell = cell, cells = cells }
+			S.epoch += 1
+			local stuck = false
+			for _, rig in rigs do
+				local dest = self.depotCell(rig)
+				local path = if dest then roads.truckRoute(rig.cell, dest, self.signClosed(side)) else nil
+				if not path or #path == 0 then
+					stuck = true
+					break
+				end
+			end
+			self.roadSigns[-1] = nil
+			S.epoch += 1
+			return if stuck then "noRoute" else nil
+		end
+		-- the game's GWe: returns (sign id, nil) or (nil, reason)
+		function self.placeRoadSign(side: number, cell: number): (number?, string?)
+			local why = self.roadSignProblem(side, cell)
+			if why then
+				return nil, why
+			end
+			local cells = S.cellsAt(cell)
+			local rigs = S.rigsThrough(side, cells)
+			local x, y = centre(cell)
+			local id = S.nextId
+			S.nextId += 1
+			self.roadSigns[id] = { id = id, side = side, cell = cell, x = x, y = y, cells = cells, at = self.time, rigs = rigs }
+			S.epoch += 1
+			for _, rig in rigs do
+				resetRoute(rig)
+			end
+			return id, nil
+		end
+		-- the game's ZWe
+		function self.removeRoadSign(side: number, id: number): (boolean, string?)
+			local sg = self.roadSigns[id]
+			if not sg or sg.side ~= side then
+				return false, "noSign"
+			end
+			self.roadSigns[id] = nil
+			S.epoch += 1
+			for _, rig in sg.rigs do
+				if rig.side == side then
+					resetRoute(rig)
+				end
+			end
+			return true, nil
+		end
+		-- the game's qWe: the side's sign covering the cell whose post is nearest it
+		function self.roadSignAt(side: number, cell: number): any
+			local best, bd = nil, math.huge
+			for _, sg in self.roadSigns do
+				if sg.side == side and table.find(sg.cells, cell) then
+					local d = (sg.cell % W - cell % W) ^ 2 + (sg.cell // W - cell // W) ^ 2
+					if d < bd then
+						best, bd = sg, d
+					end
+				end
+			end
+			return best
+		end
+		-- the game's jWe (a beaten side's signs go)
+		function self.clearRoadSigns(side: number)
+			for id, sg in self.roadSigns do
+				if sg.side == side then
+					self.roadSigns[id] = nil
+					S.epoch += 1
+				end
+			end
+		end
+	end
+
+	---------------------------------------------------------------- refineries
+	-- The game's refineries (TX / Ape / _pe / _Ge / PGe / Rpe / Ppe / LD / Ist): a side holding a
+	-- village, town or city can build one there (refinery.cost oil, refinery.buildSec); it is put on the
+	-- best free spot round the town by a road. While it works, rigs whose trucks have a shorter way to
+	-- it than to the HQ unload there instead (see updateRoutes). Shells can destroy it (refinery.hp).
+	do
+		local F: any = {}
+		-- the game's _Ge: a 3x3 (footprint 1) spot of buildable open ground off the road, clear of
+		-- rigs, buildings and other refineries
+		function F.spotOk(c: number, st: Entity): boolean
+			local n = num("refinery.footprint")
+			local x, y = c % W, c // W
+			if x - n < 0 or y - n < 0 or x + n >= W or y + n >= H then
+				return false
+			end
+			for yy = y - n, y + n do
+				for xx = x - n, x + n do
+					local q = yy * W + xx
+					local key = `terrain.{roads.terrain(q)}.buildable`
+					if not (r:has(key) and r:flag(key)) or not roads.passable(q) or roads.isRoad(q) or roads.buildingAt(q) >= 0 then
+						return false
+					end
+				end
+			end
+			local rc = n + math.max(0, math.floor(num("refinery.roadClear") + 0.5))
+			for yy = math.max(0, y - rc), math.min(H - 1, y + rc) do
+				for xx = math.max(0, x - rc), math.min(W - 1, x + rc) do
+					if roads.isRoad(yy * W + xx) then
+						return false
+					end
+				end
+			end
+			local pad = n + num("rigs.padCells")
+			for _, rig in rigList do
+				if math.abs(rig.x - (x + 0.5)) <= pad + 0.5 and math.abs(rig.y - (y + 0.5)) <= pad + 0.5 then
+					return false
+				end
+			end
+			for _, o in self.list do
+				if o.alive and isStructure(o) and o.kind ~= "minefield" then
+					local l = n + footprintOf(o.kind) + num("production.spacing")
+					if math.abs(o.cell % W - x) <= l and math.abs(o.cell // W - y) <= l then
+						return false
+					end
+				end
+			end
+			for _, o in settlements do
+				local ref = o.refinery
+				if ref and o ~= st and math.abs(ref.cell % W - x) <= n * 2 and math.abs(ref.cell // W - y) <= n * 2 then
+					return false
+				end
+			end
+			return true
+		end
+		-- the game's _pe: the best spot round the settlement, or -1. Spots are ranked (smallest first)
+		-- by urban cells under it, then by whether it is wholly surrounded by town, then distance to
+		-- the nearest road, then distance from the centre: it goes on the town's edge by a road
+		function F.spotFor(st: Entity): number
+			local n = num("refinery.footprint")
+			local reach = st.radius + n + num("refinery.edgeCells")
+			local a = math.max(n + 1, math.min(num("refinery.roadReach") + n, num("convoys.offRoadReach")))
+			local i = math.ceil(reach)
+			local l, cy0 = math.floor(st.x), math.floor(st.y)
+			local best, bk = -1, nil
+			local function better(p1: { number }, p2: { number }): boolean
+				for k = 1, #p1 do
+					if p1[k] ~= p2[k] then
+						return p1[k] < p2[k]
+					end
+				end
+				return false
+			end
+			for f = math.max(n, cy0 - i), math.min(H - 1 - n, cy0 + i) do
+				for p = math.max(n, l - i), math.min(W - 1 - n, l + i) do
+					local g = math.sqrt((p + 0.5 - st.x) ^ 2 + (f + 0.5 - st.y) ^ 2)
+					if g <= reach and g >= n + 1 then
+						local m = f * W + p
+						if F.spotOk(m, st) then
+							local y = math.huge
+							for k = -a, a do
+								if y <= n + 1 then
+									break
+								end
+								for x = -a, a do
+									local C, M = p + x, f + k
+									if C >= 0 and M >= 0 and C < W and M < H and roads.isRoad(M * W + C) then
+										y = math.min(y, math.max(math.abs(x), math.abs(k)))
+									end
+								end
+							end
+							if y < math.huge then
+								local w, v = 0, 1
+								if map.urbanAt then
+									for k = -n - 1, n + 1 do
+										for x = -n - 1, n + 1 do
+											local C, M = p + x, f + k
+											if C >= 0 and M >= 0 and C < W and M < H and map.urbanAt(M * W + C) then
+												if math.abs(x) <= n and math.abs(k) <= n then
+													w += 1
+												end
+											elseif C >= 0 and M >= 0 and C < W and M < H then
+												v = 0
+											end
+										end
+									end
+								else
+									v = 0
+								end
+								local key = { w, v, y, math.floor(g * 4 + 0.5), m }
+								if best < 0 or better(key, bk) then
+									best, bk = m, key
+								end
+							end
+						end
+					end
+				end
+			end
+			return best
+		end
+		-- the game's TX
+		function self.refineryProblem(side: number, stId: number): string?
+			local st = settlements[stId]
+			if not st or not (r:has("refinery.on") and r:flag("refinery.on"))
+				or not table.find((r.data["refinery.kinds"] :: any) or {}, st.kind) or not alive(side) then
+				return "blocked"
+			end
+			if st.owner ~= side then
+				return "notHeld"
+			end
+			if st.refinery and st.refinery.owner == side then
+				return "refineryHere"
+			end
+			if st.destroyed then
+				return "townRuined"
+			end
+			if F.spotFor(st) < 0 then
+				return "noRoom"
+			end
+			if self.sides[side].oil < num("refinery.cost") then
+				return "oil"
+			end
 			return nil
+		end
+		-- the game's Ape: pay and lay it out (an enemy's old refinery there goes)
+		function self.buildRefinery(side: number, stId: number): (number?, string?)
+			local why = self.refineryProblem(side, stId)
+			if why then
+				return nil, why
+			end
+			local st = settlements[stId]
+			local c = F.spotFor(st)
+			self.sides[side].oil -= num("refinery.cost")
+			st.refinery = { owner = side, cell = c, built = 0, hp = num("refinery.hp"), said = 0 }
+			return c, nil
+		end
+		function F.drop(st: Entity)
+			st.refinery = nil
+		end
+		-- the game's Rpe: a blast within reach of the refinery's footprint
+		function self.refineryBlast(x: number, y: number, reach: number, damage: number, by: number)
+			if damage <= 0 then
+				return
+			end
+			local half = num("refinery.footprint") + 0.5
+			for _, st in settlements do
+				local ref = st.refinery
+				if ref then
+					local h = math.max(0, math.abs(ref.cell % W + 0.5 - x) - half)
+					local u = math.max(0, math.abs(ref.cell // W + 0.5 - y) - half)
+					local d = math.sqrt(h * h + u * u)
+					if d <= reach then
+						local f = if reach > 0 then 1 - 0.5 * (d / reach) else 1
+						ref.hp -= damage * f
+						if ref.hp <= 0 then
+							local cx, cy = centre(ref.cell)
+							if alive(ref.owner) then
+								event({ type = "refineryDestroyed", side = ref.owner, x = cx, y = cy, name = st.name, by = by })
+							end
+							F.drop(st)
+						end
+					end
+				end
+			end
+		end
+		-- the game's PGe, every tick
+		function self.refineryTick(dt: number)
+			for _, st in settlements do
+				local ref = st.refinery
+				if ref then
+					if st.destroyed then
+						local cx, cy = centre(ref.cell)
+						if alive(ref.owner) then
+							event({ type = "refineryDestroyed", side = ref.owner, x = cx, y = cy, name = st.name })
+						end
+						F.drop(st)
+					elseif not alive(ref.owner) then
+						F.drop(st)
+					else
+						local held = st.owner == ref.owner
+						if ref.built < 1 then
+							if held then
+								ref.built = math.min(1, ref.built + dt / math.max(0.1, num("refinery.buildSec")))
+								if ref.built >= 1 then
+									event({ type = "refineryBuilt", side = ref.owner, x = st.x, y = st.y, name = st.name })
+								end
+								ref.said = 0
+							elseif ref.said ~= 2 then
+								ref.said = 2
+								event({ type = "refineryTownLost", side = ref.owner, x = st.x, y = st.y, name = st.name })
+							end
+						else
+							local now = if held then 0 else 2
+							if now ~= ref.said then
+								ref.said = now
+								event({ type = if now == 0 then "refineryWorking" else "refineryTownLost", side = ref.owner, x = st.x, y = st.y, name = st.name })
+							end
+						end
+					end
+				end
+			end
+			for _, rig in rigList do
+				if rig.refinery then
+					local st = settlements[rig.refinery]
+					if not (st and st.refinery and rig.side > 0 and st.refinery.owner == rig.side and self.refineryWorks(st)) then
+						rig.refinery = nil
+						rig.haulKey = nil
+						if rig.side > 0 and st then
+							event({ type = "refineryHaulEnded", side = rig.side, x = rig.x, y = rig.y, name = st.name })
+						end
+					end
+				end
+			end
+		end
+	end
+
+	local function routeOf(rig: Entity): { number }?
+		local dest = self.depotCell(rig)
+		if not dest or not rig.route or rig.routeHq ~= dest or rig.routeCutAt then
+			return nil -- the game's uv: no route while it is cut
 		end
 		return rig.route
 	end
@@ -1253,6 +1879,11 @@ function Sim.new(deps: Deps)
 
 	---------------------------------------------------------------- orders
 
+	-- the game's mode "retreat": set by orderRetreat, it lasts while the unit walks to the slot it was given
+	function self.retreating(e: Entity): boolean
+		return e.retreat ~= nil and e.path ~= nil and e.retreat == e.goalCell
+	end
+	pathing.retreating = self.retreating
 	local function orderable(e: Entity?, side: number): boolean
 		return e ~= nil and e.alive and e.cat == "unit" and e.side == side and e.kind ~= TRUCK and e.carrier == nil
 	end
@@ -1261,7 +1892,8 @@ function Sim.new(deps: Deps)
 	-- Plans e's route to `cell`, ending on (x, y). No route: the unit stays put (the game's empty path).
 	local function planTo(e: Entity, cell: number, x: number, y: number)
 		local here = cellAt(e.x, e.y)
-		local path = pathing.route(here, cell, e.kind)
+		-- a "straight over the land" move (the game's direct) walks the game's straightWay instead
+		local path = if e.direct then pathing.straightWay(e, here, cell) else pathing.route(here, cell, e.kind)
 		if not path then
 			e.target, e.path, e.spot = nil, nil, nil
 			return
@@ -1328,6 +1960,7 @@ function Sim.new(deps: Deps)
 		e.barrage = nil -- and a rocket barrage order
 		e.boarding = nil -- and boarding a carrier
 		e.trenchJob = nil -- and digging or filling a trench
+		e.direct = nil -- and a "straight over the land" move
 	end
 	-- the game's deployRecon (qJe): the scout stops and sees intel.scoutReconRadius around it for
 	-- intel.scoutDeploySec. Returns (count deployed, reason when none).
@@ -1374,6 +2007,9 @@ function Sim.new(deps: Deps)
 	end
 	-- the game's Km for a structure job: where the crew works from, footprint + engineers.reach
 	local function repairSpot(st: Entity): (number, number, number)
+		if st.kind == "rig" then
+			return st.x, st.y, num("rigs.radius") + num("engineers.reach") -- the game's Km for a rig job
+		end
 		local x, y = centre(st.cell)
 		return x, y, footprintOf(st.kind) + num("engineers.reach")
 	end
@@ -1382,8 +2018,8 @@ function Sim.new(deps: Deps)
 		if not st or not st.alive or st.cat ~= "structure" or st.side ~= side then
 			return "notOwned"
 		end
-		if st.kind == "rig" then
-			return "blocked" -- rig repair (blowouts) is a different job, not in the slice
+		if st.kind == "rig" then -- the game's Aqe (blowouts are map events, off in a skirmish)
+			return if st.hp < st.maxHp then nil else "notDamaged"
 		end
 		if st.hp < st.maxHp and (st.built or 1) >= 1 then
 			return nil
@@ -1509,8 +2145,21 @@ function Sim.new(deps: Deps)
 			local st = self.entities[id]
 			if st and st.alive then
 				local crew = math.min(n, num("engineers.crewMax"))
-				st.hp = math.min(st.maxHp, st.hp + st.maxHp * num("engineers.structureSharePerSec") * crew * dt)
-				if st.hp >= st.maxHp then
+				local done
+				if st.kind == "rig" then
+					local by = -1
+					for _, e in self.list do
+						if e.alive and e.repairId == id then
+							by = e.side
+							break
+						end
+					end
+					done = self.mendRig(st, crew, dt, by)
+				else
+					st.hp = math.min(st.maxHp, st.hp + st.maxHp * num("engineers.structureSharePerSec") * crew * dt)
+					done = st.hp >= st.maxHp
+				end
+				if done then
 					event({ type = "repaired", id = st.id, side = st.side, kind = st.kind })
 					for _, e in self.list do
 						if e.alive and e.repairId == id then
@@ -1568,7 +2217,7 @@ function Sim.new(deps: Deps)
 	end
 	-- the game's wh (cutRoad): every road cell within roads.cutRadius of the cell's centre stops being
 	-- road until repaired; a cut on a bridge deck drops the bridge (impassable). Trucks whose way
-	-- crosses it re-route, rig routes are redone and rig links re-checked.
+	-- crosses it re-route and rig links are re-checked; rig routes over it are found cut by updateRoutes.
 	local function cutRoad(cell: number, by: number): any?
 		if not roads.isRoad(cell) then
 			return nil
@@ -1595,8 +2244,7 @@ function Sim.new(deps: Deps)
 			if rig.route then
 				for _, c in rig.route do
 					if hit[c] then
-						users[rig.side] = true
-						resetRoute(rig)
+						users[rig.side] = true -- the route itself is left: updateRoutes finds it cut (the game's OGe)
 						break
 					end
 				end
@@ -1628,7 +2276,178 @@ function Sim.new(deps: Deps)
 	-- the game's GX: a shell landing near a road wears the nearest road cell within roads.blastReach
 	-- and adds to its strike damage; when the strikes within roads.cutRadius add up to
 	-- roads.strikeHp the road is cut there.
+	---------------------------------------------------------------- bridge spans (the game's _h, m1, kUe)
+	do
+		-- the game's m1: the cell's ground can't be stood on (water, cliffs); a road there is a bridge deck
+		function self.deckGround(c: number): boolean
+			return not terrainPassable(roads.terrain(c))
+		end
+		-- the game's _h: bridge spans, the 4-way connected groups of deck cells (road on such ground, or
+		-- cut road there). Cuts never add road, so the groups are worked out once; `blown` is live.
+		local spans: { any }? = nil
+		function self.bridgeSpans(): { any }
+			if not spans then
+				local cuts: { [number]: boolean } = {}
+				for _, cut in self.roadCuts do
+					for _, c in cut.cells do
+						cuts[c] = true
+					end
+				end
+				local deck, seen = {}, {}
+				for c = 0, W * H - 1 do
+					if (roads.isRoad(c) or cuts[c]) and self.deckGround(c) then
+						deck[c] = true
+					end
+				end
+				local out = {}
+				for c = 0, W * H - 1 do
+					if deck[c] and not seen[c] then
+						local cells, stack = {}, { c }
+						seen[c] = true
+						while #stack > 0 do
+							local p = table.remove(stack)
+							table.insert(cells, p)
+							local px = p % W
+							for _, q in { if px > 0 then p - 1 else -1, if px < W - 1 then p + 1 else -1, p - W, p + W } do
+								if q >= 0 and q < W * H and deck[q] and not seen[q] then
+									seen[q] = true
+									table.insert(stack, q)
+								end
+							end
+						end
+						local sx, sy, low = 0, 0, math.huge
+						for _, q in cells do
+							sx += q % W + 0.5
+							sy += q // W + 0.5
+							low = math.min(low, q)
+						end
+						table.insert(out, { id = #out + 1, key = low, cells = cells, x = sx / #cells, y = sy / #cells })
+					end
+				end
+				spans = out
+			end
+			for _, sp in spans :: { any } do
+				sp.blown = false
+				for _, c in sp.cells do
+					if not roads.isRoad(c) then
+						sp.blown = true
+						break
+					end
+				end
+			end
+			return spans :: { any }
+		end
+		-- the game's kUe: the cell off the span (4-way next to it, firm ground, passable) nearest (x, y)
+		function self.bridgeEnd(sp: any, x: number, y: number): number
+			local inSpan = {}
+			for _, c in sp.cells do
+				inSpan[c] = true
+			end
+			local best, bd = -1, math.huge
+			for _, c in sp.cells do
+				local cx = c % W
+				for _, q in { if cx > 0 then c - 1 else -1, if cx < W - 1 then c + 1 else -1, c - W, c + W } do
+					if q >= 0 and q < W * H and not inSpan[q] and not self.deckGround(q) and roads.passable(q) then
+						local d = (q % W + 0.5 - x) ^ 2 + (q // W + 0.5 - y) ^ 2
+						if d < bd then
+							best, bd = q, d
+						end
+					end
+				end
+			end
+			return best
+		end
+	end
+
+	---------------------------------------------------------------- rig damage (the game's uD, dX, Lqe, Sqe, Tqe)
+	do
+		-- the game's y9e: a side's own (and allied) rigs are spared its blasts
+		local function spared(rig: Entity, by: number): boolean
+			return by > 0 and rig.side > 0 and not canAttack(by, rig.side)
+		end
+		-- the game's uD: a hit; at 0 hp the rig is wrecked (dX): it pumps nothing, its tank empties and
+		-- its trucks are let go, until engineers repair it
+		function self.damageRig(rig: Entity, amount: number, by: number)
+			if rig.wrecked or not (amount > 0) then
+				return
+			end
+			rig.hp -= amount
+			rig.lastHitAt = self.time
+			if rig.hp > 0 then
+				if rig.side > 0 and rig.side ~= by and self.time - (rig.firedNoticeAt or -math.huge) >= num("rigs.damage.noticeSec") then
+					rig.firedNoticeAt = self.time
+					event({ type = "rigUnderFire", id = rig.id, side = rig.side, name = rig.name })
+				end
+				return
+			end
+			rig.hp, rig.wrecked, rig.tank, rig.store, rig.rate = 0, true, 0, 0, 0
+			for _, t in self.list do
+				if t.alive and t.kind == TRUCK and t.from == rig.id then
+					t.from = -1
+				end
+			end
+			event({ type = "rigDestroyed", id = rig.id, side = rig.side, by = by, name = rig.name, x = rig.x, y = rig.y })
+		end
+		-- the game's Lqe (from roadBlast): rigs within rigs.damage.hitCells take damage x blastShare
+		function self.rigBlast(x: number, y: number, damage: number, by: number)
+			if not (damage > 0) then
+				return
+			end
+			local hit = num("rigs.damage.hitCells")
+			for _, rig in rigList do
+				if not rig.wrecked and not spared(rig, by) and (rig.x - x) ^ 2 + (rig.y - y) ^ 2 <= hit * hit then
+					self.damageRig(rig, damage * num("rigs.damage.blastShare"), by)
+				end
+			end
+		end
+		-- the game's Sqe (with a splash): rigs beyond hitCells but within radius + hitCells take a share
+		-- falling from 1 to a half across the radius (the inner ones were hit by rigBlast)
+		function self.rigSplash(x: number, y: number, radius: number, damage: number, by: number)
+			if not (damage > 0) or not (radius > 0) then
+				return
+			end
+			local hit = num("rigs.damage.hitCells")
+			for _, rig in rigList do
+				if not rig.wrecked and not spared(rig, by) then
+					local c = math.sqrt((rig.x - x) ^ 2 + (rig.y - y) ^ 2)
+					if c > hit then
+						local h = if c > radius + hit then 0 else 1 - 0.5 * math.min(1, (c - hit) / math.max(0.001, radius))
+						if h > 0 then
+							self.damageRig(rig, damage * num("rigs.damage.blastShare") * h, by)
+						end
+					end
+				end
+			end
+		end
+		-- the game's Tqe: engineers mend maxHp x crew / repairSec per second; a wrecked rig works again
+		-- once whole. Returns true when done.
+		function self.mendRig(rig: Entity, crew: number, dt: number, by: number): boolean
+			if rig.hp >= rig.maxHp then
+				return true
+			end
+			rig.hp = math.min(rig.maxHp, rig.hp + rig.maxHp * crew * dt / math.max(0.01, num("rigs.damage.repairSec")))
+			if rig.hp < rig.maxHp then
+				return false
+			end
+			if rig.wrecked then
+				rig.wrecked, rig.autoTruckAt = nil, nil
+				local sd = if rig.side > 0 then rig.side else by
+				if sd > 0 and alive(sd) then
+					event({ type = "rigRepaired", id = rig.id, side = sd, name = rig.name })
+				end
+			end
+			return true
+		end
+	end
+
 	local function roadBlast(x: number, y: number, damage: number, by: number)
+		if self.trenchShell then
+			self.trenchShell(x, y, damage, by) -- the game's lf runs NUe with GX
+		end
+		if self.refineryBlast then
+			self.refineryBlast(x, y, 0, damage, by) -- and TGe (refineries)
+		end
+		self.rigBlast(x, y, damage, by) -- and Lqe (rigs)
 		local share = num("roads.blastShare")
 		if damage <= 0 or share <= 0 then
 			return
@@ -1906,6 +2725,7 @@ function Sim.new(deps: Deps)
 	-- cutting the road like a shell strike would. A crew member that dies, takes damage or gets
 	-- another order ends the planting ("sabotageFailed").
 	self.sabotages = {} :: { [number]: any }
+	self.reveals = {} :: { any }
 	local nextSabotageId = 1
 	local function sabotageAt(cell: number): any?
 		for _, s in self.sabotages do
@@ -1937,7 +2757,12 @@ function Sim.new(deps: Deps)
 		if cell < 0 or cell >= W * H then
 			return 0, "notRoad"
 		end
-		if not roads.isRoad(cell) then
+		-- the game's XX with P7e: a dug trench cell takes a breaching charge instead
+		local why, breach = self.breachCheck(cell)
+		if why then
+			return 0, why
+		end
+		if not breach and not roads.isRoad(cell) then
 			for _, cut in self.roadCuts do
 				if table.find(cut.cells, cell) then
 					return 0, "alreadyCut"
@@ -1979,7 +2804,7 @@ function Sim.new(deps: Deps)
 			clearRecon(e)
 			leaveGarrison(e)
 			e.sabotageCell = cell
-			walkNear(e, x, y, num("sabotage.reach") * 0.8)
+			walkNear(e, x, y, (if breach then self.breachReach() else num("sabotage.reach")) * 0.8)
 		end
 		return #crew, nil
 	end
@@ -2003,28 +2828,35 @@ function Sim.new(deps: Deps)
 	-- the game's Sme for sabotage, every 20 ticks while standing
 	local function sabotageThink(e: Entity)
 		local cell = e.sabotageCell :: number
-		if not roads.isRoad(cell) then
+		local breach = self.breachable(cell)
+		if not breach and not roads.isRoad(cell) then
 			endSabotageJob(e)
 			return
 		end
 		local x, y = centre(cell)
-		local rr = num("sabotage.reach")
+		local rr = if breach then self.breachReach() else num("sabotage.reach")
 		if sq(e.x, e.y, x, y) > rr * rr then
 			walkNear(e, x, y, rr * 0.8)
 		end
 	end
 	-- the game's _me
 	local function sabotageTick(dt: number)
-		local rr = num("sabotage.reach")
+		for n = #self.reveals, 1, -1 do
+			if self.reveals[n].untilT <= self.time then
+				table.remove(self.reveals, n)
+			end
+		end
 		for _, e in self.list do
 			if e.alive and e.sabotageCell then
 				local cell = e.sabotageCell
 				local x, y = centre(cell)
+				local breach = self.breachable(cell)
+				local rr = if breach then self.breachReach() else num("sabotage.reach")
 				if sq(e.x, e.y, x, y) <= rr * rr then
 					if e.path then
 						e.path, e.target, e.spot = nil, nil, nil
 					end
-					if not roads.isRoad(cell) then
+					if not breach and not roads.isRoad(cell) then
 						endSabotageJob(e)
 						continue
 					end
@@ -2032,9 +2864,17 @@ function Sim.new(deps: Deps)
 					local s = sabotageAt(cell)
 					if not s then
 						local victims = {}
-						for v in routeUsers(cell) do
-							if v ~= e.side then
-								table.insert(victims, v)
+						if breach then
+							-- the game's qUe: the trench's owner
+							local t = self.trenchAtCell(cell)
+							if t and t.owner ~= e.side then
+								table.insert(victims, t.owner)
+							end
+						else
+							for v in routeUsers(cell) do
+								if v ~= e.side then
+									table.insert(victims, v)
+								end
 							end
 						end
 						s = { id = nextSabotageId, side = e.side, cell = cell, x = x, y = y, phase = "planting", progress = 0,
@@ -2052,23 +2892,68 @@ function Sim.new(deps: Deps)
 		for id, s in self.sabotages do
 			if s.phase == "armed" then
 				if self.time >= s.fuseAt then
-					-- the game's FZe: the charge blows and cuts the road
+					-- the game's FZe: the charge blows a trench open, or cuts the road
 					self.sabotages[id] = nil
+					if self.blowTrench(s.cell, s.side) then
+						continue
+					end
+					local users = routeUsers(s.cell)
+					local routes = {} -- as they were before the cut (cutting re-plans them)
+					for _, rig in rigList do
+						if rig.route then
+							routes[rig] = rig.route
+						end
+					end
 					local cut = cutRoad(s.cell, s.side)
 					if cut then
 						cut.sabotage = true
 						event({ type = "sabotageDone", id = s.id, side = s.side, x = s.x, y = s.y })
 						for _, v in s.victims do
-							event({ type = "roadSabotaged", id = cut.id, side = v, x = s.x, y = s.y })
+							users[v] = true
+						end
+						for v in users do
+							if v > 0 and v ~= s.side and self.sides[v] and not self.sides[v].lost then
+								event({ type = "roadSabotaged", id = cut.id, side = v, x = s.x, y = s.y })
+								-- the game's VZe: the victim sees along its rig routes either side of the cut
+								local pts = { cut.x, cut.y }
+								local inCut = {}
+								for _, c in cut.cells do
+									inCut[c] = true
+								end
+								local along = math.max(1, math.floor(num("sabotage.revealAlong") + 0.5))
+								for _, rig in rigList do
+									local route = routes[rig]
+									if rig.side == v and route then
+										local h = -1
+										for k, c in route do
+											if inCut[c] then
+												h = k
+												break
+											end
+										end
+										if h > 0 then
+											for k = math.max(1, h - along), math.min(#route, h + along - 1), 2 do
+												local px, py = centre(route[k])
+												table.insert(pts, px)
+												table.insert(pts, py)
+											end
+										end
+									end
+								end
+								table.insert(self.reveals, { side = v, untilT = self.time + num("sabotage.revealSec"), pts = pts,
+									r = num("sabotage.revealWidth") })
+							end
 						end
 					end
 				end
 				continue
 			end
-			if not roads.isRoad(s.cell) then
+			local breach = self.breachable(s.cell)
+			if not breach and not roads.isRoad(s.cell) then
 				failSabotage(s, false)
 				continue
 			end
+			local rr = if breach then self.breachReach() else num("sabotage.reach")
 			local anyone, working, broken = false, false, false
 			for i, eid in s.crew do
 				local e = self.entities[eid]
@@ -2090,7 +2975,23 @@ function Sim.new(deps: Deps)
 				continue
 			end
 			if working then
-				s.progress = math.min(1, s.progress + dt / math.max(0.01, num("sabotage.plantSec")))
+				-- the game's saboteursSpotted: a victim that sees one of the crew (fog on) is warned once
+				if self.fogOn() then
+					s.spotted = s.spotted or {}
+					for _, v in s.victims do
+						if not s.spotted[v] then
+							for _, eid in s.crew do
+								local e = self.entities[eid]
+								if e and e.alive and self.sideSees(v, e.x, e.y) then
+									s.spotted[v] = true
+									event({ type = "saboteursSpotted", side = v, x = s.x, y = s.y })
+									break
+								end
+							end
+						end
+					end
+				end
+				s.progress = math.min(1, s.progress + dt / math.max(0.01, if breach then num("trenchWorks.breach.plantSec") else num("sabotage.plantSec")))
 				if s.progress >= 1 then
 					-- the game's DZe: armed; the crew walks off to the nearest own finished building
 					s.phase, s.progress = "armed", 1
@@ -2198,7 +3099,9 @@ function Sim.new(deps: Deps)
 		return true
 	end
 
-	function self.orderMove(side: number, ids: { number }, x: number, y: number): { number }
+	-- `direct` (Shift + right click, the game's direct move): straight over the land (see planTo); the
+	-- units do not join a shared group route
+	function self.orderMove(side: number, ids: { number }, x: number, y: number, direct: boolean?): { number }
 		local refused = {}
 		local group = {}
 		for _, id in ids do
@@ -2207,6 +3110,7 @@ function Sim.new(deps: Deps)
 				e.attackId = nil
 				clearRecon(e)
 				leaveGarrison(e)
+				e.direct = if direct then true else nil
 				table.insert(group, e)
 			elseif e and e.side ~= side then
 				table.insert(refused, id)
@@ -2222,7 +3126,7 @@ function Sim.new(deps: Deps)
 				local s = slots[i]
 				if s then
 					local sx, sy = centre(s)
-					if not joinShared(e, s, sx, sy, shared) then
+					if direct or not joinShared(e, s, sx, sy, shared) then
 						planTo(e, s, sx, sy)
 						if e.path and #e.path > 0 then
 							table.insert(shared, { x = e.x, y = e.y, path = e.path })
@@ -2233,7 +3137,131 @@ function Sim.new(deps: Deps)
 				end
 			end
 		end
+		-- the units now walk under a move order (the game's mode "move"): waypoints queue behind it
+		for _, e in group do
+			e.waypoints, e.wayDirect, e.retreat = nil, nil, nil
+			e.moveGoal = if e.path then e.goalCell else nil
+		end
 		return refused
+	end
+
+	-- the game's queueMove: units walking under a move order add a stop (one ring slot each round the
+	-- point, at most movement.waypointCap queued); the others are sent there at once (orderMove).
+	-- Returns how many took it, or nil and the reason.
+	-- `direct`: that stop is walked straight over the land (each stop keeps its own flag, e.wayDirect)
+	function self.queueMove(side: number, ids: { number }, x: number, y: number, direct: boolean?): (number?, string?)
+		local moving, still = {}, {}
+		for _, id in ids do
+			local e = self.entities[id]
+			if orderable(e, side) and not e.inside then
+				if e.path and e.moveGoal ~= nil and e.moveGoal == e.goalCell then
+					table.insert(moving, e)
+				else
+					table.insert(still, e.id)
+				end
+			end
+		end
+		if #moving == 0 and #still == 0 then
+			return nil, "noUnits"
+		end
+		if x < 0 or y < 0 or x >= W or y >= H then
+			return nil, "blocked"
+		end
+		local n = 0
+		if #moving > 0 then
+			local slots = pathing.ringSlots(cellAt(x, y), #moving)
+			if #slots == 0 then
+				return nil, "terrain"
+			end
+			local cap = num("movement.waypointCap")
+			for g, e in moving do
+				local list = e.waypoints or {}
+				e.waypoints = list
+				local flags = e.wayDirect or {}
+				e.wayDirect = flags
+				if #list < cap then
+					table.insert(list, slots[(g - 1) % #slots + 1])
+					flags[#list] = direct == true
+					n += 1
+				end
+			end
+		end
+		if #still > 0 then
+			self.orderMove(side, still, x, y, direct)
+			for _, id in still do
+				local e = self.entities[id]
+				if e and e.path then
+					n += 1
+				end
+			end
+		end
+		if n == 0 then
+			return nil, "waypointsFull"
+		end
+		return n, nil
+	end
+
+	-- the game's orderRetreat: each unit falls back to a ring slot round its nearest finished HQ, at least
+	-- ceil(footprint) + 1 cells from its centre; retreating units move at movement.retreatPace, hold no
+	-- fire and do not stop for enemies. Returns how many went, or nil and the reason.
+	function self.orderRetreat(side: number, ids: { number }): (number?, string?)
+		local group = {}
+		for _, id in ids do
+			local e = self.entities[id]
+			if orderable(e, side) and not e.inside then
+				table.insert(group, e)
+			end
+		end
+		if #group == 0 then
+			return nil, "noUnits"
+		end
+		local hqs = {}
+		for _, st in self.list do
+			if st.alive and st.side == side and st.kind == "hq" and (st.built or 1) >= 1 then
+				table.insert(hqs, st)
+			end
+		end
+		if #hqs == 0 then
+			return nil, "blocked"
+		end
+		local byHq: { [Entity]: { Entity } } = {}
+		local order = {}
+		for _, e in group do
+			local best, bd = hqs[1], math.huge
+			for _, h in hqs do
+				local cx, cy = centre(h.cell)
+				local d = (cx - e.x) ^ 2 + (cy - e.y) ^ 2
+				if d < bd then
+					best, bd = h, d
+				end
+			end
+			if not byHq[best] then
+				byHq[best] = {}
+				table.insert(order, best)
+			end
+			table.insert(byHq[best], e)
+		end
+		for _, h in order do
+			local list = byHq[h]
+			local d = math.ceil(footprintOf(h.kind)) + 1
+			local hx, hy = h.cell % W, h.cell // W
+			local slots = {}
+			for _, c in pathing.ringSlots(h.cell, #list + math.ceil(d * d * 4)) do
+				if math.max(math.abs(c % W - hx), math.abs(c // W - hy)) >= d then
+					table.insert(slots, c)
+				end
+			end
+			for g, e in list do
+				e.attackId, e.chasing, e.waypoints, e.wayDirect, e.moveGoal = nil, nil, nil, nil, nil
+				clearRecon(e)
+				leaveGarrison(e)
+				local c = if #slots > 0 then slots[(g - 1) % #slots + 1] else h.cell
+				local sx, sy = centre(c)
+				planTo(e, c, sx, sy)
+				e.retreat = if e.path then e.goalCell else nil
+			end
+		end
+		return #group, nil
 	end
 
 	function self.orderStop(side: number, ids: { number }): { number }
@@ -2242,6 +3270,8 @@ function Sim.new(deps: Deps)
 			local e = self.entities[id]
 			if orderable(e, side) then
 				e.target, e.attackId, e.path, e.chasing = nil, nil, nil, nil
+				e.repairId, e.roadJob, e.sabotageCell = nil, nil, nil -- the game's clearOrders ends the job
+				e.waypoints, e.wayDirect, e.retreat, e.moveGoal = nil, nil, nil, nil
 				e.post = cellAt(e.x, e.y)
 				clearRecon(e)
 				leaveGarrison(e)
@@ -2343,8 +3373,13 @@ function Sim.new(deps: Deps)
 	local function newTruck(rig: Entity): Entity
 		local hq = hqOf(rig.side) :: Entity
 		local hp = num("trucks.kinds.light.hp")
+		local dx, dy = hq.x, hq.y
+		local dc = self.depotCell(rig)
+		if dc and dc ~= hq.cell then
+			dx, dy = centre(dc) -- a refinery rig's trucks start at the refinery
+		end
 		return add({
-			kind = TRUCK, cat = "unit", class = "armour", side = rig.side, x = hq.x, y = hq.y,
+			kind = TRUCK, cat = "unit", class = "armour", side = rig.side, x = dx, y = dy,
 			heading = 0, hp = hp, maxHp = hp, alive = true, from = rig.id, payload = 0, state = "out",
 			path = backPath(rig), pathIndex = 1, timer = 0, queue = nil, moved = false,
 		})
@@ -2355,10 +3390,13 @@ function Sim.new(deps: Deps)
 		if not rig or rig.kind ~= "rig" or rig.side ~= side then
 			return "notOwned"
 		end
+		if rig.wrecked then
+			return "notOperational"
+		end
 		if not hqOf(side) then
 			return "noHq"
 		end
-		if not rig.connected or not rig.route then
+		if not rig.connected or not rig.route or rig.routeCutAt then
 			return "noRoute"
 		end
 		if trucksOf(rig.id) >= num("trucks.perRig") then
@@ -2395,6 +3433,40 @@ function Sim.new(deps: Deps)
 		return true, nil
 	end
 
+	-- the game's gme: the rig's truck that is least along (loading before out before unloading before
+	-- the rest, then the least oil aboard, the back of the loading queue first)
+	local function idlestTruck(rigId: number): Entity?
+		local best, bestScore = nil, math.huge
+		for _, t in self.list do
+			if t.alive and t.kind == TRUCK and t.from == rigId then
+				local st = t.state or "home"
+				local rank = if st == "loading" then 0 elseif st == "out" then 1 elseif st == "unloading" then 2 else 3
+				local score = rank * 1000 + (t.payload or 0) - (t.queue or 0)
+				if score < bestScore then
+					best, bestScore = t, score
+				end
+			end
+		end
+		return best
+	end
+	-- the game's WX / yme: take a truck off a rig. It drives home with what it carries and joins the idle pool.
+	function self.releaseTruckProblem(side: number, rigId: number): string?
+		local rig = self.entities[rigId]
+		if not rig or rig.kind ~= "rig" or rig.side ~= side then
+			return "notOwned"
+		end
+		return if idlestTruck(rigId) then nil else "noTrucks"
+	end
+	function self.releaseTruck(side: number, rigId: number): (number?, string?)
+		local why = self.releaseTruckProblem(side, rigId)
+		if why then
+			return nil, why
+		end
+		local t = idlestTruck(rigId) :: Entity
+		t.from = -1
+		return t.id, nil
+	end
+
 	-- Rig upgrades: "pump" or "tank", one level each, paid up front.
 	function self.upgradeRig(side: number, rigId: number, kind: string): (boolean, string?)
 		local rig = self.entities[rigId]
@@ -2427,6 +3499,7 @@ function Sim.new(deps: Deps)
 			return
 		end
 		s.lost = true
+		self.clearRoadSigns(side)
 		for _, e in self.list do
 			if e.alive and e.side == side and e.kind ~= "rig" then
 				e.alive, e.hp = false, 0
@@ -2514,6 +3587,7 @@ function Sim.new(deps: Deps)
 			local cx, cy = centre(st.cell)
 			collateral(cx, cy, damage, by)
 			roadBlast(cx, cy, damage, by)
+			self.trenchSmash(cx, cy, 0, damage, by)
 		end
 		st.hp -= damage
 		st.lastHitAt = self.time
@@ -2886,6 +3960,9 @@ function Sim.new(deps: Deps)
 			else
 				p *= 1 - y
 			end
+			if target.inTrench then
+				p *= self.trenchShare(target, s, bombard) -- the game's FUe
+			end
 		end
 		if g ~= 0 then
 			p *= g
@@ -2895,6 +3972,7 @@ function Sim.new(deps: Deps)
 		if bombard and target.class ~= "air" then
 			collateral(target.x, target.y, p, by) -- shells landing in a town damage it
 			roadBlast(target.x, target.y, p, by) -- and near a road wear it, and can cut it
+			self.trenchSmash(target.x, target.y, s, p, by) -- APPROX: the game passes the shell's own damage
 		end
 		if s > 0 then
 			for _, b in self.list do
@@ -2955,6 +4033,7 @@ function Sim.new(deps: Deps)
 
 	local function validUnitTarget(side: number, o: Entity, key: string): boolean
 		return o.alive and o.hp > 0 and o.cat == "unit" and o.kind ~= TRUCK and canAttack(side, o.side) and vsOf(key, o.class) > 0
+			and not (o.inTrench and self.trenchHidden(o, side)) -- the game skips hidden trench troops (lv)
 	end
 
 	local function nearestUnit(x: number, y: number, side: number, range: number, key: string, minR: number?, ok: ((Entity) -> boolean)?): Entity?
@@ -3106,6 +4185,7 @@ function Sim.new(deps: Deps)
 		end
 		return sc.grid[c + 1] == 2
 	end
+	self.sideSees = spotted
 	local function revealed(o: Entity): boolean
 		return o.revealedUntil ~= nil and o.revealedUntil > self.time
 	end
@@ -3221,6 +4301,9 @@ function Sim.new(deps: Deps)
 				end
 			end
 			roadBlast(x, y, damage, by)
+			self.trenchSmash(x, y, c, damage, by)
+			self.rigSplash(x, y, c, damage, by) -- the game's Sqe
+			self.refineryBlast(x, y, c, damage, by) -- the game's Rpe with the splash
 		end
 		-- the game's salvo(): the rockets as strikes; returns when the last one leaves
 		function R.salvo(e: Entity, key: string, tx: number, ty: number, total: number): number
@@ -3516,7 +4599,7 @@ function Sim.new(deps: Deps)
 				local dps = num(key .. ".dps")
 				if text(key .. ".weapon") == "salvo" then
 					salvoTick(e, key, dt) -- rocket artillery fires only on a barrage order
-				elseif dps > 0 then
+				elseif dps > 0 and not self.retreating(e) then
 					local range = num(key .. ".range")
 					-- inside a secured settlement: cities.securedFire.<kind> x dps, + rooftopRange.<kind>
 					local sec = securedIn(e)
@@ -3703,7 +4786,7 @@ function Sim.new(deps: Deps)
 			end
 			-- pumping
 			rig.rate = 0
-			if rig.side > 0 and alive(rig.side) and self.time - rig.takenAt >= num("rigs.takeoverSec") then
+			if not rig.wrecked and rig.side > 0 and alive(rig.side) and self.time - rig.takenAt >= num("rigs.takeoverSec") then
 				local cap = self.tankSize(rig)
 				if rig.tank >= cap then
 					if not rig.full then
@@ -3851,6 +4934,57 @@ function Sim.new(deps: Deps)
 				end
 			end
 		end
+	end
+	-- the game's withdraw ($I): up to `count` units (all when nil) leave the settlement, last in first out,
+	-- or only unit `unitId`. Each steps out at a random point on the rim (radius + 0.5), or the nearest free
+	-- spot to it. Returns how many came out, or nil and the reason.
+	function self.withdraw(side: number, cityId: number, count: number?, unitId: number?): (number?, string?)
+		local st = settlements[cityId]
+		if not st or st.owner ~= side then
+			return nil, "notHeld"
+		end
+		for i = #st.garrison, 1, -1 do -- the game's Bwe
+			local e = self.entities[st.garrison[i]]
+			if not e or not e.alive or e.side ~= st.owner or not e.inside or e.garrisonCity ~= st.id then
+				table.remove(st.garrison, i)
+				if e and e.alive and e.inside and e.garrisonCity == st.id then
+					leaveGarrison(e)
+				end
+			end
+		end
+		if #st.garrison == 0 then
+			return nil, "garrisonEmpty"
+		end
+		local n = count or math.huge
+		if unitId then
+			local i = table.find(st.garrison, unitId)
+			if not i then
+				return nil, "garrisonEmpty"
+			end
+			table.remove(st.garrison, i)
+			table.insert(st.garrison, unitId)
+			n = 1
+		end
+		local out = 0
+		while #st.garrison > 0 and out < n do
+			local e = self.entities[table.remove(st.garrison)]
+			if e and e.alive then
+				local a = rand() * math.pi * 2 -- APPROX: not the game's random sequence
+				local x, y = st.x + math.cos(a) * (st.radius + 0.5), st.y + math.sin(a) * (st.radius + 0.5)
+				local c = cellAt(math.clamp(x, 0, W - 1e-6), math.clamp(y, 0, H - 1e-6))
+				if x < 0 or y < 0 or x >= W or y >= H or not roads.passable(c) then
+					x, y = freePointNear(math.clamp(x, 0, W - 1e-6), math.clamp(y, 0, H - 1e-6))
+				end
+				e.x, e.y, e.px, e.py = x, y, x, y
+				e.inside, e.garrisonCity = nil, nil -- the game's _m
+				e.post = cellAt(x, y)
+				out += 1
+			end
+		end
+		if out == 0 then
+			return nil, "garrisonEmpty"
+		end
+		return out, nil
 	end
 	-- the game's kQ: everyone inside comes out
 	local function emptyGarrison(st: Entity)
@@ -4025,9 +5159,10 @@ function Sim.new(deps: Deps)
 		if rig and route and cellAt(t.x, t.y) == rig.cell then
 			t.path, t.pathIndex = route, 1
 		else
-			-- APPROX: a truck away from its rig re-routes to the HQ over the same cost map
+			-- APPROX: a truck away from its rig re-routes to its depot (HQ or refinery) over the same cost map
 			local here = cellAt(t.x, t.y)
-			t.path = roads.search(here, hq.cell, roads.truckCostFn(here, hq.cell), { minCost = 1, fourWay = true }) or {}
+			local goal = (if rig then self.depotCell(rig) else nil) or hq.cell
+			t.path = roads.search(here, goal, roads.truckCostFn(here, goal, self.signClosed(t.side)), { minCost = 1, fourWay = true }) or {}
 			t.pathIndex = 1
 		end
 	end
@@ -4231,7 +5366,7 @@ function Sim.new(deps: Deps)
 	local function trucks(dt: number)
 		-- automatic first truck after each capture
 		for _, rig in rigList do
-			if rig.side > 0 and rig.autoTruckAt ~= rig.takenAt and rig.connected and alive(rig.side) and routeOf(rig) then
+			if rig.side > 0 and rig.autoTruckAt ~= rig.takenAt and rig.connected and not rig.wrecked and alive(rig.side) and routeOf(rig) then
 				rig.autoTruckAt = rig.takenAt
 				if trucksOf(rig.id) == 0 and self.sides[rig.side].trucksIdle > 0 then
 					self.orderTruck(rig.side, rig.id)
@@ -4342,8 +5477,8 @@ function Sim.new(deps: Deps)
 					if broken then
 						local fixed = false
 						if t.reroute or self.time >= (t.retryAt or -math.huge) then
-							local goal = if t.state == "out" and rig then rig.cell else hq.cell
-							local p2 = roads.search(c, goal, roads.truckCostFn(c, goal), { minCost = 1, fourWay = true })
+							local goal = if t.state == "out" and rig then rig.cell else ((if rig then self.depotCell(rig) else nil) or hq.cell)
+							local p2 = roads.search(c, goal, roads.truckCostFn(c, goal, self.signClosed(t.side)), { minCost = 1, fourWay = true })
 							if p2 and #p2 > 0 and not brokenOn(p2, 1) then
 								t.path, t.pathIndex, t.waiting = p2, 1, 0
 								path = p2
@@ -4691,7 +5826,8 @@ function Sim.new(deps: Deps)
 		-- demoStructureDamage x (1 - half the way past demoReachCells); units within demoLethalCells die,
 		-- beyond it they take demoUnitDamage x demoVs, falling to demoEdgeShare at the edge, x cover (x
 		-- bunching for foot units); trucks take demoUnitDamage x demoVs.armour; the nearest road takes
-		-- demoStructureDamage x demoRoadShare of strike damage. APPROX: rigs can't be damaged in the slice.
+		-- demoStructureDamage x demoRoadShare of strike damage; enemy rigs within the blast (edge
+		-- distance past rigs.damage.hitCells) take demoStructureDamage x the building falloff.
 		function A.demoBlast(e: Entity)
 			if not e.alive then
 				return
@@ -4738,7 +5874,16 @@ function Sim.new(deps: Deps)
 					end
 				end
 			end
+			for _, rig in rigList do
+				if not rig.wrecked and rig.side > 0 and canAttack(by, rig.side) then
+					local d = math.sqrt((rig.x - x) ^ 2 + (rig.y - y) ^ 2) - num("rigs.damage.hitCells")
+					if d <= n then
+						self.damageRig(rig, num("capital.demoStructureDamage") * falloff(d), by)
+					end
+				end
+			end
 			roadBlast(x, y, num("capital.demoStructureDamage") * num("capital.demoRoadShare"), by)
+			self.trenchSmash(x, y, n, math.huge, by)
 			event({ type = "demoBlast", id = e.id, side = by, x = x, y = y, target = hitName })
 			e.hp, e.alive = 0, false
 			event({ type = "destroyed", id = e.id, kind = e.kind, side = e.side, by = by })
@@ -5050,6 +6195,113 @@ function Sim.new(deps: Deps)
 
 	---------------------------------------------------------------- production, economy, verdict
 
+	---------------------------------------------------------------- rally points (the game's rallyOf, doorEdge, doorOf, setRally, clearRally, sendToRally)
+	do
+		local cs = num("match.cellScale")
+		-- where a producer sends new units: its set rally, else beyond the footprint towards the nearest road
+		-- (production.rallyToRoad) or the map centre. Naval yards (the game's B9) are not in the slice.
+		function self.rallyOf(st: Entity): (number, number, boolean)
+			if st.rally then
+				return st.rally.x, st.rally.y, true
+			end
+			local ox, oy = centre(st.cell)
+			local nx, ny = W / 2 - ox, H / 2 - oy
+			local foot = footprintOf(st.kind) + 0.5
+			if r.data["production.rallyToRoad"] then
+				local reach = foot + num("production.rallyRoadCells") * cs
+				local best = math.huge
+				for yy = math.max(0, math.floor(oy - reach)), math.min(H - 1, math.floor(oy + reach)) do
+					for xx = math.max(0, math.floor(ox - reach)), math.min(W - 1, math.floor(ox + reach)) do
+						if roads.isRoad(yy * W + xx) then
+							local dx, dy = xx + 0.5 - ox, yy + 0.5 - oy
+							if math.max(math.abs(dx), math.abs(dy)) > foot then
+								local d = dx * dx + dy * dy
+								if d < best then
+									best, nx, ny = d, dx, dy
+								end
+							end
+						end
+					end
+				end
+			end
+			local l = math.sqrt(nx * nx + ny * ny)
+			if l < 0.001 then
+				nx, ny = 0, 1
+			else
+				nx, ny = nx / l, ny / l
+			end
+			local d = foot + num("production.rallyCells") * cs
+			return math.clamp(ox + nx * d, 0.5, W - 0.5), math.clamp(oy + ny * d, 0.5, H - 0.5), false
+		end
+		-- the point just outside the footprint edge that faces the rally (doorEdge + half a cell outwards)
+		function self.doorOf(st: Entity, rx: number, ry: number): (number, number)
+			local cx, cy = centre(st.cell)
+			local s = footprintOf(st.kind) + 0.5
+			local dx, dy = rx - cx, ry - cy
+			local span = s * num("production.doorSpan")
+			if math.abs(dx) < 0.001 and math.abs(dy) < 0.001 then
+				return cx, cy + s + 0.5
+			end
+			if math.abs(dx) >= math.abs(dy) then
+				local h = math.sign(dx)
+				return cx + h * s + h * 0.5, cy + math.clamp(dy / math.abs(dx) * s, -span, span)
+			end
+			local v = math.sign(dy)
+			return cx + math.clamp(dx / math.abs(dy) * s, -span, span), cy + v * s + v * 0.5
+		end
+		-- the game's setRally: nil on success, else the reason
+		function self.setRally(side: number, id: number, x: number, y: number): string?
+			local st = self.entities[id]
+			if not st or not st.alive or not isStructure(st) then
+				return "blocked"
+			end
+			if st.side ~= side then
+				return "notOwned"
+			end
+			local makes = r.data[`structures.{st.kind}.produces`] :: { string }?
+			if not makes or #makes == 0 then
+				return "blocked"
+			end
+			local c = cellAt(x, y)
+			if c < 0 or x < 0 or y < 0 or x >= W or y >= H then
+				return "blocked"
+			end
+			if not roads.passable(c) then
+				return "terrain"
+			end
+			st.rally = { x = x, y = y }
+			return nil
+		end
+		function self.clearRally(side: number, id: number): string?
+			local st = self.entities[id]
+			if not st or not st.alive or st.side ~= side then
+				return "notOwned"
+			end
+			st.rally = nil
+			return nil
+		end
+		-- the game's sendToRally: each new unit takes the next of production.rallySlots ring slots round the rally
+		function self.sendToRally(st: Entity, u: Entity, rx: number, ry: number)
+			local c = cellAt(rx, ry)
+			if c < 0 then
+				return
+			end
+			local slots = pathing.ringSlots(c, math.max(1, num("production.rallySlots")))
+			if #slots == 0 then
+				return
+			end
+			local made = st.made or 0
+			st.made = made + 1
+			local s = slots[made % #slots + 1]
+			local sx, sy = centre(s)
+			planTo(u, s, sx, sy)
+			if not u.path or #u.path == 0 then
+				u.path, u.target, u.spot = nil, nil, nil
+				u.post = cellAt(u.x, u.y)
+			end
+		end
+	end
+
 	-- the game's updateStructures: construction, repair, then the head of each production queue
 	local function production(dt: number)
 		for _, st in self.list do
@@ -5071,11 +6323,14 @@ function Sim.new(deps: Deps)
 							st.queueProgress = 0
 							table.remove(st.queue, 1)
 							table.remove(st.queuePaid or {}, 1)
-							local x, y = rallyPoint(st, self.nextId)
-							if not roads.passable(cellAt(x, y)) then
-								x, y = freePointNear(x, y)
+							local rx, ry = self.rallyOf(st)
+							local x, y = self.doorOf(st, rx, ry)
+							local dc = cellAt(math.clamp(x, 0, W - 1e-6), math.clamp(y, 0, H - 1e-6))
+							if not roads.passable(dc) then
+								x, y = freePointNear(x, y) -- APPROX: the game's freeSpotNear picks random points 1-4 x cellScale out
 							end
 							local u = self.spawnUnit(item, st.side, x, y)
+							self.sendToRally(st, u, rx, ry)
 							event({ type = "unitReady", id = u.id, side = st.side, kind = item, from = st.id })
 						end
 					end
@@ -5286,7 +6541,7 @@ function Sim.new(deps: Deps)
 	-- APPROX: unarmed units are not slid round enemies as in the game; they walk on.
 	local function holdAtEnemy(e: Entity, n: number, s: number): boolean
 		local r = num("movement.enemySpaceCells")
-		if r <= 0 or e.inside then
+		if r <= 0 or e.inside or self.retreating(e) then
 			return false
 		end
 		local l, c = e.x - n, e.y - s
@@ -6179,8 +7434,8 @@ function Sim.new(deps: Deps)
 		local T: any = {}
 		self.trenches = {} :: { [number]: any }
 		local nextTrench = 1
-		local WIRE, DUG, GONE, BAD, PLAN, WET = 5, 1, 3, 4, 0, 2
-		self.TRENCH = { plan = PLAN, dug = DUG, gone = GONE, bad = BAD, wire = WIRE, wet = WET }
+		local WIRE, DUG, GONE, BAD, PLAN, WET, SMASHED = 5, 1, 3, 4, 0, 2, 6
+		self.TRENCH = { plan = PLAN, dug = DUG, gone = GONE, bad = BAD, wire = WIRE, wet = WET, smashed = SMASHED }
 		local SOFT = { fire = 1, traps = 2, wire = 3 } -- the game's ab / tD / F_
 		self.TRENCH_KINDS = { "ditch", "fire", "traps", "wire" }
 		-- the game's FY: seconds and oil a cell for the trench's kind
@@ -6338,9 +7593,86 @@ function Sim.new(deps: Deps)
 			return best
 		end
 		-- the game's Uie: the cells of a line, ends trimmed to good ground
+		-- the game's ZY: lay out the line; then, where an end stops just short of water or other
+		-- ground nobody can cross, carry it on to seal the gap (zie) and lay it out again
 		function self.trenchLayout(side: number, pts: { any }, kind: string?): { [string]: any }
 			local line = T.prepare(pts)
 			local join = if #line > 0 then T.joinAt(side, line[1].x, line[1].y, kind) else nil
+			local a = T.layoutCore(side, line, join)
+			if num("trenches.sealCells") <= 0 or #a.cells == 0 then
+				return a
+			end
+			local r = if join then nil else T.seal(side, a.cells, true)
+			local i = T.seal(side, a.cells, false)
+			if not r and not i then
+				return a
+			end
+			local more = {}
+			if r then
+				table.insert(more, r)
+			end
+			for _, q in a.pts do
+				table.insert(more, q)
+			end
+			if i then
+				table.insert(more, i)
+			end
+			return T.layoutCore(side, more, join)
+		end
+		-- the game's zie: from the line's first (or last) cell, the nearest blocked cell (off the map,
+		-- or impassable and not part of the line) within sealCells ahead of it, reached in a straight
+		-- run of cells that may be dug; returns the end point to carry the line on to, or nil
+		function T.seal(side: number, cells: { number }, atStart: boolean): any
+			local s = num("trenches.sealCells")
+			local r = cells[if atStart then 1 else #cells]
+			local i, l = r % W, r // W
+			local on = {}
+			for _, c in cells do
+				on[c] = true
+			end
+			local function inside(v: number, b: number): boolean
+				return v >= 0 and b >= 0 and v < W and b < H
+			end
+			local function blocked(v: number, b: number): boolean
+				return not inside(v, b) or (not on[b * W + v] and not roads.passable(b * W + v))
+			end
+			if blocked(i - 1, l) or blocked(i + 1, l) or blocked(i, l - 1) or blocked(i, l + 1) then
+				return nil
+			end
+			local d = cells[if atStart then math.min(#cells, 4) else math.max(1, #cells - 3)]
+			local f, p = i - d % W, l - d // W
+			local g = math.ceil(s)
+			local best, by = nil, math.huge
+			for v = -g, g do
+				for b = -g, g do
+					local k = math.sqrt(b * b + v * v)
+					if not (k == 0 or k > s or k > by or (k == by and best) or not blocked(i + b, l + v) or b * f + v * p < 0) then
+						local x, cy = math.clamp(i + b, 0, W - 1), math.clamp(l + v, 0, H - 1)
+						local m = T.line(i + 0.5, l + 0.5, x + 0.5, cy + 0.5)
+						table.remove(m, 1)
+						if inside(i + b, l + v) then
+							table.remove(m)
+						end
+						local ok = #m > 0
+						for _, q in m do
+							if on[q] or self.trenchCellProblem(side, q) then
+								ok = false
+								break
+							end
+						end
+						if ok then
+							best, by = m, k
+						end
+					end
+				end
+			end
+			if not best then
+				return nil
+			end
+			local w = best[#best]
+			return { x = w % W + 0.5, y = w // W + 0.5 }
+		end
+		function T.layoutCore(side: number, line: { any }, join: any): { [string]: any }
 			local cells, seen = {}, {}
 			local skip = {}
 			if join then
@@ -6491,6 +7823,16 @@ function Sim.new(deps: Deps)
 			if id < 0 then
 				id = roads.trenchSoftId(c)
 			end
+			if id < 0 then
+				-- an open cell of a trench (smashed, filled): the game's nD looks through the lines
+				for _, t in self.trenches do
+					local i = table.find(t.cells, c)
+					if i and t.state[i] == SMASHED then
+						return t
+					end
+				end
+				return nil
+			end
 			if id >= 0 then
 				return self.trenches[id]
 			end
@@ -6549,19 +7891,85 @@ function Sim.new(deps: Deps)
 			if not t then
 				return
 			end
-			local i = if job.kind == "dig" then math.min(#t.cells, t.dug + 1) else T.firstDug(t, job.from, job.to)
+			if job.kind == "dig" then
+				T.walkDig(e, t, job)
+				return
+			end
+			local i = if job.kind == "mend" then T.firstMend(t, job.from, job.to) else T.firstDug(t, job.from, job.to)
 			if i < 1 then
 				return
 			end
 			local x, y = centre(t.cells[i])
 			walkNear(e, x, y, num("trenches.reach"))
 		end
+		-- the game's mWe: a digger stands standOffCells to one side of the line, level with the cell
+		-- leadCells ahead (keeping to the side it first picked), on a route that does not cross the
+		-- cells still to dig; failing that it walks to within reach of the next cell
+		function T.walkDig(e: Entity, t: any, job: any)
+			local a = #t.cells
+			if t.dug >= a then
+				return
+			end
+			local reach, so, spot = num("trenches.reach"), num("trenches.standOffCells"), num("trenches.spotCells")
+			local r1 = math.min(a, t.dug + 1 + num("trenches.leadCells"))
+			local ix, iy = centre(t.cells[r1])
+			local lx, ly = centre(t.cells[t.dug + 1])
+			local cx, cy = centre(t.cells[math.max(1, r1 - 2)])
+			local hx, hy = centre(t.cells[math.min(a, r1 + 2)])
+			local u, d = hx - cx, hy - cy
+			local f = math.sqrt(u * u + d * d)
+			local left = {}
+			for k = t.dug + 1, a do
+				left[t.cells[k]] = true
+			end
+			if f > 1e-6 then
+				u, d = u / f, d / f
+				job.side = job.side or (if -d * (e.x - ix) + u * (e.y - iy) < 0 then -1 else 1)
+				for _, m in { job.side, -job.side } do
+					for _, y in { so, math.max(so, reach - spot) } do
+						local w, v = ix - d * m * y, iy + u * m * y
+						local b = cellAt(w, v)
+						if b >= 0 and roads.passable(b) and not left[b] then
+							walkNear(e, w, v, spot)
+							local ok
+							if e.path then
+								ok = true
+								for k = e.pathIndex or 1, #e.path do
+									if left[e.path[k]] then
+										ok = false
+										break
+									end
+								end
+							else
+								ok = T.atWork(e, t, T.reachOf())
+							end
+							if ok then
+								job.side = m
+								local path = e.path
+								if path and #path > math.sqrt((w - e.x) ^ 2 + (v - e.y) ^ 2) * 1.5 + num("trenches.leadCells") * 2 then
+									-- a long way round: walking to the next cell may be shorter
+									walkNear(e, lx, ly, reach)
+									local near = not e.path and (e.x - lx) ^ 2 + (e.y - ly) ^ 2 <= reach * reach
+									if not near and (not e.path or #e.path >= #path) then
+										e.path, e.pathIndex = path, 1
+									end
+								end
+								return
+							end
+						end
+					end
+				end
+			end
+			walkNear(e, lx, ly, reach)
+		end
 		-- a cell is dug (the game's wWe / vWe): it blocks the way; units on it step off (KY), routes
 		-- through it re-plan (YY), oil routes over it are redone
 		-- the game's k7e / _Ue: what a dug cell is now. Wire (by a road) and a flooded cell block the way;
 		-- a ditch blocks it unless shells caved it (then it is crossed like a fire trench); a fire trench,
 		-- traps and a wire belt are crossable by some (see Roads.softPace) and a wrecked one by all.
+		T.epoch = 0
 		function T.settle(t: any, i: number)
+			T.epoch += 1
 			local c = t.cells[i]
 			local st = t.state[i]
 			local hard, soft = false, 0
@@ -6582,6 +7990,7 @@ function Sim.new(deps: Deps)
 					soft = SOFT[k]
 				end
 			end
+			local wasSoft = if roads.trenchSoftId(c) == t.id then roads.trenchSoft(c) else 0
 			if hard then
 				roads.setTrench(c, t.id)
 			elseif roads.trenchAt(c) == t.id then
@@ -6593,24 +8002,74 @@ function Sim.new(deps: Deps)
 				roads.setTrenchSoft(c, 0, -1)
 			end
 			gridTick = -1
+			if soft > 0 and soft ~= wasSoft and not hard then
+				T.softened(c, soft)
+			end
 			return hard
 		end
-		function T.close(t: any, i: number, wire: boolean)
-			local c = t.cells[i]
-			t.state[i] = if wire then WIRE else DUG
-			if not T.settle(t, i) then
-				-- crossable: routes through it re-plan with the new costs
-				for _, e in self.list do
-					if e.alive and e.cat == "unit" and e.path and e.pathIndex and e.kind ~= TRUCK then
+		-- the game's Ag: a unit of this kind cannot cross a cell with this soft trench code
+		function T.stopsKind(kind: string, code: number): boolean
+			local move = if text(`units.{kind}.armour`) == "air" then "air" else text(`units.{kind}.move`)
+			return roads.softPace(move, code, num("trenchWorks.kinds.fire.footPace"), num("trenchWorks.kinds.traps.footPace"),
+				num("trenchWorks.kinds.wire.footPace")) <= 0
+		end
+		-- the game's RUe / PUe: a cell turned into a trench some units cannot cross. Those standing on
+		-- it move to the nearest cell round it they can stand on (rI); those routed through it stop
+		-- if it was where they were going, or plan again.
+		function T.softened(c: number, code: number)
+			local cx, cy = c % W, c // W
+			for _, e in self.list do
+				if e.alive and e.cat == "unit" and not e.inside and not e.carrier and T.stopsKind(e.kind, code) then
+					if cellAt(e.x, e.y) == c then
+						local done = false
+						for ring = 1, 4 do
+							local best, bd = -1, math.huge
+							for y = cy - ring, cy + ring do
+								for x = cx - ring, cx + ring do
+									if x >= 0 and y >= 0 and x < W and y < H and math.max(math.abs(x - cx), math.abs(y - cy)) == ring then
+										local q = y * W + x
+										local sq2 = roads.trenchSoft(q)
+										if roads.passable(q) and roads.buildingAt(q) < 0 and not (sq2 > 0 and T.stopsKind(e.kind, sq2)) then
+											local dd = (x - cx) ^ 2 + (y - cy) ^ 2
+											if dd < bd then
+												best, bd = q, dd
+											end
+										end
+									end
+								end
+							end
+							if best >= 0 then
+								e.x, e.y = centre(best)
+								e.px, e.py = e.x, e.y
+								done = true
+								break
+							end
+						end
+						if done and e.path then
+							planLater(e)
+						end
+					elseif e.path and e.pathIndex then
 						for k = e.pathIndex, #e.path do
 							if e.path[k] == c then
-								planLater(e)
+								if e.kind == TRUCK then
+									e.reroute = true
+								elseif e.path[#e.path] == c or e.post == c then
+									e.path, e.target, e.spot = nil, nil, nil
+								else
+									planLater(e)
+								end
 								break
 							end
 						end
 					end
 				end
-				return
+			end
+		end
+		function T.close(t: any, i: number, wire: boolean)
+			local c = t.cells[i]
+			t.state[i] = if wire then WIRE else DUG
+			if not T.settle(t, i) then
+				return -- crossable by some (T.settle moved the others off)
 			end
 			for _, e in self.list do
 				if e.alive and e.cat == "unit" and not e.inside and not e.carrier then
@@ -6653,6 +8112,798 @@ function Sim.new(deps: Deps)
 				end
 			end
 		end
+		-- cells whose centre lies within rr of (x, y) (the game's H4)
+		function T.cellsWithin(x: number, y: number, rr: number): { number }
+			local out, r2 = {}, rr * rr
+			for cy = math.max(0, math.floor(y - rr)), math.min(H - 1, math.ceil(y + rr)) do
+				for cx = math.max(0, math.floor(x - rr)), math.min(W - 1, math.ceil(x + rr)) do
+					if (cx + 0.5 - x) ^ 2 + (cy + 0.5 - y) ^ 2 <= r2 then
+						table.insert(out, cy * W + cx)
+					end
+				end
+			end
+			return out
+		end
+		function T.caved(t: any, c: number, by: number)
+			if t.owner ~= by and self.time - (t.cavedAt or -1e9) >= 30 then
+				t.cavedAt = self.time
+				local x, y = centre(c)
+				event({ type = "trenchCaved", side = t.owner, x = x, y = y })
+			end
+		end
+		-- the game's NUe (from every blast, with roads' GX): shells near a dug cell wear it by
+		-- damage / caveHp; at 1 it caves in (a ditch is then crossed like a fire trench, traps and a
+		-- wire belt are gone)
+		function self.trenchShell(x: number, y: number, damage: number, by: number)
+			if damage <= 0 or next(self.trenches) == nil then
+				return
+			end
+			local hp = math.max(1, num("trenchWorks.shells.caveHp"))
+			for _, c in T.cellsWithin(x, y, num("trenchWorks.shells.blastCells")) do
+				local t = self.trenchAtCell(c)
+				local i = if t then table.find(t.cells, c) else nil
+				if t and i and t.state[i] == DUG and (t.damage[i] or 0) < 1 then
+					t.damage[i] = math.min(1, (t.damage[i] or 0) + damage / hp)
+					if t.damage[i] >= 1 then
+						T.settle(t, i)
+						T.caved(t, c, by)
+					end
+				end
+			end
+		end
+		-- the game's FM: a shell of big.damage or more smashes dug and wired cells within its splash
+		-- (at least big.minCells) flat; engineers can mend them
+		function self.trenchSmash(x: number, y: number, radius: number, damage: number, by: number)
+			if next(self.trenches) == nil or damage < num("trenchWorks.shells.big.damage") then
+				return
+			end
+			local opened = false
+			for _, c in T.cellsWithin(x, y, math.max(radius, num("trenchWorks.shells.big.minCells"))) do
+				local t = self.trenchAtCell(c)
+				local i = if t then table.find(t.cells, c) else nil
+				if t and i and (t.state[i] == DUG or t.state[i] == WIRE) then
+					if t.state[i] == WIRE and roads.isRoad(c) then
+						opened = true
+					end
+					t.state[i], t.flood[i], t.damage[i] = SMASHED, 0, 0
+					T.settle(t, i)
+					T.caved(t, c, by)
+				end
+			end
+			if opened then
+				for _, rig in rigList do
+					if not rig.route then
+						resetRoute(rig)
+					end
+				end
+			end
+		end
+		-- the game's _7e: a cell engineers can mend
+		function T.needsMend(t: any, i: number): boolean
+			return (t.state[i] == DUG and (t.damage[i] or 0) > 0) or t.state[i] == SMASHED
+		end
+		function T.firstMend(t: any, from: number, to: number): number
+			for i = from, math.min(to, #t.cells) do
+				if T.needsMend(t, i) then
+					return i
+				end
+			end
+			return -1
+		end
+		-- the game's UUe: engineers mend shell damage within gapCells either side of the cell
+		function self.orderMend(side: number, ids: { number }?, cell: number): (number, string?)
+			local t = self.trenchAtCell(cell)
+			if not t then
+				return 0, "noTrench"
+			end
+			if t.owner ~= side and canAttack(side, t.owner) then
+				return 0, "notOwned"
+			end
+			local a = table.find(t.cells, cell) or 1
+			local reach = math.max(1, num("trenches.gapCells"))
+			local from, to = math.max(1, a - reach), math.min(#t.cells, a + reach)
+			if T.firstMend(t, from, to) < 0 then
+				return 0, "notCaved"
+			end
+			local cx, cy = centre(cell)
+			local crew = T.crew(side, ids, cx, cy)
+			if #crew == 0 then
+				return 0, "noEngineers"
+			end
+			for _, e in crew do
+				clearRecon(e)
+				e.target, e.attackId, e.chasing = nil, nil, nil
+				e.trenchJob = { kind = "mend", id = t.id, from = from, to = to, progress = 0 }
+				T.walk(e, e.trenchJob)
+			end
+			return #crew, nil
+		end
+		-- the game's XUe: each mender works on its own; a smashed cell is dug again over
+		-- mendSecPerCell, a worn one loses that much damage a second
+		function T.mend(e: Entity, t: any, job: any, dt: number, rr: number)
+			local i = T.firstMend(t, job.from, job.to)
+			if i < 0 then
+				e.trenchJob = nil
+				if self.time - (t.mendedAt or -1e9) >= 10 then
+					t.mendedAt = self.time
+					local x, y = centre(t.cells[math.min(job.to, #t.cells)])
+					event({ type = "trenchMended", side = e.side, x = x, y = y })
+				end
+				return
+			end
+			if not T.near(e, t, i, rr) then
+				if not e.path and (e.id + math.floor(self.time * 20 + 0.5)) % 20 == 0 then
+					T.walk(e, job)
+				end
+				return
+			end
+			e.path, e.pathIndex = nil, nil
+			local u = dt / math.max(0.01, num("trenchWorks.shells.mendSecPerCell"))
+			if t.state[i] == SMASHED then
+				job.progress += u
+				if job.progress >= 1 then
+					job.progress = 0
+					t.damage[i] = 0
+					T.close(t, i, t.wire[i] and roads.isRoad(t.cells[i]) or false)
+				end
+				return
+			end
+			local d = t.damage[i] or 0
+			t.damage[i] = math.max(0, d - u)
+			job.progress = 1 - t.damage[i]
+			if d >= 1 and t.damage[i] < 1 then
+				T.close(t, i, false)
+			end
+		end
+		---- breaching charges
+		-- the game's P7e: (why not, ok) for a breaching charge on a cell; not a trench cell: (nil, false)
+		function self.breachCheck(c: number): (string?, boolean)
+			if c < 0 or c >= W * H then
+				return nil, false
+			end
+			local id = roads.trenchAt(c)
+			if id < 0 then
+				id = roads.trenchSoftId(c)
+			end
+			local t = self.trenches[id]
+			local i = if t then table.find(t.cells, c) else nil
+			if not t or not i then
+				return nil, false
+			end
+			if t.state[i] == WET then
+				return "trenchWet", false
+			end
+			if t.state[i] == DUG or t.state[i] == WIRE then
+				return nil, true
+			end
+			return "noTrench", false
+		end
+		function self.breachable(c: number): boolean
+			local _, ok = self.breachCheck(c)
+			return ok
+		end
+		function self.breachReach(): number
+			return num("trenches.reach") + math.sqrt(0.5)
+		end
+		-- the game's GUe: water (not under a road) within floodCells
+		function T.bankAt(x: number, y: number): boolean
+			for _, c in T.cellsWithin(x, y, num("trenchWorks.breach.floodCells")) do
+				local key = `terrain.{roads.terrain(c)}.passable`
+				if r:has(key) and not r:flag(key) and not roads.isRoad(c) then
+					return true
+				end
+			end
+			return false
+		end
+		-- the game's ZUe: the charge smashes gapCells of the trench round the cell flat; a ditch or fire
+		-- trench by water that has not flooded yet floods there instead (its bank is broken). The
+		-- owner sees round the spot for revealSec.
+		function self.blowTrench(c: number, by: number): boolean
+			local t = self.trenchAtCell(c)
+			if not t then
+				for _, tt in self.trenches do
+					if table.find(tt.cells, c) then
+						t = tt
+						break
+					end
+				end
+			end
+			local i = if t then table.find(t.cells, c) else nil
+			if not t or not i then
+				return false
+			end
+			local half = math.max(0, math.floor(num("trenchWorks.breach.gapCells") / 2))
+			local x, y = centre(c)
+			local k = t.kind or "ditch"
+			local anyDug = false
+			for j = 1, #t.cells do
+				if t.state[j] == DUG then
+					anyDug = true
+					break
+				end
+			end
+			local bank = not t.fed and (k == "ditch" or k == "fire") and anyDug and T.bankAt(x, y)
+			local opened = false
+			for j = math.max(1, i - half), math.min(#t.cells, i + half) do
+				local st = t.state[j]
+				if st == DUG or st == WIRE then
+					if st == WIRE and roads.isRoad(t.cells[j]) then
+						opened = true
+					end
+					if bank and st == DUG then
+						t.state[j], t.flood[j] = WET, 1
+					else
+						t.state[j], t.flood[j] = SMASHED, 0
+					end
+					t.damage[j] = 0
+					T.settle(t, j)
+				end
+			end
+			if opened then
+				for _, rig in rigList do
+					if not rig.route then
+						resetRoute(rig)
+					end
+				end
+			end
+			if bank then
+				t.fed = true
+				event({ type = "trenchBankBroken", side = t.owner, x = x, y = y })
+				if by ~= t.owner then
+					event({ type = "trenchBankBroken", side = by, x = x, y = y })
+				end
+			else
+				event({ type = "trenchBlown", side = by, x = x, y = y })
+				if by ~= t.owner then
+					event({ type = "trenchBreached", side = t.owner, x = x, y = y })
+				end
+			end
+			for n = #self.reveals, 1, -1 do
+				if self.reveals[n].untilT <= self.time then
+					table.remove(self.reveals, n)
+				end
+			end
+			if by ~= t.owner and self.sides[t.owner] then
+				table.insert(self.reveals, { side = t.owner, untilT = self.time + num("trenchWorks.breach.revealSec"), pts = { x, y },
+					r = num("trenchWorks.breach.revealCells") })
+			end
+			return true
+		end
+		---- manning trenches
+		-- the game's iI: a fire trench cell that is not caved in (whoever dug it)
+		function T.fireAt(c: number): any
+			if roads.trenchSoft(c) ~= SOFT.fire then
+				return nil
+			end
+			local t = self.trenches[roads.trenchSoftId(c)]
+			if not t or t.kind ~= "fire" then
+				return nil
+			end
+			local i = table.find(t.cells, c)
+			return if i and (t.damage[i] or 0) < 1 then t else nil
+		end
+		-- the game's EUe: open cells round a side's finished bunker or AT gun that touches a fire
+		-- trench (its own or an ally's) count as that trench; worked out once a second
+		T.linkMap, T.linksAt = {}, -1
+		function T.links(side: number): { [number]: number }
+			local now = math.floor(self.time)
+			local links = T.linkMap
+			if T.linksAt ~= now then
+				links = {}
+				T.linkMap, T.linksAt = links, now
+				local reach = num("trenchWorks.man.linkCells")
+				for _, st in self.list do
+					if st.alive and (st.kind == "bunker" or st.kind == "atgun") and (st.built or 1) >= 1 then
+						local foot = {}
+						for _, fc in footprintCells(st.cell, footprintOf(st.kind)) do
+							foot[fc] = true
+						end
+						local cx, cy = centre(st.cell)
+						local ring = {}
+						for _, c in T.cellsWithin(cx, cy, footprintOf(st.kind) + 0.5 + reach) do
+							if not foot[c] and roads.passable(c) then
+								table.insert(ring, c)
+							end
+						end
+						local id = -1
+						for _, c in ring do
+							local t = T.fireAt(c)
+							if t and (t.owner == st.side or not canAttack(t.owner, st.side)) then
+								id = t.id
+								break
+							end
+						end
+						if id >= 0 then
+							links[st.side] = links[st.side] or {}
+							for _, c in ring do
+								if links[st.side][c] == nil then
+									links[st.side][c] = id
+								end
+							end
+						end
+					end
+				end
+			end
+			for s2, m in links do
+				if s2 == side or not canAttack(side, s2) then
+					return m
+				end
+			end
+			return {}
+		end
+		-- the game's Tf: the trench a side's infantry on this cell is in, or -1
+		function self.trenchManAt(side: number, c: number): number
+			if c < 0 then
+				return -1
+			end
+			local t = T.fireAt(c)
+			if t then
+				return t.id
+			end
+			return T.links(side)[c] or -1
+		end
+		-- the game's VUe, every tick: foot units on a fire trench (or still walking along one) are in it
+		function self.manTick()
+			local any = next(self.trenches) ~= nil
+			if not any then
+				for _, e in self.list do
+					e.inTrench = nil
+				end
+				return
+			end
+			for _, e in self.list do
+				if e.alive and e.cat == "unit" then
+					if e.inside or text(`units.{e.kind}.move`) ~= "foot" or not any then
+						e.inTrench = nil
+					else
+						local id = self.trenchManAt(e.side, cellAt(e.x, e.y))
+						if id < 0 and e.inTrench and e.path and e.pathIndex and e.path[e.pathIndex]
+							and self.trenchManAt(e.side, e.path[e.pathIndex]) >= 0 then
+							id = e.inTrench
+						end
+						e.inTrench = if id >= 0 then id else nil
+					end
+				end
+			end
+		end
+		-- the game's FUe: the share of a hit a unit in a trench still takes
+		function self.trenchShare(e: Entity, splash: number, bombard: boolean?): number
+			if not e.inTrench then
+				return 1
+			end
+			return if bombard or splash > 0 then num("trenchWorks.man.shellShare") else num("trenchWorks.man.bulletShare")
+		end
+		-- the game's DUe: for each unit in a trench, the sides with a unit or building within hideCells
+		T.spottedMap, T.spottedAt = {}, -1
+		function T.spotted(): { [number]: { [number]: boolean } }
+			if T.spottedAt == self.time then
+				return T.spottedMap
+			end
+			local spotted = {}
+			T.spottedMap, T.spottedAt = spotted, self.time
+			local h = num("trenchWorks.man.hideCells")
+			for _, a in self.list do
+				if a.alive and a.inTrench then
+					local seen = {}
+					for _, o in self.list do
+						if o.alive and o.side ~= a.side and not seen[o.side] then
+							if o.cat == "unit" and not o.inside and o.class ~= "air" and o.kind ~= TRUCK then
+								if (o.x - a.x) ^ 2 + (o.y - a.y) ^ 2 <= h * h then
+									seen[o.side] = true
+								end
+							elseif isStructure(o) and o.kind ~= "rig" then
+								local cx, cy = centre(o.cell)
+								if math.sqrt((cx - a.x) ^ 2 + (cy - a.y) ^ 2) - footprintOf(o.kind) <= h then
+									seen[o.side] = true
+								end
+							end
+						end
+					end
+					if next(seen) then
+						spotted[a.id] = seen
+					end
+				end
+			end
+			return spotted
+		end
+		-- the game's lv / OUe: a unit in a trench that has not fired for firedShowSec is hidden from an
+		-- enemy side with nothing within hideCells of it
+		function self.trenchHidden(e: Entity, side: number): boolean
+			if not e.inTrench or side <= 0 or e.side == side or not canAttack(side, e.side) then
+				return false
+			end
+			if e.firedAt and self.time - e.firedAt < num("trenchWorks.man.firedShowSec") then
+				return false
+			end
+			local seen = T.spotted()[e.id]
+			if not seen then
+				return true
+			end
+			for s2 in seen do
+				if s2 == side or not canAttack(side, s2) then
+					return false
+				end
+			end
+			return true
+		end
+		-- the game's L7e: trench cells reachable from a cell along the trench (4-way), at most n
+		function T.along(side: number, from: number, n: number): { number }
+			local order, seen = { from }, { [from] = true }
+			local i = 1
+			while i <= #order and #order < n do
+				local c = order[i]
+				local x, y = c % W, c // W
+				for _, d in { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } } do
+					local nx, ny = x + d[1], y + d[2]
+					local g = ny * W + nx
+					if nx >= 0 and ny >= 0 and nx < W and ny < H and not seen[g] and roads.passable(g) and self.trenchManAt(side, g) >= 0 then
+						seen[g] = true
+						table.insert(order, g)
+					end
+				end
+				i += 1
+			end
+			return order
+		end
+		-- the game's S7e: selected infantry spread out along the fire trench at (or next to) a cell,
+		-- each to the nearest free trench cell within reachCells. APPROX: they walk there by the
+		-- normal routes (the game routes ones already in the trench along it)
+		function self.orderMan(side: number, ids: { number }, cell: number): (number, string?)
+			if cell < 0 or cell >= W * H then
+				return 0, "notFireTrench"
+			end
+			local anchor = if self.trenchManAt(side, cell) >= 0 then cell else -1
+			if anchor < 0 then
+				local best = math.huge
+				local cx, cy = cell % W + 0.5, cell // W + 0.5
+				for _, m in T.cellsWithin(cx, cy, math.max(1.5, num("trenchWorks.man.linkCells"))) do
+					if self.trenchManAt(side, m) >= 0 then
+						local dd = (m % W - cell % W) ^ 2 + (m // W - cell // W) ^ 2
+						if dd < best then
+							best, anchor = dd, m
+						end
+					end
+				end
+			end
+			if anchor < 0 then
+				return 0, "notFireTrench"
+			end
+			local men = {}
+			local picked = {}
+			for _, id in ids do
+				local e = self.entities[id]
+				if e and e.alive and e.side == side and e.cat == "unit" and not e.inside
+					and text(`units.{e.kind}.move`) == "foot" and e.class ~= "air" then
+					table.insert(men, e)
+					picked[e.id] = true
+				end
+			end
+			if #men == 0 then
+				return 0, "noUnits"
+			end
+			local taken = {}
+			for _, o in self.list do
+				if o.alive and o.cat == "unit" and not picked[o.id] and o.inTrench and (o.side == side or not canAttack(side, o.side)) then
+					taken[cellAt(o.x, o.y)] = true
+				end
+			end
+			local ax, ay = anchor % W + 0.5, anchor // W + 0.5
+			local rc = num("trenchWorks.man.reachCells")
+			local spots = {}
+			for _, g in T.along(side, anchor, num("trenchWorks.man.wayCells")) do
+				if not taken[g] and ((g % W + 0.5 - ax) ^ 2 + (g // W + 0.5 - ay) ^ 2) <= rc * rc and roads.buildingAt(g) < 0 then
+					table.insert(spots, g)
+				end
+			end
+			if #spots == 0 then
+				return 0, "garrisonFull"
+			end
+			local sent = 0
+			for _, g in spots do
+				if #men == 0 then
+					break
+				end
+				local gx, gy = g % W + 0.5, g // W + 0.5
+				local bi, bd = 1, math.huge
+				for k, e in men do
+					local dd = (e.x - gx) ^ 2 + (e.y - gy) ^ 2
+					if dd < bd then
+						bi, bd = k, dd
+					end
+				end
+				local e = table.remove(men, bi)
+				clearRecon(e)
+				e.trenchJob, e.attackId, e.chasing = nil, nil, nil
+				walkNear(e, gx, gy, 0)
+				e.post = g
+				sent += 1
+			end
+			return sent, nil
+		end
+		---- the bot's trench work (the game's JUe, at the end of each bot think)
+		-- the game's C7e for tracks: 4-connected pieces of ground a tank can cross (fire trenches and
+		-- traps split it, a wire belt does not); kept until the trenches change
+		T.compEpoch, T.comp = -1, {}
+		function T.pieces(): { number }
+			if T.compEpoch == T.epoch then
+				return T.comp
+			end
+			local comp = table.create(W * H, -1)
+			local function open(c: number): boolean
+				local sc = roads.trenchSoft(c)
+				return roads.passable(c) and (sc == 0 or sc == SOFT.wire)
+			end
+			local n = 0
+			local stack = {}
+			for f = 0, W * H - 1 do
+				if comp[f + 1] < 0 and open(f) then
+					comp[f + 1] = n
+					stack[1] = f
+					local top = 1
+					while top > 0 do
+						local g = stack[top]
+						top -= 1
+						local x = g % W
+						for _, q in { if x > 0 then g - 1 else -1, if x < W - 1 then g + 1 else -1, if g >= W then g - W else -1, if g < W * H - W then g + W else -1 } do
+							if q >= 0 and comp[q + 1] < 0 and open(q) then
+								comp[q + 1] = n
+								top += 1
+								stack[top] = q
+							end
+						end
+					end
+					n += 1
+				end
+			end
+			T.comp, T.compEpoch = comp, T.epoch
+			return comp
+		end
+		-- the game's rI for a tank: the nearest free cell on the first ring round a building
+		function T.ringCell(st: Entity): number
+			local l = math.ceil(footprintOf(st.kind))
+			local a, b = st.cell % W, st.cell // W
+			for ring = l + 1, l + 6 do
+				local best, bd = -1, math.huge
+				for y = b - ring, b + ring do
+					for x = a - ring, a + ring do
+						if x >= 0 and y >= 0 and x < W and y < H and math.max(math.abs(x - a), math.abs(y - b)) == ring then
+							local c = y * W + x
+							local sc = roads.trenchSoft(c)
+							local blocked = sc > 0 and roads.softPace("tracks", sc, 0, 0, 0) <= 0
+							if roads.passable(c) and roads.buildingAt(c) < 0 and not blocked then
+								local dd = (x - a) ^ 2 + (y - b) ^ 2
+								if dd < bd then
+									best, bd = c, dd
+								end
+							end
+						end
+					end
+				end
+				if best >= 0 then
+					return best
+				end
+			end
+			return -1
+		end
+		-- the game's QUe: own engineers already work on (or charges sit on) the trench
+		function T.busy(side: number, t: any): boolean
+			for _, e in self.list do
+				if e.alive and e.side == side and ((e.sabotageCell and table.find(t.cells, e.sabotageCell)) or (e.trenchJob and e.trenchJob.id == t.id)) then
+					return true
+				end
+			end
+			for _, sb in self.sabotages do
+				if sb.side == side and table.find(t.cells, sb.cell) then
+					return true
+				end
+			end
+			return false
+		end
+		-- the game's tWe: when trenches cut the way between our HQ and an enemy HQ for tanks, the first
+		-- trench on the straight line between them is breached (an enemy one, by the nearest engineer)
+		-- or filled in
+		function T.botClear(side: number)
+			local hq = hqOf(side)
+			if not hq then
+				return
+			end
+			local ax, ay = centre(hq.cell)
+			local comp = T.pieces()
+			local seen = {}
+			for s2 in self.sides do
+				local eh = if s2 ~= side and canAttack(side, s2) then hqOf(s2) else nil
+				if eh then
+					local hc, oc = T.ringCell(eh), T.ringCell(hq)
+					if hc >= 0 and oc >= 0 and comp[hc + 1] ~= comp[oc + 1] then
+						local bx, by = centre(eh.cell)
+						local p = -1
+						for _, c in T.line(ax, ay, bx, by) do
+							local sc = roads.trenchSoft(c)
+							if roads.trenchAt(c) >= 0 or sc == SOFT.fire or sc == SOFT.traps then
+								p = c
+								break
+							end
+						end
+						local t = if p >= 0 then self.trenchAtCell(p) else nil
+						if t and not seen[t.id] then
+							seen[t.id] = true
+							if not T.busy(side, t) then
+								local foe = t.owner ~= side and canAttack(side, t.owner)
+								local wet = t.state[table.find(t.cells, p) or 0] == WET
+								local done = false
+								if foe and not wet and self.breachable(p) then
+									local px, py = centre(p)
+									local crew = T.crew(side, nil, px, py)
+									if #crew > 0 and (self.orderSabotage(side, p, { crew[1].id })) > 0 then
+										done = true
+									end
+								end
+								if not done then
+									self.orderFill(side, nil, p)
+								end
+							end
+						end
+					end
+				end
+			end
+		end
+		-- the game's oWe: with fewer than bots.lines trenches, all dug, and bots.digFrom oil, idle
+		-- engineers dig fire trench lines across the way to the nearest enemy HQ, bots.outCells out
+		-- from our HQ (tried at a few distances and angles), lineCells long, clear of roads
+		function T.botDig(side: number)
+			local mine = 0
+			for _, t in self.trenches do
+				if t.owner == side then
+					mine += 1
+					if t.dug < #t.cells then
+						return
+					end
+				end
+			end
+			local sd = self.sides[side]
+			if mine >= num("trenchWorks.bots.lines") or not sd or sd.oil < num("trenchWorks.bots.digFrom") then
+				return
+			end
+			local hq = hqOf(side)
+			if not hq then
+				return
+			end
+			local ax, ay = centre(hq.cell)
+			local rx, ry, best = nil, nil, math.huge
+			for s2 in self.sides do
+				local eh = if s2 ~= side and canAttack(side, s2) then hqOf(s2) else nil
+				if eh then
+					local ex, ey = centre(eh.cell)
+					local dd = (ex - ax) ^ 2 + (ey - ay) ^ 2
+					if dd < best then
+						rx, ry, best = ex, ey, dd
+					end
+				end
+			end
+			if not rx then
+				return
+			end
+			local crew = T.crew(side, nil, ax, ay)
+			if #crew == 0 then
+				return
+			end
+			local c = math.sqrt((rx - ax) ^ 2 + (ry - ay) ^ 2)
+			c = if c > 0 then c else 1
+			local h, u = (rx - ax) / c, (ry - ay) / c
+			local d = num("trenches.minCells")
+			local out, k = num("trenchWorks.bots.outCells"), num("trenchWorks.bots.lineCells") / 2
+			local chosen, bestS = {}, 0
+			for _, g in { 1, 0.8, 1.2, 0.65 } do
+				for _, m in { 0, 0.35, -0.35 } do
+					local dy, dx = math.cos(m) * h - math.sin(m) * u, math.sin(m) * h + math.cos(m) * u
+					local v, b = ax + h * out * g, ay + u * out * g
+					local runs, cur = {}, {}
+					local A = -k
+					while A <= k + 1e-6 do
+						local P = { x = v - dx * A, y = b + dy * A }
+						local ok = cellAt(P.x, P.y) >= 0
+						for oy = -1, 1 do
+							for ox = -1, 1 do
+								local q = if ok then cellAt(P.x + ox, P.y + oy) else -1
+								if ok and q >= 0 and T.nearRoad(q) then
+									ok = false
+								end
+							end
+						end
+						if ok then
+							table.insert(cur, P)
+						elseif #cur > 0 then
+							table.insert(runs, cur)
+							cur = {}
+						end
+						A += 0.5
+					end
+					if #cur > 0 then
+						table.insert(runs, cur)
+					end
+					local long = {}
+					for _, run in runs do
+						if #run >= 2 * d + 2 then
+							table.insert(long, run)
+						end
+					end
+					table.sort(long, function(p1, p2)
+						return #p1 > #p2
+					end)
+					local S, picks = 0, {}
+					for n = 1, math.min(2, #long) do
+						local run = long[n]
+						local P3 = { run[1], run[#run // 2 + 1], run[#run] }
+						local lay = self.trenchLayout(side, P3, "fire")
+						local wired = 0
+						for _, w in lay.wire do
+							if w then
+								wired += 1
+							end
+						end
+						if wired == 0 and lay.good >= d then
+							S += lay.good
+							table.insert(picks, P3)
+						end
+					end
+					if S > bestS then
+						chosen, bestS = picks, S
+					end
+				end
+				if #chosen > 0 then
+					break
+				end
+			end
+			-- APPROX: with one engineer the game queues the second line after the first; here it is
+			-- dug on a later think (once the first is done)
+			for n, pts in chosen do
+				if n == 1 or #crew > 1 then
+					self.orderDig(side, { crew[math.min(n, #crew)].id }, pts, "fire")
+				end
+			end
+		end
+		-- the game's nWe: idle armed foot units within bots.manCells of one of our fire trenches man it
+		function T.botMan(side: number)
+			for _, t in self.trenches do
+				if t.owner == side and t.kind == "fire" then
+					local first = -1
+					for i = 1, #t.cells do
+						if t.state[i] == DUG and T.fireAt(t.cells[i]) then
+							first = i
+							break
+						end
+					end
+					if first > 0 then
+						local mid = t.cells[#t.cells // 2 + 1]
+						local anchor = if T.fireAt(mid) then mid else t.cells[first]
+						local ax, ay = centre(anchor)
+						local mc = num("trenchWorks.bots.manCells")
+						local ids = {}
+						for _, e in self.list do
+							if e.alive and e.cat == "unit" and e.side == side and not e.inside and not e.inTrench
+								and (e.target == nil or e.chasing == true) and e.attackId == nil and not e.trenchJob
+								and text(`units.{e.kind}.move`) == "foot" and numOr(`units.{e.kind}.dps`, 0) > 0
+								and text(`units.{e.kind}.nato`) ~= "artillery" and (e.x - ax) ^ 2 + (e.y - ay) ^ 2 <= mc * mc then
+								table.insert(ids, e.id)
+							end
+						end
+						if #ids > 0 then
+							self.orderMan(side, ids, anchor)
+						end
+					end
+				end
+			end
+		end
+		function self.botTrenches(side: number)
+			if not (r:has("trenchWorks.on") and r:flag("trenchWorks.on")) then
+				return
+			end
+			if next(self.trenches) ~= nil then
+				T.botClear(side)
+			end
+			T.botDig(side)
+			T.botMan(side)
+		end
 		-- the game's xWe, every tick
 		function self.trenchTick(dt: number)
 			if next(self.trenches) == nil then
@@ -6667,7 +8918,9 @@ function Sim.new(deps: Deps)
 					if not t then
 						e.trenchJob = nil
 					else
-						if job.kind == "dig" then
+						if job.kind == "mend" then
+							T.mend(e, t, job, dt, rr)
+						elseif job.kind == "dig" then
 							sent[t.id] = true
 							if T.atWork(e, t, rr) then
 								digs[t.id] = (digs[t.id] or 0) + 1
@@ -6724,7 +8977,7 @@ function Sim.new(deps: Deps)
 						self.trenches[id] = nil
 					else
 						for k = #t.cells, o + 1, -1 do
-							t.cells[k], t.state[k], t.wire[k], t.work[k] = nil, nil, nil, nil
+							t.cells[k], t.state[k], t.wire[k], t.work[k], t.flood[k], t.damage[k] = nil, nil, nil, nil, nil, nil
 						end
 						t.dug, t.progress, t.stalled = o, 0, false
 					end
@@ -7231,8 +9484,10 @@ function Sim.new(deps: Deps)
 		self.deployTick()
 		self.demolishTick()
 		self.minesTick(dt)
+		self.refineryTick(dt)
 		self.trenchTick(dt)
 		self.crushWire()
+		self.manTick()
 		checkHeadless()
 		landStrikes()
 		structuresFire(dt)
@@ -7276,9 +9531,24 @@ function Sim.new(deps: Deps)
 						end
 					end
 					if e.path and e.pathIndex > #e.path then
-						-- arrive (idle where it stands; the game's arrive sets its post there)
+						-- the game's arrive: a unit under a move order walks on to its next waypoint;
+						-- otherwise it idles where it stands (its post is there)
+						local nextStop = if e.moveGoal ~= nil and e.moveGoal == e.goalCell and e.waypoints then table.remove(e.waypoints, 1) else nil
+						local nextDirect = nextStop ~= nil and e.wayDirect ~= nil and table.remove(e.wayDirect, 1) == true
 						e.target, e.path, e.spot, e.chasing = nil, nil, nil, nil
 						e.post = cellAt(e.x, e.y)
+						e.retreat = nil
+						if nextStop then
+							if #e.waypoints == 0 then
+								e.waypoints, e.wayDirect = nil, nil
+							end
+							local sx, sy = centre(nextStop)
+							e.direct = if nextDirect then true else nil
+							planTo(e, nextStop, sx, sy)
+							e.moveGoal = if e.path then e.goalCell else nil
+						else
+							e.waypoints, e.wayDirect, e.moveGoal = nil, nil, nil
+						end
 					end
 				elseif e.target then
 					e.target = nil
@@ -7523,6 +9793,14 @@ function Sim.new(deps: Deps)
 		for _, f in self.flares do
 			if f.side == side and self.time >= f.burstAt and self.time < f.untilT then
 				circle(f.x, f.y, f.r)
+			end
+		end
+		-- areas shown to a side for a while (the game's roadReveals: a breached trench's owner sees round it)
+		for _, rv in self.reveals do
+			if rv.side == side and self.time < rv.untilT then
+				for k = 1, #rv.pts - 1, 2 do
+					circle(rv.pts[k], rv.pts[k + 1], rv.r)
+				end
 			end
 		end
 		-- enemy guns that fired lately are revealed (artillery.revealCells around them)

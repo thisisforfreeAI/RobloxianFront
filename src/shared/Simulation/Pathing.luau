@@ -56,20 +56,23 @@ function Pathing.new(roads: any, num: (string) -> number, text: (string) -> stri
 		return speed / math.max(0.001, 1 + (num(`terrain.{terrain}.moveCost`) - 1) * num(k .. ".rough"))
 	end
 
+	-- `direct` (the game's moveTable(.., true), for a "straight over the land" move): no off-road bias,
+	-- and roads cost what the land under them costs (1 where that land is impassable, as on a bridge)
 	local tables: { [string]: { [string]: number } } = {}
-	function self.moveTable(kind: string): { [string]: number }
-		local t = tables[kind]
+	function self.moveTable(kind: string, direct: boolean?): { [string]: number }
+		local key = if direct then kind .. "@direct" else kind
+		local t = tables[key]
 		if t then
 			return t
 		end
 		t = {}
 		local speed = num(`units.{kind}.speed`)
-		local bias = math.max(1, num("movement.offRoadBias"))
+		local bias = if direct then 1 else math.max(1, num("movement.offRoadBias"))
 		for _, terrain in legend do
 			t[terrain] = speed / math.max(1e-6, paceBy(kind, terrain, false)) * bias
 		end
-		t["@road"] = speed / math.max(1e-6, paceBy(kind, "plains", true))
-		tables[kind] = t
+		t["@road"] = if direct then 0 else speed / math.max(1e-6, paceBy(kind, "plains", true))
+		tables[key] = t
 		return t
 	end
 
@@ -85,7 +88,12 @@ function Pathing.new(roads: any, num: (string) -> number, text: (string) -> stri
 				return math.huge
 			end
 			if roads.isRoad(c) then
-				return tab["@road"]
+				local r = tab["@road"]
+				if r <= 0 then
+					local t = tab[roads.terrain(c)]
+					return if t and roads.landPassable(c) then t else 1
+				end
+				return r
 			end
 			local code = roads.trenchSoft(c)
 			if code > 0 then
@@ -217,6 +225,7 @@ function Pathing.new(roads: any, num: (string) -> number, text: (string) -> stri
 		end
 		return out
 	end
+	self.ringSlots = ringSlots
 
 	local function moveSlots(cell: number, n: number, fx: number, fy: number, isRig: boolean): { number }
 		local cx, cy = cell % W, cell // W
@@ -586,6 +595,75 @@ function Pathing.new(roads: any, num: (string) -> number, text: (string) -> stri
 			end
 		end
 	end
+	-- the game's lineCells: the cells of a Bresenham line from a to b (a left out), added to `out`
+	function self.lineCells(a: number, b: number, out: { number }?): { number }
+		local o = out or {}
+		local x, y = a % W, a // W
+		local tx, ty = b % W, b // W
+		local dx, dy = math.abs(tx - x), math.abs(ty - y)
+		local sx, sy = if tx > x then 1 else -1, if ty > y then 1 else -1
+		local err = dx - dy
+		while x ~= tx or y ~= ty do
+			local e2 = err * 2
+			if e2 > -dy then
+				err -= dy
+				x += sx
+			end
+			if e2 < dx then
+				err += dx
+				y += sy
+			end
+			table.insert(o, y * W + x)
+		end
+		return o
+	end
+
+	-- the game's straightWay, for a "straight over the land" move: the straight line when it is open;
+	-- otherwise a route on the direct move table (roads no cheaper than the land), pulled straight:
+	-- from each corner it looks up to movement.directLookCells x cellScale cells along the route
+	-- (halving) for the farthest cell it can walk to in a line. nil when there is no way.
+	-- APPROX: no path guide or shared group route (the game's groupWayFrom).
+	function self.straightWay(e: any, from: number, to: number): { number }?
+		if from == to then
+			return {}
+		end
+		if self.straightPassable(e.x, e.y, to) then
+			return self.lineCells(from, to)
+		end
+		local tab = self.moveTable(e.kind, true)
+		local cost = costFn(tab, e.kind)
+		if cost(to) == math.huge then
+			return nil
+		end
+		local p = roads.search(from, to, cost, { minCost = minCost(tab), maxNodes = math.floor(cellScale * cellScale * 60000) })
+		if not p then
+			return nil
+		end
+		local g = math.max(1, math.floor(num("movement.directLookCells") * cellScale + 0.5))
+		local out = {}
+		local y, wx, wy, b = from, e.x, e.y, 1
+		while b <= #p do
+			local k = b
+			local x = math.min(g, #p - b)
+			while x >= 1 do
+				if self.straightPassable(wx, wy, p[b + x]) then
+					k = b + x
+					break
+				end
+				x = x // 2
+			end
+			if k == b then
+				table.insert(out, p[b])
+			else
+				self.lineCells(y, p[k], out)
+			end
+			y = p[k]
+			wx, wy = y % W + 0.5, y // W + 0.5
+			b = k + 1
+		end
+		return out
+	end
+
 	local function cellAhead(x: number, y: number, g: number, dist: number): number
 		return roads.cellAt(x + math.cos(g) * dist, y + math.sin(g) * dist)
 	end
@@ -875,6 +953,9 @@ function Pathing.new(roads: any, num: (string) -> number, text: (string) -> stri
 		local u = speed * self.paceAt(e.kind, if paceCell == here then e.x else px, if paceCell == here then e.y else py)
 		if self.trafficPace then
 			u = self.trafficPace(e, paceCell, speed, u)
+		end
+		if self.retreating and self.retreating(e) then
+			u *= num("movement.retreatPace") -- the game's mode "retreat"
 		end
 		if self.isVehicle(e.kind) then
 			return drive(e, dt, u)

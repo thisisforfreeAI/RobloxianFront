@@ -72,4 +72,10 @@ function CameraController.start(mapWidth: number, mapHeight: number, start: { x:
 	end)
 end
 
+-- centre the view on cell (x, y) (the game's zs, used by control groups)
+function CameraController.lookAt(x: number, y: number)
+	focus = World.toWorld(x, y)
+	clampFocus()
+end
+
 return CameraController

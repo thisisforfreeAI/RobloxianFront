@@ -465,6 +465,313 @@ if fs.isFile(matchPath) then
 		assert(not ok2 and why2 == "notOwned", why2)
 	end)
 
+	test("releasing a truck: the least busy one leaves the rig, drives home and joins the idle pool", function()
+		local sim = newSim()
+		local rig = rigAt(sim, 50)
+		rig.side, rig.takenAt, rig.autoTruckAt = 1, 0, math.huge
+		sim.updateConnections()
+		for _ = 1, 10 do
+			sim.updateRoutes()
+			sim.ticks += 1
+		end
+		eq(sim.releaseTruckProblem(1, rig.id), "noTrucks")
+		eq(sim.releaseTruckProblem(2, rig.id), "notOwned")
+		assert(sim.orderTruck(1, rig.id))
+		assert(sim.orderTruck(1, rig.id))
+		local idle0 = sim.sides[1].trucksIdle
+		-- one out loaded, one loading: the loading one goes
+		local ts = units(sim, 1, "truck")
+		eq(#ts, 2)
+		ts[1].state, ts[1].payload = "out", 0
+		ts[2].state, ts[2].payload = "loading", 50
+		local id = sim.releaseTruck(1, rig.id)
+		eq(id, ts[2].id, "the loading truck")
+		eq(ts[2].from, -1)
+		eq(sim.trucksOf(rig.id), 1)
+		local back = false
+		for _ = 1, 20 * 120 do
+			sim.step(0.05)
+			for _, ev in sim.takeEvents() do
+				if ev.type == "truckIdle" and ev.side == 1 then
+					back = true
+				end
+			end
+			if back then
+				break
+			end
+		end
+		assert(back, "home and idle")
+		eq(sim.sides[1].trucksIdle, idle0 + 1)
+	end)
+
+	test("retreat: units fall back to a ring round the HQ, 1.25x faster, holding fire and not stopping for enemies", function()
+		local sim = newSim()
+		local a = units(sim, 1, "infantry")[1]
+		local b = units(sim, 1, "infantry")[2]
+		local foe = units(sim, 2, "infantry")[1]
+		clearUnits(sim, { a, b, foe })
+		a.x, a.y, b.x, b.y = 60.5, 30.5, 60.5, 32.5
+		foe.x, foe.y, foe.shotTimer = 52.5, 30.5, math.huge -- in the way, inside range
+		foe.side = 2
+		local hq = sim.hqOf(1)
+		eq(sim.orderRetreat(1, { a.id, b.id }), 2)
+		assert(sim.retreating(a) and sim.retreating(b), "retreating")
+		assert(a.goalCell ~= b.goalCell, "own slots")
+		local hx, hy = hq.cell % W, hq.cell // W
+		for _, u in { a, b } do
+			local gx, gy = u.goalCell % W, u.goalCell // W
+			assert(math.max(math.abs(gx - hx), math.abs(gy - hy)) >= math.ceil(sim.footprintOf("hq")) + 1, "outside the footprint ring")
+		end
+		local hp0 = foe.hp
+		sim.step(0.05)
+		local speed = sim.num("units.infantry.speed")
+		local paceAt = sim.pathing.paceAt("infantry", a.x, a.y)
+		near(a.pace, speed * paceAt * sim.num("movement.retreatPace"))
+		for _ = 1, 20 * 8 do
+			sim.step(0.05)
+		end
+		eq(foe.hp, hp0, "held fire passing the enemy")
+		assert(a.x < 52, `walked on past the enemy: {a.x}`)
+		for _ = 1, 20 * 60 do
+			sim.step(0.05)
+		end
+		eq(a.path, nil, "arrived")
+		eq(sim.retreating(a), false)
+		-- a new order ends a retreat
+		a.x, a.y = 60.5, 30.5
+		sim.orderRetreat(1, { a.id })
+		sim.orderMove(1, { a.id }, 70.5, 30.5)
+		eq(sim.retreating(a), false)
+		-- no HQ: refused
+		hq.alive = false
+		eq(select(2, sim.orderRetreat(1, { b.id })), "blocked")
+	end)
+
+	test("waypoints: a moving unit queues stops and walks them in turn; an idle one goes at once", function()
+		local sim = newSim()
+		local a = units(sim, 1, "infantry")[1]
+		local b = units(sim, 1, "infantry")[2]
+		clearUnits(sim, { a, b })
+		a.x, a.y, b.x, b.y = 40.5, 30.5, 40.5, 34.5
+		sim.orderMove(1, { a.id }, 50.5, 30.5)
+		eq(sim.queueMove(1, { a.id }, 50.5, 36.5), 1)
+		eq(sim.queueMove(1, { a.id }, 44.5, 36.5), 1)
+		eq(#a.waypoints, 2)
+		eq(a.goalCell, 30 * W + 50, "still on the first leg")
+		eq(sim.queueMove(1, { b.id }, 45.5, 34.5), 1, "idle: sent now")
+		eq(b.goalCell, 34 * W + 45)
+		eq(b.waypoints, nil)
+		local legs = {}
+		for _ = 1, 20 * 60 do
+			sim.step(0.05)
+			if legs[#legs] ~= a.goalCell and a.path then
+				table.insert(legs, a.goalCell)
+			end
+		end
+		eq(#legs, 3, "three legs")
+		eq(legs[2], 36 * W + 50)
+		eq(legs[3], 36 * W + 44)
+		near(a.x, 44.5)
+		near(a.y, 36.5)
+		eq(a.waypoints, nil)
+		-- the cap
+		sim.orderMove(1, { a.id }, 80.5, 30.5)
+		for _ = 1, sim.num("movement.waypointCap") do
+			sim.queueMove(1, { a.id }, 60.5, 36.5)
+		end
+		eq(select(2, sim.queueMove(1, { a.id }, 60.5, 36.5)), "waypointsFull")
+	end)
+
+	test("rig upgrades: the intent parses; pump and tank once each, paid up front", function()
+		local i = Protocol.parse({ kind = "upgradeRig", rigId = 3, upgrade = "pump" }, 100, 100)
+		eq(i.upgrade, "pump")
+		eq(select(2, Protocol.parse({ kind = "upgradeRig", rigId = 3, upgrade = "gold" }, 100, 100)), "upgrade must be pump or tank")
+		local sim = newSim()
+		clearUnits(sim, {})
+		local rig = rigAt(sim, 50)
+		rig.side, rig.takenAt = 1, 0
+		sim.sides[1].oil = 1000
+		local pump0, tank0 = sim.pumpRate(rig), sim.tankSize(rig)
+		eq(sim.upgradeRig(1, rig.id, "pump"), true)
+		near(sim.sides[1].oil, 1000 - sim.num("rigs.upgrades.pump.cost"))
+		near(sim.pumpRate(rig), pump0 * sim.num("rigs.upgrades.pump.mult"))
+		eq(select(2, sim.upgradeRig(1, rig.id, "pump")), "maxLevel")
+		eq(sim.upgradeRig(1, rig.id, "tank"), true)
+		near(sim.tankSize(rig), tank0 * sim.num("rigs.upgrades.tank.mult"))
+		eq(select(2, sim.upgradeRig(2, rig.id, "tank")), "notOwned")
+	end)
+
+	test("control groups: make, add, select, double press, dead units drop out", function()
+		local CG = require("../src/client/Input/ControlGroups")
+		local g = CG.new()
+		local live = { [1] = true, [2] = true, [3] = true, [50] = true, [51] = true }
+		local uOk = function(id: number): boolean
+			return live[id] == true and id < 50
+		end
+		local sOk = function(id: number): boolean
+			return live[id] == true and id >= 50
+		end
+		eq(CG.set(g, 1, { 1, 2 }, 50), 2, "units win over the building")
+		eq(CG.add(g, 1, { 2, 3 }, nil, uOk, sOk), 3)
+		local u, st, double = CG.recall(g, 1, 1000, uOk, sOk)
+		eq(#u, 3)
+		eq(st, nil)
+		eq(double, false)
+		live[2] = nil
+		u, st, double = CG.recall(g, 1, 1300, uOk, sOk)
+		eq(#u, 2, "a dead unit drops out")
+		eq(double, true, "second press within 400 ms")
+		u, st, double = CG.recall(g, 1, 1500, uOk, sOk)
+		eq(double, false, "a third press starts over")
+		-- buildings
+		eq(CG.set(g, 2, {}, 50), 1)
+		eq(CG.add(g, 2, {}, 51, uOk, sOk), 2)
+		u, st = CG.recall(g, 2, 5000, uOk, sOk)
+		eq(#u, 0)
+		eq(st, 50)
+		eq(CG.add(g, 2, { 1 }, nil, uOk, sOk), 1, "units replace a building group")
+		eq(CG.add(g, 2, {}, nil, uOk, sOk), nil, "nothing selected")
+		eq(CG.set(g, 2, {}, nil), 0, "cleared")
+	end)
+
+	test("direct moves: straight over the land when the line is open, a pulled-straight route otherwise", function()
+		local sim = newSim()
+		local a = units(sim, 1, "infantry")[1]
+		local b = units(sim, 1, "infantry")[2]
+		clearUnits(sim, { a, b })
+		local P = sim.pathing
+		-- the direct table: no off-road bias, roads cost the land under them
+		local plain, direct = P.moveTable("infantry"), P.moveTable("infantry", true)
+		eq(direct["@road"], 0)
+		near(plain.plains / direct.plains, sim.num("movement.offRoadBias"))
+		-- lineCells: Bresenham from a (left out) to b
+		local line = P.lineCells(30 * W + 40, 33 * W + 46)
+		eq(#line, 6)
+		eq(line[#line], 33 * W + 46)
+		a.x, a.y = 40.5, 30.5
+		local from = 30 * W + 40
+		sim.orderMove(1, { a.id }, 52.5, 34.5, true)
+		eq(a.direct, true)
+		if P.straightPassable(a.x, a.y, 34 * W + 52) then
+			local want = P.lineCells(from, 34 * W + 52)
+			eq(#a.path, #want, "the straight line")
+			for i, c in want do
+				eq(a.path[i], c)
+			end
+		end
+		-- every step of a direct path is to a neighbouring cell
+		local prev = from
+		for _, c in a.path do
+			eq(math.max(math.abs(c % W - prev % W), math.abs(c // W - prev // W)), 1, "neighbouring cells")
+			prev = c
+		end
+		eq(a.path[#a.path], 34 * W + 52)
+		-- straightWay with a blocked line still reaches the goal through neighbouring cells
+		local way = P.straightWay({ x = 40.5, y = 30.5, kind = "infantry" }, from, 30 * W + 80)
+		eq(way ~= nil and way[#way] == 30 * W + 80, true, "reaches the goal")
+		-- a plain move or a stop ends it
+		sim.orderMove(1, { a.id }, 50.5, 30.5)
+		eq(a.direct, nil)
+		-- queued stops keep their own flag
+		sim.queueMove(1, { a.id }, 50.5, 36.5, true)
+		sim.queueMove(1, { a.id }, 44.5, 36.5)
+		eq(a.wayDirect[1], true)
+		eq(a.wayDirect[2], false)
+		local sawDirect = false
+		for _ = 1, 20 * 60 do
+			sim.step(0.05)
+			if a.goalCell == 36 * W + 50 and a.direct then
+				sawDirect = true
+			end
+		end
+		eq(sawDirect, true, "the second leg walked straight")
+		eq(a.direct, nil, "the last leg was a plain one")
+		eq(a.wayDirect, nil)
+		-- through the intent parser
+		local i = Protocol.parse({ kind = "move", unitIds = { b.id }, x = 45, y = 34, direct = true }, W, sim.roads.height)
+		eq(i.direct, true)
+		eq(select(2, Protocol.parse({ kind = "move", unitIds = { b.id }, x = 45, y = 34, direct = 1 }, W, sim.roads.height)), "direct must be a boolean")
+	end)
+
+	test("rig damage: enemy blasts wreck a rig (no oil, trucks let go, none sent); engineers repair it; the bot sends one", function()
+		local sim = newSim()
+		clearUnits(sim, {})
+		local rig = rigAt(sim, 50)
+		rig.side, rig.takenAt = 1, 0
+		sim.updateConnections()
+		run(sim, 1)
+		eq(rig.maxHp, sim.num("rigs.damage.hp"))
+		local hit = sim.num("rigs.damage.hitCells")
+		sim.rigBlast(rig.x + hit - 0.1, rig.y, 300, 1)
+		eq(rig.hp, rig.maxHp, "a side's own blasts spare its rigs")
+		sim.rigBlast(rig.x + hit + 0.1, rig.y, 300, 2)
+		eq(rig.hp, rig.maxHp, "beyond hitCells")
+		sim.rigBlast(rig.x + hit - 0.1, rig.y, 300, 2)
+		eq(rig.hp, rig.maxHp - 300)
+		-- a splash beyond hitCells: half way across the radius = 3/4
+		sim.rigSplash(rig.x + hit + 2, rig.y, 4, 100, 2)
+		near(rig.hp, rig.maxHp - 300 - 75)
+		sim.rigSplash(rig.x + hit - 1, rig.y, 4, 100, 2)
+		near(rig.hp, rig.maxHp - 375, "the inner ring is rigBlast's")
+		local ev0 = {}
+		for _, e in sim.takeEvents() do
+			ev0[e.type] = true
+		end
+		assert(ev0.rigUnderFire, "the owner hears of it")
+		assert(sim.orderTruck(1, rig.id))
+		rig.tank = 200
+		sim.rigBlast(rig.x, rig.y, 1000, 2)
+		eq(rig.wrecked, true)
+		eq(rig.hp, 0)
+		eq(rig.tank, 0, "the tank burns")
+		eq(sim.trucksOf(rig.id), 0, "its trucks are let go")
+		eq(select(2, sim.orderTruck(1, rig.id)), "notOperational")
+		local seen = false
+		for _, e in sim.takeEvents() do
+			if e.type == "rigDestroyed" and e.side == 1 and e.by == 2 then
+				seen = true
+			end
+		end
+		assert(seen, "rigDestroyed")
+		run(sim, 2)
+		eq(rig.rate, 0, "pumps nothing")
+		eq(rig.tank, 0)
+		-- the bot sends its nearest idle engineer
+		local bot = Bot.new(sim, 1, "balanced")
+		local eng = sim.spawnUnit("engineer", 1, rig.x + 6, rig.y + 0.5)
+		local eng2 = sim.spawnUnit("engineer", 1, rig.x + 30, rig.y + 0.5)
+		for _ = 1, 40 do
+			bot.step(0.05)
+			sim.step(0.05)
+			if eng.repairId then
+				break
+			end
+		end
+		eq(eng.repairId, rig.id, "the nearest one goes")
+		eq(eng2.repairId, nil)
+		-- one engineer mends it in repairSec
+		local t0 = sim.time
+		local back = nil
+		for _ = 1, 20 * (sim.num("rigs.damage.repairSec") + 15) do
+			sim.step(0.05)
+			for _, e in sim.takeEvents() do
+				if e.type == "rigRepaired" then
+					back = sim.time
+				end
+			end
+			if back then
+				break
+			end
+		end
+		assert(back, "repaired")
+		assert(back - t0 >= sim.num("rigs.damage.repairSec") - 0.1 and back - t0 <= sim.num("rigs.damage.repairSec") + 10, `about repairSec: {back - t0}`)
+		eq(rig.wrecked, nil)
+		eq(rig.hp, rig.maxHp)
+		eq(eng.repairId, nil, "job done")
+		run(sim, 1)
+		assert(rig.rate > 0, "pumping again")
+	end)
+
 	test("a rig with no road nearby is not connected and gets no truck", function()
 		local sim = newSim({ roads = { { rank = 2, track = false, pts = { 0.5, 30.5, 30.5, 30.5 } } } })
 		local rig = rigAt(sim, 50)
@@ -780,6 +1087,7 @@ if fs.isFile(matchPath) then
 		local bot = Bot.new(sim, 1, "balanced")
 		local hq = sim.entities[sim.sides[1].hqId]
 		local e = sim.spawnUnit("engineer", 1, 20.5, 30.5)
+		sim.sides[1].oil = 0 -- below trenchWorks.bots.digFrom, so the engineer is not sent to dig
 		hq.hp = 2200 -- 73%: left alone
 		bot.think()
 		eq(e.repairId, nil, "not below 70%")
@@ -841,6 +1149,134 @@ if fs.isFile(matchPath) then
 		eq(sim.railPace(1, 40.5 + 95, 45.5), 1.3)
 		eq(sim.railPace(1, 40.5 + 97, 45.5), 1, "beyond 96")
 		eq(sim.railPace(2, 40.5, 45.5), 1, "only its owner's trucks")
+	end)
+	test("withdraw: units leave a held settlement last in first, onto its rim; one by id; refused when empty or not held", function()
+		local sim = newSim({ settlements = { { name = "T", x = 90, y = 45, kind = "town" } } })
+		clearUnits(sim, {})
+		local st = sim.settlements[1]
+		st.owner, st.hold = 1, 1
+		local ids = {}
+		for _ = 1, 3 do
+			table.insert(ids, sim.spawnUnit("infantry", 1, st.x + 0.5, st.y + 0.5).id)
+		end
+		eq((sim.orderGarrison(1, st.id, ids)), 3)
+		eq(#st.garrison, 3)
+		eq(select(2, sim.withdraw(2, st.id)), "notHeld")
+		local last = st.garrison[3]
+		eq(sim.withdraw(1, st.id, 1), 1)
+		local e = sim.entities[last]
+		eq(e.inside, nil, "the last one in is out")
+		eq(#st.garrison, 2)
+		local d = math.sqrt((e.x - st.x) ^ 2 + (e.y - st.y) ^ 2)
+		assert(d >= st.radius - 0.5 and d <= st.radius + 4, `on the rim: {d} vs radius {st.radius}`)
+		local first = st.garrison[1]
+		eq(sim.withdraw(1, st.id, nil, first), 1)
+		eq(sim.entities[first].inside, nil, "that one by id")
+		eq(sim.withdraw(1, st.id), 1, "the rest")
+		eq(#st.garrison, 0)
+		eq(select(2, sim.withdraw(1, st.id)), "garrisonEmpty")
+		-- the units are free to move again
+		sim.orderMove(1, { last }, 100.5, 45.5)
+		assert(e.path, "walks")
+	end)
+	test("bot mending: hurt idle units walk to a secured town that heals them, and rejoin when whole", function()
+		local sim = newSim({ settlements = { { name = "T", x = 40, y = 45, kind = "town" } } })
+		clearUnits(sim, {})
+		local st = sim.settlements[1]
+		st.owner, st.hold = 1, 1
+		local ids = {}
+		for _ = 1, 3 do
+			table.insert(ids, sim.spawnUnit("infantry", 1, st.x + 0.5, st.y + 0.5).id)
+		end
+		eq((sim.orderGarrison(1, st.id, ids)), 3)
+		eq(sim.cityStatus(st), "secured")
+		local bot = Bot.new(sim, 1, "balanced")
+		local tank = sim.spawnUnit("tank", 1, 70.5, 45.5)
+		local fit = sim.spawnUnit("tank", 1, 72.5, 47.5)
+		tank.hp = tank.maxHp * 0.5
+		for _ = 1, 20 * 2 do
+			bot.step(0.05)
+			sim.step(0.05)
+		end
+		assert(bot.mending[tank.id], "the hurt tank is sent to heal")
+		eq(bot.mending[tank.id].city, st.id)
+		eq(bot.mending[fit.id], nil, "the whole one is not")
+		assert(tank.goalCell and math.abs(tank.goalCell % W - st.x) < 8, "walking to the town")
+		local healed = false
+		for _ = 1, 20 * 200 do
+			bot.step(0.05)
+			sim.step(0.05)
+			if tank.hp >= tank.maxHp then
+				healed = true
+				break
+			end
+		end
+		assert(healed, `healed: {tank.hp}/{tank.maxHp}`)
+		for _ = 1, 20 * 2 do
+			bot.step(0.05)
+			sim.step(0.05)
+		end
+		eq(bot.mending[tank.id], nil, "back in the pool")
+	end)
+	test("bridges: spans found; the bot posts a guard at its end, blows it when an enemy force masses beyond, and leaves its own blow unmended", function()
+		local sim = newSim({ terrainAt = function(c)
+			local x = c % W
+			return if x >= 30 and x <= 32 then "shallow" else "plains"
+		end })
+		clearUnits(sim, {})
+		local spans = sim.bridgeSpans()
+		eq(#spans, 1, "one span over the river")
+		local sp = spans[1]
+		for _, c in sp.cells do
+			assert(c % W >= 30 and c % W <= 32, "deck cells on the water")
+		end
+		eq(sp.blown, false)
+		local hq = sim.hqOf(1)
+		local post = sim.bridgeEnd(sp, hq.x, hq.y)
+		eq(post % W, 29, "the near end")
+		local rig = rigAt(sim, 50)
+		rig.side, rig.takenAt = 1, 0
+		sim.updateConnections()
+		run(sim, 1)
+		assert(rig.route, "a route over the bridge")
+		local bot = Bot.new(sim, 1, "balanced")
+		bot.persona.defence = 2 -- always willing (the game rolls defence x bridgeBlowChance)
+		for i = 1, 6 do
+			sim.spawnUnit("infantry", 1, 14.5 + i, 34.5)
+		end
+		local eng = sim.spawnUnit("engineer", 1, 16.5, 28.5)
+		sim.sides[1].oil = 100 -- below trenchWorks.bots.digFrom: the engineer is not sent digging
+		bot.think()
+		local guards = 0
+		for id, g in bot.guards do
+			guards += 1
+			eq(g.post, post)
+			eq(sim.entities[id].goalCell, post, "walking to the post")
+		end
+		eq(guards, 1, "one guard")
+		eq(eng.sabotageCell, nil, "no threat yet: the bridge stands")
+		-- an enemy force beyond the river, seen from our rig
+		for i = 1, 4 do
+			sim.spawnUnit("tank", 2, 46.5, 27.5 + i)
+		end
+		bot.think()
+		assert(eng.sabotageCell, "an engineer goes to blow the bridge")
+		local cx = eng.sabotageCell % W
+		assert(cx >= 30 and cx <= 32, "on the span")
+		eq(bot.lastBlow, sim.time)
+		-- our own blow is not mended while the hold lasts
+		sim.orderStop(1, { eng.id })
+		local cut = sim.cutRoad(eng.sabotageCell or (30 * W + 31), 1) or sim.cutRoad(30 * W + 31, 1)
+		assert(cut, "blown")
+		eq(sim.bridgeSpans()[1].blown, true)
+		bot.lastBlow = sim.time
+		sim.sides[1].oil = 1000
+		bot.think()
+		eq(eng.roadJob, nil, "left blown")
+		cut.at = sim.time - sim.num("bots.bridgeHoldMaxSec") - 1
+		sim.sides[1].oil = 1000 -- mending a cut costs oil
+		bot.think()
+		assert(eng.roadJob, "mended after bridgeHoldMaxSec")
 	end)
 	test("forward training: a secured town trains infantry / AT (faster with workforce); lost = refund", function()
 		local sim = newSim({ settlements = { { name = "T", x = 130, y = 45, kind = "town" }, { name = "V", x = 90, y = 45, kind = "village" } } })
@@ -1090,6 +1526,13 @@ if fs.isFile(matchPath) then
 		assert(cut and cut.sabotage and cut.by == 1, "the road is cut by the charge")
 		eq(rig.connected, false, "the enemy rig loses its road home")
 		eq(select(2, sim.orderSabotage(1, 30 * W + 150, { e.id })), "alreadyCut")
+		-- the victim sees along its rig route either side of the cut for revealSec (the game's VZe)
+		local rv = sim.reveals[#sim.reveals]
+		assert(rv and rv.side == 2, "a reveal for the victim")
+		assert(#rv.pts > 4, `points along the route: {#rv.pts}`)
+		eq(rv.r, sim.num("sabotage.revealWidth"))
+		run(sim, sim.num("sabotage.revealSec") + 1)
+		eq(#sim.reveals, 0, "gone after revealSec")
 	end)
 	test("sabotage: a crew member taking damage ends the planting", function()
 		local sim = newSim()
@@ -1925,6 +2368,74 @@ if fs.isFile(matchPath) then
 		assert(math.abs(hq.hp - hq.maxHp * 0.5) < 1, `half hp: {hq.hp}`)
 		assert(math.abs(hq.x - tr.x) <= 12.5 and math.abs(hq.y - tr.y) <= 12.5, "within deployReach")
 	end)
+	test("rally points: new units leave by the door facing the rally and walk to slots round it; set, refused, cleared", function()
+		local sim = newSim()
+		clearUnits(sim, {})
+		local Wd = sim.roads.width
+		local hq = sim.hqOf(1)
+		local foot = sim.footprintOf("hq") + 0.5
+		-- default: beyond the footprint by rallyCells x cellScale, towards the nearest road or the centre
+		local rx, ry, set = sim.rallyOf(hq)
+		eq(set, false)
+		-- the road runs along the HQ's row: the nearest road cells outside the footprint tie at 3 cells west and
+		-- east; the scan meets the west one first, so the rally is 11.5 west, clamped at the map edge
+		eq(rx, 0.5, "west, clamped")
+		eq(ry, hq.y)
+		local cx = sim.rallyOf({ cell = hq.cell + 40, kind = "hq" } :: any)
+		near(cx, hq.x + 40 - foot - sim.num("production.rallyCells") * sim.num("match.cellScale"), "unclamped: footprint + rallyCells x cellScale")
+		local dx, dy = sim.doorOf(hq, rx, ry)
+		near(math.max(math.abs(dx - hq.x), math.abs(dy - hq.y)), foot + 0.5, "door just outside the edge")
+		assert(math.abs(dx - hq.x) <= foot * sim.num("production.doorSpan") + 1e-6 or math.abs(dy - hq.y) <= foot * sim.num("production.doorSpan") + 1e-6, "door within the span")
+		-- refusals
+		eq(sim.setRally(2, hq.id, hq.x + 20, hq.y), "notOwned")
+		eq(sim.setRally(1, hq.id, hq.x, hq.y), "terrain", "inside the footprint")
+		-- a passable point about 20 cells east of the HQ
+		local px, py
+		for k = 0, 30 do
+			local c = math.floor(hq.y) * Wd + math.floor(hq.x) + 20 + k
+			if sim.roads.passable(c) then
+				px, py = c % Wd + 0.5, c // Wd + 0.5
+				break
+			end
+		end
+		assert(px, "found ground east of the HQ")
+		eq(sim.setRally(1, hq.id, px, py), nil)
+		local ax, ay, aset = sim.rallyOf(hq)
+		eq(aset, true)
+		eq(ax, px)
+		eq(ay, py)
+		local ex = sim.doorOf(hq, px, py)
+		near(ex, hq.x + foot + 0.5, "east door")
+		sim.sides[1].oil = 5000
+		assert(sim.orderProduce(1, "infantry"))
+		assert(sim.orderProduce(1, "infantry"))
+		local made = {}
+		for _ = 1, 20 * 60 do
+			sim.step(0.05)
+			for _, ev in sim.takeEvents() do
+				if ev.type == "unitReady" and ev.side == 1 then
+					local u = sim.entities[ev.id]
+					table.insert(made, u)
+					assert(u.x > hq.x + foot, `spawned on the east side: {u.x} vs {hq.x}`)
+				end
+			end
+			if #made == 2 then
+				break
+			end
+		end
+		eq(#made, 2, "two trained")
+		assert(made[1].goalCell ~= made[2].goalCell, "each takes its own slot")
+		eq(hq.made, 2)
+		for _ = 1, 20 * 30 do
+			sim.step(0.05)
+		end
+		for _, u in made do
+			assert(math.sqrt((u.x - px) ^ 2 + (u.y - py) ^ 2) < 4, `at the rally: {u.x},{u.y} vs {px},{py}`)
+		end
+		eq(sim.clearRally(2, hq.id), "notOwned")
+		eq(sim.clearRally(1, hq.id), nil)
+		eq(hq.rally, nil)
+	end)
 	test("cancel and demolish: queued units refund what was paid; a building going up refunds the unfinished share; a demolish takes 6 s and gives back 60%", function()
 		local sim = newSim()
 		clearUnits(sim, {})
@@ -2052,8 +2563,13 @@ if fs.isFile(matchPath) then
 		for _, tr in sim.trenches do
 			t = tr
 		end
-		run(sim, 8)
-		assert(t.dug >= 1, `some dug: {t.dug}`)
+		for _ = 1, 20 * 20 do
+			if t.dug >= 1 then
+				break
+			end
+			sim.step(0.05)
+		end
+		assert(t.dug >= 1 and t.dug < #t.cells, `some dug: {t.dug}`)
 		sd.oil = 0
 		local stalled = false
 		for _ = 1, 20 * 10 do
@@ -2169,6 +2685,485 @@ if fs.isFile(matchPath) then
 			eq(sim.roads.passable(ditch.cells[i]), false, "wet or dry, a ditch blocks")
 		end
 	end)
+	test("trench shelling: blasts wear a ditch until it caves in, big shells smash it, engineers mend both", function()
+		local sim = newSim()
+		clearUnits(sim, {})
+		sim.sides[1].oil = 500
+		local engs = {}
+		for i = 0, 2 do
+			table.insert(engs, sim.spawnUnit("engineer", 1, 58.5, 44.5 + i))
+		end
+		local ids = { engs[1].id, engs[2].id, engs[3].id }
+		eq((sim.orderDig(1, ids, { { x = 62.5, y = 38.5 }, { x = 62.5, y = 52.5 } })), 3)
+		run(sim, 30)
+		local t = nil
+		for _, tr in sim.trenches do
+			t = tr
+		end
+		eq(t.dug, 15)
+		local c = t.cells[8]
+		local x, y = c % W + 0.5, c // W + 0.5
+		eq(select(2, sim.orderMend(1, ids, c)), "notCaved", "nothing to mend yet")
+		local hp = sim.num("trenchWorks.shells.caveHp")
+		sim.trenchShell(x, y, hp * 0.6, 2)
+		assert(math.abs(t.damage[8] - 0.6) < 1e-6, `worn {t.damage[8]}`)
+		eq(sim.roads.passable(c), false, "still a wall")
+		local caved = false
+		sim.trenchShell(x, y, hp * 0.6, 2)
+		for _, ev in sim.takeEvents() do
+			if ev.type == "trenchCaved" and ev.side == 1 then
+				caved = true
+			end
+		end
+		assert(caved, "the owner hears of it")
+		eq(t.damage[8], 1)
+		eq(sim.roads.passable(c), true, "caved: crossable")
+		eq(sim.roads.trenchSoft(c), 1, "like a fire trench")
+		-- a small shell does not smash; a big one smashes cells round it flat
+		sim.trenchSmash(x, y + 5, 0, sim.num("trenchWorks.shells.big.damage") - 1, 2)
+		eq(t.state[13], sim.TRENCH.dug)
+		sim.trenchSmash(x, y + 5, 0, sim.num("trenchWorks.shells.big.damage"), 2)
+		eq(t.state[13], sim.TRENCH.smashed)
+		eq(sim.roads.passable(t.cells[13]), true)
+		eq(sim.roads.trenchSoft(t.cells[13]), 0, "flat")
+		-- mend from the caved cell: everything within gapCells either side
+		eq((sim.orderMend(1, ids, c)), 3)
+		local mended = false
+		for _ = 1, 20 * 30 do
+			sim.step(0.05)
+			for _, ev in sim.takeEvents() do
+				if ev.type == "trenchMended" then
+					mended = true
+				end
+			end
+		end
+		assert(mended, "mended notice")
+		for i = 1, 15 do
+			eq(t.state[i], sim.TRENCH.dug, `cell {i} dug`)
+			eq(t.damage[i], 0)
+			eq(sim.roads.passable(t.cells[i]), false)
+		end
+		for _, e in engs do
+			eq(e.trenchJob, nil)
+		end
+	end)
+	test("manning trenches: infantry spread along a fire trench, take less damage and stay hidden until something is close", function()
+		local sim = newSim()
+		clearUnits(sim, {})
+		sim.sides[1].oil = 500
+		local engs = {}
+		for i = 0, 2 do
+			table.insert(engs, sim.spawnUnit("engineer", 1, 58.5, 44.5 + i))
+		end
+		local ids = { engs[1].id, engs[2].id, engs[3].id }
+		eq((sim.orderDig(1, ids, { { x = 62.5, y = 38.5 }, { x = 62.5, y = 52.5 } }, "fire")), 3)
+		run(sim, 30)
+		local t = nil
+		for _, tr in sim.trenches do
+			t = tr
+		end
+		eq(t.dug, 15)
+		local men, mids = {}, {}
+		for i = 0, 3 do
+			local u = sim.spawnUnit("infantry", 1, 56.5, 42.5 + i)
+			table.insert(men, u)
+			table.insert(mids, u.id)
+		end
+		eq(select(2, sim.orderMan(1, mids, 20 * W + 20)), "notFireTrench")
+		eq(select(2, sim.orderMan(1, { engs[1].id }, t.cells[8])), "noUnits", "engineers don't man trenches")
+		eq((sim.orderMan(1, mids, t.cells[8])), 4)
+		run(sim, 25)
+		local cells = {}
+		-- each is sent to its own trench cell (separation can nudge one off the line)
+		local inside, posts = 0, {}
+		for _, u in men do
+			eq(posts[u.post], nil, "one to a cell")
+			posts[u.post] = true
+			assert(table.find(t.cells, u.post), "posted on the trench")
+			if u.inTrench == t.id then
+				inside += 1
+			end
+		end
+		assert(inside >= 3, `in the trench: {inside}`)
+		local u = men[1]
+		u.x, u.y = t.cells[1] % W + 0.5, t.cells[1] // W + 0.5
+		run(sim, 0.05)
+		eq(u.inTrench, t.id)
+		eq(sim.trenchShare(u, 0, false), sim.num("trenchWorks.man.bulletShare"))
+		eq(sim.trenchShare(u, 1, false), sim.num("trenchWorks.man.shellShare"))
+		eq(sim.trenchShare(engs[1], 0, false), 1)
+		-- an enemy squad far off cannot see them; one close by can; firing gives them away
+		local far = sim.spawnUnit("infantry", 2, u.x + 15, u.y)
+		u.firedAt = nil
+		run(sim, 0.05)
+		eq(sim.trenchHidden(u, 2), true, "hidden")
+		eq(sim.trenchHidden(u, 1), false, "never from your own side")
+		u.firedAt = sim.time
+		eq(sim.trenchHidden(u, 2), false, "just fired")
+		u.firedAt = sim.time - sim.num("trenchWorks.man.firedShowSec") - 0.1
+		sim.step(0.05)
+		far.x = u.x + sim.num("trenchWorks.man.hideCells") - 1
+		sim.step(0.05)
+		eq(sim.trenchHidden(u, 2), false, "something close by sees them")
+	end)
+	test("breaching: an enemy charge on a trench smashes a gap and shows the owner the spot; by water it breaks the bank", function()
+		local sim = newSim({ terrainAt = function(c)
+			local x, y = c % W, c // W
+			return if x == 64 and y >= 50 and y <= 52 then "river" else "plains"
+		end })
+		clearUnits(sim, {})
+		sim.sides[1].oil = 500
+		local engs = {}
+		for i = 0, 2 do
+			table.insert(engs, sim.spawnUnit("engineer", 1, 58.5, 44.5 + i))
+		end
+		local ids = { engs[1].id, engs[2].id, engs[3].id }
+		eq((sim.orderDig(1, ids, { { x = 40.5, y = 33.5 }, { x = 40.5, y = 47.5 } })), 3)
+		run(sim, 30)
+		local t = nil
+		for _, tr in sim.trenches do
+			t = tr
+		end
+		eq(t.dug, 15)
+		local c = t.cells[8]
+		local x, y = c % W + 0.5, c // W + 0.5
+		local foe = sim.spawnUnit("engineer", 2, x + 2, y)
+		eq((sim.orderSabotage(2, c, { foe.id })), 1)
+		local blown, breached = false, false
+		for _ = 1, 20 * 20 do
+			sim.step(0.05)
+			for _, ev in sim.takeEvents() do
+				if ev.type == "trenchBlown" and ev.side == 2 then
+					blown = true
+				elseif ev.type == "trenchBreached" and ev.side == 1 then
+					breached = true
+				end
+			end
+		end
+		assert(blown and breached, "both sides hear of it")
+		local half = math.floor(sim.num("trenchWorks.breach.gapCells") / 2)
+		for i = 1, 15 do
+			eq(t.state[i], if math.abs(i - 8) <= half then sim.TRENCH.smashed else sim.TRENCH.dug, `cell {i}`)
+		end
+		eq(sim.roads.passable(c), true, "open")
+		eq(#sim.reveals, 1, "the owner sees round the spot")
+		eq(sim.reveals[1].side, 1)
+		-- a second ditch by the river: the charge breaks its bank and it floods there
+		eq((sim.orderDig(1, ids, { { x = 63.5, y = 49.5 }, { x = 63.5, y = 58.5 } })), 3)
+		run(sim, 30)
+		local d = nil
+		for _, tr in sim.trenches do
+			if tr ~= t then
+				d = tr
+			end
+		end
+		-- dry it again so only the charge floods it
+		for i = 1, #d.cells do
+			if d.state[i] == sim.TRENCH.wet then
+				d.state[i] = sim.TRENCH.dug
+			end
+		end
+		d.fed = nil
+		local dc = d.cells[2]
+		eq(sim.blowTrench(dc, 2), true)
+		eq(d.fed, true)
+		eq(d.state[2], sim.TRENCH.wet, "flooded, not smashed")
+		eq(select(1, sim.breachCheck(dc)), "trenchWet")
+		eq(select(2, sim.orderSabotage(2, dc, { foe.id })), "trenchWet")
+	end)
+	test("bot trenches: with digFrom oil an idle engineer digs a fire trench line towards the enemy, idle infantry man it", function()
+		local sim = newSim()
+		clearUnits(sim, {})
+		local bot = Bot.new(sim, 1, "balanced")
+		local e = sim.spawnUnit("engineer", 1, 14.5, 34.5)
+		sim.sides[1].oil = sim.num("trenchWorks.bots.digFrom") - 1
+		bot.think()
+		eq(next(sim.trenches), nil, "not enough oil")
+		sim.sides[1].oil = 2000
+		bot.think()
+		local t = nil
+		for _, tr in sim.trenches do
+			t = tr
+		end
+		assert(t, "a line")
+		eq(t.owner, 1)
+		eq(t.kind, "fire")
+		eq(e.trenchJob and e.trenchJob.id, t.id)
+		-- out towards the enemy HQ (east), across the way
+		local hq = sim.hqOf(1)
+		local hx = hq.cell % W
+		for _, c in t.cells do
+			assert(c % W > hx + 10, `ahead of the HQ: {c % W}`)
+		end
+		run(sim, 60)
+		eq(t.dug, #t.cells, "dug")
+		local men = {}
+		for i = 0, 2 do
+			table.insert(men, sim.spawnUnit("infantry", 1, hx + 20.5, 40.5 + i))
+		end
+		run(sim, 0.1)
+		sim.botTrenches(1) -- the trench step alone (the rest of the think would send them elsewhere)
+		run(sim, 30)
+		local inside = 0
+		for _, u in men do
+			if u.inTrench == t.id then
+				inside += 1
+			end
+		end
+		assert(inside >= 2, `manned: {inside}`)
+	end)
+	test("bot trenches: an enemy trench cutting the way to its HQ for tanks is breached", function()
+		local sim = newSim()
+		clearUnits(sim, {})
+		local bot = Bot.new(sim, 1, "balanced")
+		sim.sides[2].oil = 2000
+		local engs = {}
+		for i = 0, 2 do
+			table.insert(engs, sim.spawnUnit("engineer", 2, 92.5, 2.5 + i))
+		end
+		local ids = { engs[1].id, engs[2].id, engs[3].id }
+		eq((sim.orderDig(2, ids, { { x = 90.5, y = 0.5 }, { x = 90.5, y = 59.5 } }, "fire")), 3)
+		local t = nil
+		for _, tr in sim.trenches do
+			t = tr
+		end
+		run(sim, 120)
+		eq(t.dug, #t.cells, "dug across the map")
+		eq(#t.cells, 60)
+		local e = sim.spawnUnit("engineer", 1, 70.5, 34.5)
+		sim.sides[1].oil = 0
+		bot.think()
+		assert(e.sabotageCell and table.find(t.cells, e.sabotageCell), "sent to breach it")
+	end)
+	test("trench seal: a line stopping just short of a river is carried on to it", function()
+		local sim = newSim({ terrainAt = function(c)
+			local x = c % W
+			return if x >= 70 and x <= 72 then "river" else "plains"
+		end })
+		clearUnits(sim, {})
+		local lay = sim.trenchLayout(1, { { x = 50.5, y = 45.5 }, { x = 66.5, y = 45.5 } })
+		local last = lay.cells[#lay.cells]
+		eq(last % W, 69, "runs up to the bank")
+		eq(lay.cells[1] % W, 50, "the open end stays")
+		local far = sim.trenchLayout(1, { { x = 50.5, y = 45.5 }, { x = 60.5, y = 45.5 } })
+		eq(far.cells[#far.cells] % W, 60, "too far from the river: unchanged")
+	end)
+	test("road signs: a side shuts a stretch of road to its trucks; its rig routes go round, never left with no way home", function()
+		local bypass = { { rank = 2, track = false, pts = { 0.5, 30.5, 179.5, 30.5 } },
+			{ rank = 2, track = false, pts = { 20.5, 30.5, 20.5, 20.5, 40.5, 20.5, 40.5, 30.5 } } }
+		local sim = newSim({ roads = bypass })
+		clearUnits(sim, {})
+		local rig = rigAt(sim, 50)
+		rig.side, rig.takenAt = 1, 0
+		sim.updateConnections()
+		for _ = 1, 20 do
+			sim.step(0.05)
+		end
+		assert(rig.route, "a route home")
+		eq(select(2, sim.placeRoadSign(1, 25 * W + 30)), "notRoad")
+		local mid = 30 * W + 30
+		assert(table.find(rig.route, mid), "the route takes the straight road")
+		local id = sim.placeRoadSign(1, mid)
+		assert(id, "placed")
+		eq(select(2, sim.placeRoadSign(1, mid)), "signHere")
+		for _ = 1, 20 do
+			sim.step(0.05)
+		end
+		assert(rig.route, "still a route")
+		eq(table.find(rig.route, mid), nil, "round the sign")
+		assert(table.find(rig.route, 20 * W + 30), "by the bypass")
+		-- the other side's trucks are not affected
+		eq(sim.signClosed(2), nil)
+		-- shutting the bypass too would strand the rig
+		eq(select(2, sim.placeRoadSign(1, 20 * W + 30)), "noRoute")
+		eq(select(2, sim.removeRoadSign(2, id)), "noSign")
+		eq((sim.removeRoadSign(1, id)), true)
+		for _ = 1, 20 do
+			sim.step(0.05)
+		end
+		assert(table.find(rig.route, mid), "back on the straight road")
+		for i = 1, sim.num("signs.max") do
+			assert(sim.placeRoadSign(1, 30 * W + 90 + i * 9), `sign {i}`)
+		end
+		eq(select(2, sim.placeRoadSign(1, 30 * W + 170)), "limitReached")
+	end)
+	test("cut supply routes: trucks stop leaving; after 45 s a bot re-routes itself, a player picks one of the routes on offer", function()
+		local bypass = { { rank = 2, track = false, pts = { 0.5, 30.5, 179.5, 30.5 } },
+			{ rank = 2, track = false, pts = { 20.5, 30.5, 20.5, 20.5, 40.5, 20.5, 40.5, 30.5 } } }
+		local function setup()
+			local sim = newSim({ roads = bypass })
+			clearUnits(sim, {})
+			local rig = rigAt(sim, 50)
+			rig.side, rig.takenAt, rig.autoTruckAt = 1, 0, math.huge
+			sim.updateConnections()
+			for _ = 1, 20 do
+				sim.step(0.05)
+			end
+			return sim, rig
+		end
+		local sim, rig = setup()
+		local mid = 30 * W + 30
+		assert(rig.route and table.find(rig.route, mid), "the straight road")
+		local offer = sim.routeChoices(rig)
+		assert(#offer >= 2, `two ways home on offer: {#offer}`)
+		assert(table.find(offer[2], 20 * W + 30), "the second is the bypass")
+		sim.cutRoad(mid, 2)
+		for _ = 1, 20 do
+			sim.step(0.05)
+		end
+		assert(rig.route and rig.routeCutAt, "the route is kept, marked cut")
+		eq(select(2, sim.orderTruck(1, rig.id)), "noRoute", "no trucks leave on a cut route")
+		eq(select(2, sim.reroute(1, rig.id, 1)), "cooldown")
+		local wait = sim.rerouteReadyIn(rig)
+		assert(wait > sim.num("convoys.rerouteCutSec") - 1 and wait <= sim.num("convoys.rerouteCutSec"), `about 45 s from finding the cut: {wait}`)
+		run(sim, sim.num("convoys.rerouteCutSec"))
+		assert(rig.routeCutAt, "a player's route stays cut")
+		offer = sim.routeChoices(rig)
+		assert(#offer >= 1, "a way round on offer")
+		eq(table.find(offer[1], mid), nil)
+		eq(select(2, sim.reroute(2, rig.id, 1)), "notOwned")
+		eq(select(2, sim.reroute(1, rig.id, 5)), "noRoute")
+		assert(sim.reroute(1, rig.id, 1), "picked")
+		eq(rig.routeCutAt, nil)
+		eq(rig.handRoute, true)
+		assert(sim.orderTruck(1, rig.id), "trucks leave again")
+		eq(select(2, sim.reroute(1, rig.id, 1)), "cooldown", "locked for a few seconds")
+		run(sim, sim.num("convoys.rerouteAgainSec") + 0.5)
+		assert(sim.reroute(1, rig.id, 1), "free again")
+		-- a bot's cut route re-routes itself once the wait is over
+		local sim2, rig2 = setup()
+		sim2.sides[1].bot = true
+		sim2.cutRoad(mid, 2)
+		run(sim2, 5)
+		assert(rig2.routeCutAt, "cut")
+		run(sim2, sim2.num("convoys.rerouteCutSec"))
+		eq(rig2.routeCutAt, nil, "re-routed by itself")
+		eq(table.find(rig2.route, mid), nil)
+		assert(table.find(rig2.route, 20 * W + 30), "by the bypass")
+	end)
+	test("road signs: the bot signs the road ahead of a truck held by the enemy, and takes it down later", function()
+		local bypass = { { rank = 2, track = false, pts = { 0.5, 30.5, 179.5, 30.5 } },
+			{ rank = 2, track = false, pts = { 12.5, 30.5, 12.5, 15.5, 47.5, 15.5, 47.5, 30.5 } } }
+		local sim = newSim({ roads = bypass })
+		clearUnits(sim, {})
+		local bot = Bot.new(sim, 1, "balanced")
+		local rig = rigAt(sim, 50)
+		rig.side, rig.takenAt = 1, 0
+		sim.updateConnections()
+		for _ = 1, 20 do
+			sim.step(0.05)
+		end
+		local t = sim.spawnUnit("truck", 1, 40.5, 30.5)
+		local here = 30 * W + 40
+		local path = {}
+		for x = 39, 10, -1 do
+			table.insert(path, 30 * W + x)
+		end
+		t.path, t.pathIndex, t.stopped, t.waiting = path, 1, "enemy", sim.num("bots.signAfterSec") + 1
+		bot.think()
+		local id, sg = next(sim.roadSigns)
+		assert(sg and sg.side == 1, "a sign")
+		local ahead = math.floor(sim.num("convoys.stopShortCells") + sim.num("signs.radius") + 0.5)
+		eq(sg.cell, path[1 + ahead], "a little ahead of the truck")
+		t.stopped, t.waiting = nil, 0
+		sim.time += sim.num("bots.signHoldSec") + 1
+		bot.think()
+		eq(sim.roadSigns[id], nil, "taken down after the hold")
+		eq(here, here)
+	end)
+	test("refinery: built in a held town by a road; a rig nearer it than the HQ unloads there until the town is lost", function()
+		local sim = newSim({ settlements = { { name = "T", x = 110, y = 36, kind = "town" } } })
+		clearUnits(sim, {})
+		local st = sim.settlements[1]
+		local rig = rigAt(sim, 130)
+		rig.side, rig.takenAt = 1, 0
+		sim.updateConnections()
+		for _ = 1, 20 do
+			sim.step(0.05)
+		end
+		local hq = sim.hqOf(1)
+		eq(rig.routeHq, hq.cell, "hauls to the HQ")
+		local before = #rig.route
+		sim.sides[1].oil = 1000
+		eq(sim.refineryProblem(1, 1), "notHeld")
+		st.owner = 1
+		local c = sim.buildRefinery(1, 1)
+		assert(c, "laid out")
+		near(sim.sides[1].oil, 1000 - sim.num("refinery.cost"), "paid")
+		eq(sim.refineryProblem(1, 1), "refineryHere")
+		eq(sim.roads.isRoad(c), false, "off the road")
+		local d = math.sqrt((c % W + 0.5 - st.x) ^ 2 + (c // W + 0.5 - st.y) ^ 2)
+		assert(d <= st.radius + 1 + sim.num("refinery.edgeCells"), `round the town: {d}`)
+		local built = false
+		for _ = 1, 20 * (sim.num("refinery.buildSec") + 1) do
+			sim.step(0.05)
+			for _, ev in sim.takeEvents() do
+				if ev.type == "refineryBuilt" then
+					built = true
+				end
+			end
+		end
+		assert(built, "finished")
+		eq(sim.refineryWorks(st), true)
+		for _ = 1, 20 do
+			sim.step(0.05)
+		end
+		eq(rig.refinery, 1, "hauls to the refinery")
+		eq(rig.routeHq, c)
+		assert(#rig.route < before, `a shorter trip: {#rig.route} < {before}`)
+		eq(sim.depotCell(rig), c)
+		-- the ways on offer (the game's haulChoices): the routes to the HQ, then the refinery, marked now
+		local hc = sim.haulChoices(rig)
+		assert(#hc >= 2, `HQ and refinery on offer: {#hc}`)
+		eq(hc[1].dest, -1)
+		eq(hc[1].now, false)
+		eq(hc[#hc].dest, 1)
+		eq(hc[#hc].now, true, "the refinery is the current way")
+		assert(sim.reroute(1, rig.id, hc[1].road, 0), "sent home by hand")
+		eq(rig.refinery, nil)
+		eq(rig.routeHq, hq.cell)
+		eq(sim.haulChoices(rig)[1].now, true)
+		sim.time += sim.num("convoys.rerouteAgainSec") + 1
+		assert(sim.reroute(1, rig.id, 1, 1), "back to the refinery by hand")
+		eq(rig.refinery, 1)
+		eq(rig.routeHq, c)
+		-- the town is lost: the refinery stops and the rig hauls home again
+		st.owner = 2
+		local ended = false
+		for _ = 1, 20 do
+			sim.step(0.05)
+			for _, ev in sim.takeEvents() do
+				if ev.type == "refineryHaulEnded" and ev.side == 1 then
+					ended = true
+				end
+			end
+		end
+		assert(ended, "told")
+		eq(rig.refinery, nil)
+		eq(rig.routeHq, hq.cell)
+		-- shells can knock it down
+		st.owner = 1
+		sim.refineryBlast(c % W + 0.5, c // W + 0.5, 0, sim.num("refinery.hp"), 2)
+		eq(st.refinery, nil, "destroyed")
+	end)
+	test("refinery: the bot builds one in a held town its trucking rig would reach well before the HQ", function()
+		local sim = newSim({ settlements = { { name = "T", x = 110, y = 36, kind = "town" }, { name = "N", x = 30, y = 36, kind = "town" } } })
+		clearUnits(sim, {})
+		local bot = Bot.new(sim, 1, "balanced")
+		sim.settlements[1].owner, sim.settlements[2].owner = 1, 1
+		local rig = rigAt(sim, 130)
+		rig.side, rig.takenAt = 1, 0
+		sim.updateConnections()
+		for _ = 1, 20 do
+			sim.step(0.05)
+		end
+		eq(sim.orderTruck(1, rig.id), true)
+		sim.sides[1].oil = sim.num("refinery.cost") + sim.num("refinery.bots.keepOil") + 1
+		bot.think()
+		local ref1, ref2 = sim.settlements[1].refinery, sim.settlements[2].refinery
+		assert(ref1 and ref1.owner == 1, "in the town by the rig")
+		eq(ref2, nil, "not the one by the HQ")
+	end)
 	test("armies: only the coalition fields mortars, only the republic lays minefields", function()
 		local sim = newSim({ armies = { "republic", "coalition" } })
 		clearUnits(sim, {})
@@ -2283,6 +3278,25 @@ if fs.isFile(matchPath) then
 		end
 		assert(deployed, "the bot set up a new HQ")
 		eq(sim.sides[1].lost, false)
+		-- with a full factory queue the bot calls off the last unit to fit the truck
+		local sim2 = newSim()
+		clearUnits(sim2, {})
+		sim2.sides[1].oil = 50000
+		local b2 = sim2.placeStructure(1, "barracks", cellOf(20, 42)) :: number
+		sim2.entities[b2].built = 1
+		local f2 = sim2.placeStructure(1, "factory", cellOf(26, 42)) :: number
+		sim2.entities[f2].built = 1
+		local cap = sim2.num("production.maxQueue")
+		for _ = 1, cap do
+			sim2.orderProduce(1, "tank", f2)
+		end
+		eq(#sim2.entities[f2].queue, cap)
+		local hq2 = sim2.hqOf(1)
+		hq2.hp, hq2.alive = 0, false
+		Bot.new(sim2, 1, "balanced").think()
+		local q = sim2.entities[f2].queue
+		eq(#q, cap)
+		eq(q[#q], "command")
 	end)
 	test("opening drop: the war waits for picks, planes drop a truck and 3 squads, the truck sets up the HQ", function()
 		local sim = newSim({ drop = true })

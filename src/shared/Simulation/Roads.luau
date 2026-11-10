@@ -241,6 +241,10 @@ function Roads.build(cfg: Config)
 	function self.passable(c: number): boolean
 		return buffer.readu8(blocked, c) == 0 and trench[c] == nil and (pass[c + 1] or buffer.readu8(road, c) == 1)
 	end
+	-- the land itself (not a road on it) can be walked (the game's tPass)
+	function self.landPassable(c: number): boolean
+		return pass[c + 1] == true
+	end
 	function self.setTrench(c: number, id: number)
 		trench[c] = if id >= 0 then id else nil
 		groundEpoch += 1
@@ -434,8 +438,9 @@ function Roads.build(cfg: Config)
 		return out
 	end
 
-	-- Truck cost function for a route between two cells.
-	function self.truckCostFn(fromCell: number, toCell: number): (number) -> number
+	-- Truck cost function for a route between two cells. closed: road cells the side has signed shut
+	-- (the game's $g with an owner: its road signs).
+	function self.truckCostFn(fromCell: number, toCell: number, closed: { [number]: boolean }?): (number) -> number
 		local gx, gy = fromCell % w, fromCell // w
 		local tx, ty = toCell % w, toCell // w
 		local reach = cfg.offRoadReach
@@ -446,6 +451,9 @@ function Roads.build(cfg: Config)
 				return math.huge
 			end
 			if buffer.readu8(road, v) == 1 then
+				if closed and closed[v] then
+					return math.huge
+				end
 				return cfg.truckCost[buffer.readu8(class, v)]
 			end
 			local bx, by = v % w, v // w
@@ -538,8 +546,13 @@ function Roads.build(cfg: Config)
 	end
 
 	-- Route a rig's trucks take home: from the rig cell to the HQ cell (cells after the rig cell).
-	function self.truckRoute(rigCell: number, hqCell: number): { number }?
-		local path = self.search(rigCell, hqCell, self.truckCostFn(rigCell, hqCell), { minCost = 1, fourWay = true, maxNodes = n })
+	-- mult: an extra cost factor per cell (the game's db penalty when listing alternative routes).
+	function self.truckRoute(rigCell: number, hqCell: number, closed: { [number]: boolean }?, mult: ((number) -> number)?): { number }?
+		local base = self.truckCostFn(rigCell, hqCell, closed)
+		local cost = if mult then function(v: number): number
+			return base(v) * mult(v)
+		end else base
+		local path = self.search(rigCell, hqCell, cost, { minCost = 1, fourWay = true, maxNodes = n })
 		if path and #path > 0 and path[#path] ~= hqCell then
 			local last = path[#path]
 			local tail = Roads.line(w, h, last % w, last // w, hqCell % w, hqCell // w)
