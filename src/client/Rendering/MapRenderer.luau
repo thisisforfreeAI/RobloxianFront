@@ -1,7 +1,9 @@
 --!strict
 --[[
 	MapRenderer: draws the map as a flat ground plane seen from above.
-	Terrain: one EditableImage (1 pixel per cell) on the ground part, pixelated.
+	Terrain: the game's own baked ground (3 px a cell, Ground_<id> in DevAssets, packed by
+	tools/asset_pipeline/pack_ground.py) when it is there, else one EditableImage of placeholder
+	colours (1 pixel per cell), on the ground part, pixelated.
 	Fallback if EditableImage is unavailable: merged rectangle Parts.
 	All colours are PLACEHOLDER (TEMP-003). Gameplay never reads anything drawn here.
 ]]
@@ -16,6 +18,7 @@ local World = require(Shared.Config.World)
 local Rules = require(Shared.Config.Rules)
 local DevFlags = require(script.Parent.Parent.Dev.DevFlags)
 local TownRenderer = require(script.Parent.TownRenderer)
+local Inflate = require(Shared.Utilities.Inflate)
 
 local MapRenderer = {}
 
@@ -49,7 +52,53 @@ local function newPart(props: { [string]: any }): Part
 	return p
 end
 
+-- the game's baked ground as image strips, or nil when the local module is missing or fails
+local function bakedGround(map: MapCodec.DecodedMap): { { content: Content, x: number, width: number } }?
+	local assets = script.Parent.Parent:FindFirstChild("DevAssets")
+	local mod = assets and assets:FindFirstChild("Ground_" .. map.data.id)
+	if not mod or not mod:IsA("ModuleScript") then
+		return nil
+	end
+	local ok, result = pcall(function()
+		local g = require(mod) :: any
+		local out = {}
+		for _, piece in g.pieces do
+			local size = Vector2.new(piece.width, g.height)
+			local image = AssetService:CreateEditableImage({ Size = size })
+			image:WritePixelsBuffer(Vector2.zero, size, Inflate.raw(MapCodec.base64Decode(piece.deflate), piece.width * g.height * 4))
+			table.insert(out, { content = Content.fromObject(image), x = piece.x / g.width, width = piece.width / g.width })
+		end
+		return out
+	end)
+	if not ok then
+		warn("[MapRenderer] baked ground could not be loaded, placeholder colours instead:", result)
+		return nil
+	end
+	return result
+end
+
 local function buildImageGround(map: MapCodec.DecodedMap, ground: Part): boolean
+	local baked = bakedGround(map)
+	if baked then
+		local gui = Instance.new("SurfaceGui")
+		gui.Face = Enum.NormalId.Top
+		gui.SizingMode = Enum.SurfaceGuiSizingMode.FixedSize
+		gui.CanvasSize = Vector2.new(map.width * 4, map.height * 4)
+		gui.LightInfluence = 0
+		gui.Adornee = ground
+		for _, piece in baked do
+			local label = Instance.new("ImageLabel")
+			label.Position = UDim2.fromScale(piece.x, 0)
+			label.Size = UDim2.fromScale(piece.width, 1)
+			label.BackgroundTransparency = 1
+			label.ResampleMode = Enum.ResamplerMode.Pixelated
+			label.ImageContent = piece.content
+			label.Parent = gui
+		end
+		gui.Parent = ground
+		print(`[MapRenderer] the game's baked ground, {#baked} strips`)
+		return true
+	end
 	local ok, image = pcall(function()
 		return AssetService:CreateEditableImage({ Size = Vector2.new(map.width, map.height) })
 	end)

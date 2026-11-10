@@ -682,7 +682,7 @@ Bot: bridges (2026-11-10), traced from the game's _h / v7e / kUe / nat / Yst / X
 - Stopping a unit now also ends a sabotage job.
 
 ## Next
-1. You run Studio tests B18–B82 (defences, mortar, artillery, scout) and commit.
+1. You run Studio tests B18–B83 (defences, mortar, artillery, scout) and commit.
 2. Done since: engineers' repair, vehicle steering, the bot's HQ push, shared group routes,
    separation, the 100/250/500-unit performance check (`lune run tools/perf.luau 250`) and the
    convoy rules (spacing, town/bridge/off-road pace, held and stranded trucks), airfield drops and
@@ -749,8 +749,14 @@ turreted unit has 3 more rows for the turret; men sheet: 48 px, same 3 rows a po
   them into the same chunks from trees-top.png at the forest layer's scale (0.013 cells a px), each
   with its 30% shadow shifted (0.12, 0.16) x its width, in the game's draw order. Saddle is now 24
   chunks, 4.7 MB. Not baked: the sun-angle shadow shift, day/night tint, swaying, burning, felling.
-- Next: roof shading from the height data, then the ground texture (grass clumps, dirt, stones,
-  riverbanks) from the game's map worker.
+- Ground: the game bakes a "fine" ground texture on the CPU (its oUt, 3 px a cell: grass tones and
+  clumps, dirt, trails, forest canopy, rock, sand and water edges, hill light and shade) that its
+  ground shader then samples. `tools/conversion/export_ground.cjs` pulls that baker and everything it
+  uses out of the local install's bundle at run time (acorn; nothing copied) and runs it for a map;
+  `tools/asset_pipeline/pack_ground.py` stores it as Ground_<id>.luau (Saddle: 1152 x 720 px, 100 KB).
+  MapRenderer draws it instead of the placeholder colours. Not reproduced: the shader's per-pixel work
+  on top (forest floor darkening, animated water and foam, day/night light, fog, territory wash).
+- Next: roof shading from the height data, and the shader's forest-floor and water looks.
 
 ## Open questions
 1. Rights scope: answered for the art (see Original art above). Still open: audio and voice, and
