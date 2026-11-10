@@ -1,14 +1,20 @@
 --!strict
 --[[
 	UnitRenderer: draws units from server snapshots and interpolates between them.
-	PLACEHOLDER shapes (TEMP-003): a flat body in the side colour plus a nose showing heading.
-	Sizes follow WarFront's sprite footprints in cells (units-top atlas "cells" values).
+	Tanks, trucks, scout cars, artillery and infantry draw the game's own sprites when the local art
+	modules are present (SpriteBank): 16 facings, the paint layer tinted with the side colour, the rest
+	of the heading turning the quad. Other kinds, or a clone without the art, keep the PLACEHOLDER shapes
+	(TEMP-003): a flat body in the side colour plus a nose showing heading. Sizes follow WarFront's
+	sprite footprints in cells (units-top atlas "cells" values).
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
-local World = require(ReplicatedStorage:WaitForChild("Shared").Config.World)
+local Shared = ReplicatedStorage:WaitForChild("Shared")
+local World = require(Shared.Config.World)
+local Facing = require(Shared.Assets.Facing)
+local SpriteBank = require(script.Parent.SpriteBank)
 
 local UnitRenderer = {}
 
@@ -16,6 +22,10 @@ local S = World.STUDS_PER_CELL
 local SNAPSHOT_SEC = 0.1 -- server sends 10 snapshots/s
 local FOOTPRINT = { infantry = 0.78, at = 0.78, mortar = 0.78, para = 0.78, tank = 1, ifv = 0.95, artillery = 1.4, rocket = 1.3, scout = 0.62, engineer = 0.8, command = 1, demo = 1.2, truck = 0.7 }
 local SIDE_COLOR = { [1] = Color3.fromRGB(70, 130, 230), [2] = Color3.fromRGB(220, 80, 70) }
+local GUI_YAW = -World.TOP_GUI_YAW -- a Top-face SurfaceGui needs this turn to line up with the map
+local SPRITE_Y = -0.05 -- sprite quads sit just under the unit's anchor height
+
+export type Sprite = { quad: Part, colour: ImageLabel, paint: ImageLabel, y0c: number, y0p: number, rise: number }
 
 export type View = {
 	id: number,
@@ -33,6 +43,9 @@ export type View = {
 	toYaw: number,
 	t: number,
 	seen: number,
+	look: SpriteBank.Look?,
+	sprites: { Sprite },
+	facing: number,
 }
 
 local views: { [number]: View } = {}
@@ -51,6 +64,36 @@ local function part(parent: Instance, size: Vector3, color: Color3): Part
 	p.Material = Enum.Material.SmoothPlastic
 	p.Parent = parent
 	return p
+end
+
+local function spriteQuad(parent: Instance, look: SpriteBank.Look, layer: SpriteBank.Layer, color: Color3, rise: number): Sprite
+	local quad = Instance.new("Part")
+	quad.Name = "Sprite"
+	quad.Anchored, quad.CanCollide, quad.CanQuery, quad.CanTouch, quad.CastShadow = true, false, false, false, false
+	quad.Transparency = 1
+	quad.Size = Vector3.new(look.cells * S, 0.05, look.cells * S)
+	quad.Parent = parent
+	local gui = Instance.new("SurfaceGui")
+	gui.Face = Enum.NormalId.Top
+	gui.SizingMode = Enum.SurfaceGuiSizingMode.FixedSize
+	gui.CanvasSize = Vector2.new(look.frame, look.frame)
+	gui.LightInfluence = 0
+	gui.Parent = quad
+	local function label(z: number): ImageLabel
+		local l = Instance.new("ImageLabel")
+		l.BackgroundTransparency = 1
+		l.Size = UDim2.fromScale(1, 1)
+		l.ImageContent = layer.content
+		l.ImageRectSize = Vector2.new(look.frame, look.frame)
+		l.ResampleMode = Enum.ResamplerMode.Pixelated
+		l.ZIndex = z
+		l.Parent = gui
+		return l
+	end
+	local colour = label(1)
+	local paint = label(2)
+	paint.ImageColor3 = color -- multiply, as the game's paint pass
+	return { quad = quad, colour = colour, paint = paint, y0c = layer.colour, y0p = layer.paint, rise = rise }
 end
 
 local function create(id: number, kind: string, side: number): View
@@ -104,11 +147,22 @@ local function create(id: number, kind: string, side: number): View
 	status.Text = ""
 	status.Parent = tagGui
 	tagGui.Parent = body
+	local look = SpriteBank.look(kind)
+	local sprites: { Sprite } = {}
+	if look then
+		body.Transparency = 1
+		nose.Transparency = 1
+		table.insert(sprites, spriteQuad(model, look, look.body, color, 0))
+		if look.turret then
+			table.insert(sprites, spriteQuad(model, look, look.turret, color, 0.04))
+		end
+	end
 	model.PrimaryPart = body
 	model.Parent = folder
 	return {
 		id = id, kind = kind, side = side, model = model, body = body, ring = ring, bar = bar, barGui = barGui, status = status,
 		from = Vector3.zero, to = Vector3.zero, fromYaw = 0, toYaw = 0, t = 1, seen = 0,
+		look = look, sprites = sprites, facing = -1,
 	}
 end
 
@@ -119,6 +173,23 @@ local function place(v: View, pos: Vector3, yaw: number)
 	local nose = v.model:FindFirstChild("Nose") :: Part
 	nose.CFrame = cf * CFrame.new(v.body.Size.X / 2, 0.05, 0)
 	v.ring.CFrame = CFrame.new(pos - Vector3.new(0, 0.25, 0)) * CFrame.Angles(0, 0, math.rad(90))
+	local look = v.look
+	if look then
+		-- the turret follows the hull for now: the snapshot carries no turret angle yet
+		local h = yaw % (2 * math.pi)
+		local d = Facing.index(h, 16)
+		local residual = Facing.residual(h, d, 16)
+		if d ~= v.facing then
+			v.facing = d
+			for _, sp in v.sprites do
+				sp.colour.ImageRectOffset = SpriteBank.offset(look, sp.y0c, d)
+				sp.paint.ImageRectOffset = SpriteBank.offset(look, sp.y0p, d)
+			end
+		end
+		for _, sp in v.sprites do
+			sp.quad.CFrame = CFrame.new(pos + Vector3.new(0, SPRITE_Y + sp.rise, 0)) * CFrame.Angles(0, -(residual + GUI_YAW), 0)
+		end
+	end
 end
 
 local function lerpAngle(a: number, b: number, t: number): number
@@ -130,6 +201,7 @@ function UnitRenderer.start()
 	folder = Instance.new("Folder")
 	folder.Name = "WarFrontUnits"
 	folder.Parent = workspace
+	SpriteBank.preload()
 	RunService.RenderStepped:Connect(function(dt)
 		for _, v in views do
 			v.t = math.min(1, v.t + dt / SNAPSHOT_SEC)

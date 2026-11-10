@@ -682,7 +682,7 @@ Bot: bridges (2026-11-10), traced from the game's _h / v7e / kUe / nat / Yst / X
 - Stopping a unit now also ends a sabotage job.
 
 ## Next
-1. You run Studio tests B18–B77 (defences, mortar, artillery, scout) and commit.
+1. You run Studio tests B18–B78 (defences, mortar, artillery, scout) and commit.
 2. Done since: engineers' repair, vehicle steering, the bot's HQ push, shared group routes,
    separation, the 100/250/500-unit performance check (`lune run tools/perf.luau 250`) and the
    convoy rules (spacing, town/bridge/off-road pace, held and stranded trucks), airfield drops and
@@ -706,8 +706,16 @@ turreted unit has 3 more rows for the turret; men sheet: 48 px, same 3 rows a po
 - HQ (8 frames + its 16-heading dish), refinery (4 facings x 8 frames).
 - Not in the building sheet: town buildings. The game draws towns from its city data (cityWorker),
   so REQ-0008 stays open.
-- Next: pack these into runtime atlases without resizing, and draw them in Studio with the side's
-  colour on the paint layer. Still to trace: walk frame timing and how many of each figure a squad shows.
+- Drawn in game now: tank (hull and turret), oil truck, scout car, artillery and the infantry icon.
+  `tools/asset_pipeline/pack_original.py <spec.json>` packs the strips, unresized, into local modules
+  `src/client/DevAssets/Orig*.luau` (8 x 2 facings a strip, each page at most 1024 px; git-ignored, the
+  spec is in docs/private/). `SpriteBank` loads them into EditableImages; `UnitRenderer` draws the
+  colour layer, then the paint layer tinted with the side's colour (Roblox multiplies like the game's
+  paint pass), frame = 16-step facing, the rest of the heading turns the quad, drawn width =
+  cells / art.w from the game's unit table. Missing modules (a fresh clone) fall back to the blocks.
+- Not yet: the turret turns with the hull (no turret angle in the snapshot), no dark rim or shadow
+  (the shape row), trucks always look full, wrecks, the other infantry kinds, men figures, buildings.
+  Still to trace: walk frame timing and how many of each figure a squad shows.
 
 ## Open questions
 1. Rights scope: answered for the art (see Original art above). Still open: audio and voice, and
