@@ -689,6 +689,27 @@ Bot: bridges (2026-11-10), traced from the game's _h / v7e / kUe / nat / Yst / X
    the capital's paratroopers and bomb truck, the recon drone and SAM sites, rocket artillery, the artillery base, the night operations tower, veterancy, IFV transport, the command truck, the opening drop, cancel and demolish, armies and minefields, the republic missile launcher, the opening deck, trenches parts 1-4.
 3. Next: more of the game's land units and buildings that the slice still passes over.
 
+## Original art (2026-11-10)
+BIGJOHN says WarFront's original creator has given permission to use the game's art, and the finished
+game will be handed over to that creator. So the original sprite sheets are used, not new art. They
+stay local: the extraction (assets/original/, see its CLAUDE_HANDOFF.md) and everything cut from it
+(assets/sprites/source/original/, runtime atlases) are git-ignored and are not pushed or uploaded.
+Cut so far, each with a source.json (sheet, SHA-256, rectangles, layers), traced from the game's
+renderer tables (units sheet: 120 px frames, 16 facings a row, column 0 east then clockwise; 3 rows a
+look: colour, paint (multiplied by the side's colour and drawn over), shape (rims and shadows); a
+turreted unit has 3 more rows for the turret; men sheet: 48 px, same 3 rows a pose; buildings:
+8 frames: colour, paint, 5 height bands, night lights):
+- scout car (body, wreck, 2 mast looks), oil truck (full, empty, wreck), tank (hull and turret
+  layers, and their wrecks), artillery (moving, 2 set-up looks, wreck), the infantry icon row, and
+  the rifleman and squad leader figures with all 21 poses each (walk 4 frames, stand, kneel, prone,
+  fallen, crouched and aimed walks, ...);
+- HQ (8 frames + its 16-heading dish), refinery (4 facings x 8 frames).
+- Not in the building sheet: town buildings. The game draws towns from its city data (cityWorker),
+  so REQ-0008 stays open.
+- Next: pack these into runtime atlases without resizing, and draw them in Studio with the side's
+  colour on the paint layer. Still to trace: walk frame timing and how many of each figure a squad shows.
+
 ## Open questions
-1. Rights scope: original art, audio, voice; public redistribution of extracted data.
+1. Rights scope: answered for the art (see Original art above). Still open: audio and voice, and
+   public redistribution of extracted data (kept out of the public repo meanwhile).
 2. Git is run by you (`docs/GIT_SETUP.md`), since this connection can't grant narrower delete rights.
