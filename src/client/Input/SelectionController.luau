@@ -5,10 +5,16 @@
 	Left click on one of your buildings (HQ, barracks, factory): pick it as the producer for the HUD.
 	Left click inside one of your towns or cities: pick it for forward training.
 	Right click on an enemy unit or building: attack order. Right click on the ground: move order. X: stop. Esc: clear.
+	Right click on your IFV with infantry or AT selected: they get in. / unloads selected IFVs.
 	T with the cursor on one of your rigs: send a truck to it.
 	R: selected scout cars deploy for recon (PROVISIONAL key).
 	H with the cursor on a town you hold: selected infantry / AT garrison it (PROVISIONAL key).
 	Right click on one of your damaged buildings with engineers selected: they repair it (PROVISIONAL).
+	Right click on a road cut or worn road with engineers selected: they mend it (PROVISIONAL).
+	V with engineers selected and the cursor on a road: they sabotage it (PROVISIONAL key).
+	P / J / L at the cursor: the capital's paratroopers / bomb truck, or a drop from your nearest ready
+	airfield town; O sends the recon drone there. N: selected bomb trucks blow up. I: selected rocket
+	artillery fires a barrage at the cursor. (PROVISIONAL keys)
 	Trucks drive themselves and cannot be selected.
 	The client only proposes; the server re-checks ownership and the target.
 	Key choices (X, Esc) are PROVISIONAL until WarFront's bindings are confirmed.
@@ -24,6 +30,7 @@ local Protocol = require(Shared.Protocol.Protocol)
 local UnitRenderer = require(script.Parent.Parent.Rendering.UnitRenderer)
 local StructureRenderer = require(script.Parent.Parent.Rendering.StructureRenderer)
 local CityOverlay = require(script.Parent.Parent.Rendering.CityOverlay)
+local RoadOverlay = require(script.Parent.Parent.Rendering.RoadOverlay)
 
 local SelectionController = {}
 
@@ -190,6 +197,39 @@ function SelectionController.start(mySide: number, sendIntent: (any) -> (), opts
 					sendIntent({ kind = "repair", unitIds = engineers, targetId = own.id })
 					return
 				end
+				-- a road cut or worn road under the cursor: mend it
+				local spot = groundPoint(mouse)
+				if spot then
+					local x, y = World.toCell(spot)
+					if RoadOverlay.repairableAt(x, y) then
+						sendIntent({ kind = "roadRepair", unitIds = engineers, x = x, y = y })
+						return
+					end
+				end
+			end
+			-- infantry or AT selected and one of your IFVs under the cursor: get in
+			local riders = {}
+			for id in selected do
+				local v = UnitRenderer.each()[id]
+				if v and (v.kind == "infantry" or v.kind == "at") then
+					table.insert(riders, id)
+				end
+			end
+			if #riders > 0 then
+				local ifv, bd = nil, PICK_PIXELS
+				for id, v in UnitRenderer.each() do
+					if v.side == mySide and v.kind == "ifv" and not selected[id] then
+						local sp, on = screenOf(v)
+						local d = (sp - mouse).Magnitude
+						if on and d < bd then
+							ifv, bd = id, d
+						end
+					end
+				end
+				if ifv then
+					sendIntent({ kind = "board", carrierId = ifv, unitIds = riders })
+					return
+				end
 			end
 			-- enemy under the cursor? attack it; otherwise move
 			local best, bestDist = nil, PICK_PIXELS
@@ -254,6 +294,67 @@ function SelectionController.start(mySide: number, sendIntent: (any) -> (), opts
 			end
 			if #ids > 0 then
 				sendIntent({ kind = "recon", unitIds = ids })
+			end
+		elseif input.KeyCode == Enum.KeyCode.V and next(selected) then
+			-- V with the cursor on a road: selected engineers plant a charge there (PROVISIONAL key)
+			local ids = {}
+			for id in selected do
+				local v = UnitRenderer.each()[id]
+				if v and v.kind == "engineer" then
+					table.insert(ids, id)
+				end
+			end
+			local hit = groundPoint(UserInputService:GetMouseLocation())
+			if #ids > 0 and hit then
+				local x, y = World.toCell(hit)
+				sendIntent({ kind = "sabotage", unitIds = ids, x = x, y = y })
+			end
+		elseif input.KeyCode == Enum.KeyCode.P or input.KeyCode == Enum.KeyCode.J or input.KeyCode == Enum.KeyCode.L or input.KeyCode == Enum.KeyCode.O then
+			-- the capital's powers and airfield drops at the cursor (PROVISIONAL keys)
+			local hit = groundPoint(UserInputService:GetMouseLocation())
+			if hit then
+				local x, y = World.toCell(hit)
+				local power = if input.KeyCode == Enum.KeyCode.P then "para" elseif input.KeyCode == Enum.KeyCode.J then "demo"
+					elseif input.KeyCode == Enum.KeyCode.O then "drone" else "airfield"
+				sendIntent({ kind = "power", power = power, x = x, y = y })
+			end
+		elseif input.KeyCode == Enum.KeyCode.Slash and next(selected) then
+			-- / unloads the selected IFVs (PROVISIONAL key)
+			local ids = {}
+			for id in selected do
+				table.insert(ids, id)
+			end
+			sendIntent({ kind = "unload", unitIds = ids })
+		elseif input.KeyCode == Enum.KeyCode.Period or input.KeyCode == Enum.KeyCode.Comma then
+			-- artillery base at the cursor: . barrage, , flares (PROVISIONAL keys)
+			local hit = groundPoint(UserInputService:GetMouseLocation())
+			if hit then
+				local x, y = World.toCell(hit)
+				sendIntent({ kind = "power", power = if input.KeyCode == Enum.KeyCode.Period then "barrage" else "flare", x = x, y = y })
+			end
+		elseif input.KeyCode == Enum.KeyCode.I and next(selected) then
+			local ids = {}
+			for id in selected do
+				local v = UnitRenderer.each()[id]
+				if v and v.kind == "rocket" then
+					table.insert(ids, id)
+				end
+			end
+			local hit = groundPoint(UserInputService:GetMouseLocation())
+			if #ids > 0 and hit then
+				local x, y = World.toCell(hit)
+				sendIntent({ kind = "barrage", unitIds = ids, x = x, y = y })
+			end
+		elseif input.KeyCode == Enum.KeyCode.N and next(selected) then
+			local ids = {}
+			for id in selected do
+				local v = UnitRenderer.each()[id]
+				if v and v.kind == "demo" then
+					table.insert(ids, id)
+				end
+			end
+			if #ids > 0 then
+				sendIntent({ kind = "detonate", unitIds = ids })
 			end
 		elseif input.KeyCode == Enum.KeyCode.X and next(selected) then
 			send(sendIntent, "stop")

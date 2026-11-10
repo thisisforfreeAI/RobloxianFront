@@ -11,7 +11,7 @@ Last updated: 2026-11-09
 Phase 1. Milestone 1A done (Studio tests 1–7 pass). Pilot sprite REQ-0001 approved. Milestone 1B (gameplay loop) rewritten for WarFront parity and tested outside Studio; Studio tests B1–B9 pending.
 
 ## Verified outside Studio (actually run, Linux container)
-- Lune 0.11.1 `tests/run`: 75 passed, 0 failed (latest run) (including the 2 that read the GameData generated from your install).
+- Lune 0.11.1 `tests/run`: 108 passed, 0 failed (latest run) (including the 2 that read the GameData generated from your install).
 - Rojo 7.4.4 `rojo build` succeeds. All .luau files compile (syntax only).
 - Synthetic atlas: 16 × 120 px frames pack to 960×240 (8×2, no padding); validator passes on dimensions,
   rectangles, direction order, pixel identity, pivot, partial alpha, edge bleed, arrow orientation, manifest.
@@ -124,7 +124,7 @@ Defences and more units (2026-11-09), traced from the game's code:
   near enemy HQs.
 - Client (placeholder looks): defence blocks are low and grey-textured; units show RECON, PACKING or
   SETTING UP; the producer panel has up to 4 units (Q/E/Z/C).
-- Not in the slice: rocket artillery (its 12% factory pick trains nothing), SAM, radar, drones, veterancy.
+- Not in the slice then: rocket artillery, SAM, radar, drones, veterancy (rocket artillery, SAM and drones came later).
 
 Bot-vs-bot on Saddle (30 min cap): balanced v warlord, warlord at 13:07; turtle v warlord, warlord at
 14:59; balanced v turtle, balanced at 19:44; balanced v balanced had no winner by 30:00 (side 1 had 10
@@ -208,10 +208,201 @@ vehicle without a turret turns its hull toward its target. APPROX: no formations
 overtaking or dodging round blockers, no traffic slowdown next to trucks. Bot-vs-bot after this:
 both matchups still end (warlord about 13-15 min; balanced v turtle about 18-20 min).
 
+Town damage (2026-11-09), traced from the game's lf / OD / RZe: artillery and mortar shells that land in
+a settlement, on units or buildings there, take 60% of their damage off its integrity (village 400,
+town 1000, city 2400, capital 5000). Under 70% it reads Damaged, under 30% Critical, at 0 it lies in
+ruins. After 60 s without hits it mends to full over 10 minutes and stands again at 30%. Direct fire
+(rifles, tank guns) does not damage towns. In the game ruins matter to refineries, dams and events,
+none of which are in the slice yet, so here they change only the look and the tag.
+
+Capital (2026-11-09), traced from the game's Owe: while you hold the capital secured (full garrison),
+all of your own territory counts as seen, so enemy units inside your borders show up even without a
+unit nearby. Not in the slice: the capital's paradrop and demolition-team powers (no aircraft or
+demolition units yet).
+
+Bot capital assault (2026-11-09), traced from the game's fat: after 300 s (divided by the persona's
+appetite: turtle 0.6, balanced 1, warlord 1.6) and with 3 rigs, the bot gathers its idle units 30% of
+the way from its HQ to the capital; once their worth reaches the larger of the threat there x margin
+and 180 x appetite, all of them go in. A muster that takes over 150 s breaks up and waits 150 s. Once
+it holds the capital, idle units go to defend it whenever enemies come near.
+
+Radar (2026-11-09), traced from the game's radars / jJe / wwe and the radar building's rules: a finished
+radar (190 oil, Y to place) and a secured radio-trait town each sweep 54 cells. Every enemy unit inside
+a sweep that you can't see shows as a contact dot; units within 15 cells of each other form a group
+whose strength comes from their capture values (light under 4, medium from 4, heavy from 10). Trucks
+are always light. The bot builds a radar near its HQ after 8 minutes and counts each unseen contact at
+60 / 180 / 450 worth when it sizes up a target, as the game does. APPROX: no radar boost, no power,
+no "radar contact" warnings, no movement arrows on the dots. Bot-vs-bot after this: warlord v balanced
+about 16 min; balanced v turtle reached the 30-min cap once (both sides more cautious with contacts)
+and ended in about 19 min with the sides swapped. A check with the radar taken out of the build list
+ends that match again (turtle wins at about 25 min), so the stall comes from both bots spending 190
+oil on a radar at 8 minutes, as the game's build order does.
+Bot knowledge (fix): like the game, the bot counts one contact per group of enemy units in its sweep
+and out of sight, not one per unit.
+
+Unit intel markers (2026-11-09), traced from the game's unit intel (JJe): an enemy unit you saw and
+lost stays marked, faintly, where you last saw it for 45 s; a dead unit's marker goes as soon as its
+spot is in sight again.
+
+Match alerts (2026-11-09): match events now show as short alerts at the top right for the side the
+game alerts. That covers rigs attacked, being captured, captured or lost, a rig out of trucks, trucks
+destroyed, towns attacked, taken, lost or in ruins, buildings and units ready, buildings destroyed or
+repaired, road cuts and downed bridges (to the side that cut it and to the sides whose supply route ran
+through it), sabotage armed, done or failed, and roads repaired. PLACEHOLDER wording; the game's own
+text and sounds are not used.
+
+Phase 2 leftovers (2026-11-09):
+- Performance: a per-tick unit grid answers "who is near" for target search, enemy spacing and
+  separation, with ties broken exactly as a full scan would (bot matches came out identical). On Lune,
+  Saddle, both sides marching into each other for 60 s: 100 units about 3 ms a tick, 250 about 9 ms,
+  500 about 23-25 ms (the budget at 20 Hz is 50 ms); single ticks peak at 45-110 ms when many units
+  re-plan routes at once. Studio's Luau may differ.
+- Bot HQ push: 16 units ordered at an HQ now stop round it and destroy it in about 45 s, and the
+  balanced v balanced match that used to stall now ends (about 24 min).
+- Group routes, traced from the game's orderMove: a unit within 12 cells of a groupmate that already
+  has a route joins that route where a straight walk reaches it, then steps to its own slot, instead
+  of planning its own (the game's joinAt / straightPassable). Not ported: the game's group flow field
+  and walksPerTick spreading of route searches.
+- Separation, traced from the game's separate: units ease apart every tick. Friends closer than 1.2
+  cells (3 for a soldier in a firefight) push at up to 1.5 cells/s, enemies closer than 2.1 cells at up
+  to 2.4 cells/s; a push off passable ground, or a soldier in a fight stepping to worse cover, is
+  dropped; vehicles only slide along their heading. APPROX: no yard clearance.
+Bot-vs-bot after these: warlord v balanced about 15 min, turtle v balanced about 17 min, balanced v
+balanced about 24 min.
+
+Roads (2026-11-09), traced from the game's uI / N7e / GX / wh / KX / Mme / zst: trucks, tracked and
+wheeled units wear the road cells they drive over (dirt tracks wear fastest, highways slowest); above
+35% wear traffic slows, down to half pace on a worn-out road. Artillery and mortar shells landing near a
+road wear it and leave strike damage that fades after 20 s; 260 damage within the cut radius (3.6
+cells) cuts the road there. A cut stops being road (on a bridge it drops the bridge), so rigs can lose
+their link home, routes are redone and trucks re-route or wait. Engineers repair a cut for 30 oil
+(paid once per side) in 30 s per engineer, up to 3, and mend worn road back to new. The bot sends idle
+engineers to cuts near its rigs or HQ or on its rig routes, then to the most worn cell (55%+) on its
+routes. Right-click a cut or worn road with engineers selected to send them. APPROX: every side sees
+every cut; trucks re-route over the normal truck cost map. Not in the slice: rail,
+mountain passes, weather wash-outs.
+
+Sabotage (2026-11-09), traced from the game's XX / _me / DZe / FZe / Jst: engineers sent to a road cell
+(V with the cursor on a road) plant a charge for 25 s while standing within reach; a crew member who
+dies, is hit or gets another order ends it. Then it is armed, the crew walks off to the nearest own
+building, and 6-8 s later it blows and cuts the road like shellfire. Now and then (at most every 180 s
+after the first 240 s, more often for the warlord) the bot sends its last idle engineer to sabotage an
+enemy rig's road home, 30-70% of the way along it. APPROX: the bot knows who owns each rig; the game's
+"saboteurs spotted" warning and the reveal strip it gives the victim are not in the slice. Bot-vs-bot
+after this: warlord v balanced about 15 min, balanced v turtle about 27 min.
+
+Traffic (2026-11-09), traced from the game's FWe / UWe / NWe: a truck on a road with a tracked or
+wheeled unit on the road within 3.6 cells drives at 55% pace; a tracked or wheeled unit on a road with
+a truck that close keeps only 40% of its road bonus. Foot units don't cause jams. Not in the slice:
+road signs, convoy spacing and merging. Bot-vs-bot after this: about 15 min and 23 min.
+
+Convoys (2026-11-09), traced from the game's kme / gUe / wUe / SZe / MZe: trucks drive at a quarter
+pace off road, 60% on a bridge, 70% in town and slow to 55% into a sharp bend. They pull away over 3 s
+and brake ahead of slower stretches and stops. On a road a truck keeps 2.4 cells behind the own truck
+ahead; one stuck behind a slow (not stopped) truck for 5 s creeps on at 35% pace. A truck that sees
+armed enemy ground units within 4.5 cells of its road up to 18 cells ahead stops 3 cells short and is
+"held" until they leave. A truck whose road is cut tries a new route every 2 s; with none it stops
+short of the cut, and after 30 s it is "stranded". Both raise an alert for the owner (per rig, at most
+every 45 s and 30 s), and the truck's label shows HELD or CUT OFF. APPROX: trucks still drive cell
+centre to cell centre (the game smooths corners into curves along the drawn road line) and the bend
+check looks one cell ahead, not the game's 1.5-cell window; stopShortCells is unscaled in the match
+data, so it is multiplied by the cell scale (like movement.shareCells). Not in the slice: road signs,
+the bot's sign-posting of held convoys. Bot-vs-bot after this: warlord v balanced about 15 min,
+turtle v balanced about 20 min, balanced v balanced about 20 min.
+
+Air drops and the capital's powers (2026-11-09), traced from the game's $X / G_ / KGe / zpe / qGe /
+GGe / XGe / pq / pat: in a land match the game's aircraft are transport planes. A secured airfield town
+(key L at the cursor; the server picks your nearest ready one) flies 2 rifle squads to a point within
+135 cells, then waits 240 s. Whoever holds the capital (no garrison needed) can call 6 paratroopers
+anywhere (P, then 180 s) and send a bomb truck (J, then 180 s). The plane comes in from the map edge on
+the heading whose run in is closest to 30% of the map's short side, drops its sticks along its line
+centred on the point, and each lands 5 s later; the whole drop is down about 17 s after the call.
+Drops can't land within 9 cells of the edge or on water. The bomb truck leaves the capital's edge
+toward the point (sent at the enemy unit there unless an enemy building is near it) and blows up
+next to an enemy building or its unit, or on N: units within 3 cells die, others within 6 take up
+to 380 x the hit table (falling to 60% at the edge, x cover), buildings take up to 1400, and the
+nearest road takes strike damage. The bot calls its airfield towns and the capital's paratroopers
+onto its own threatened town, a target its groups are sent at, or the nearest rig that is not
+its own, and sends bomb trucks at the known enemy building worth most (factory, SAM, barracks
+first, armed ones 1.5x, nearer is better). Planes and falling canopies show in the game (blue own,
+red enemy); the HUD shows the powers' state. APPROX: every side sees every plane (the game shows
+them by sight); rigs can't be damaged in the slice, so the bomb truck doesn't hurt them. Not in the
+slice: SAM sites shooting at planes, carrier jets and bombers (naval), weather blocking drops.
+Rail and mountain passes are not ported: the Saddle map, the only one in the slice, has neither.
+Bot-vs-bot after this: about 14, 20 and 19 min.
+
+Recon drone and SAM sites (2026-11-09), traced from the game's NJe / WJe / mwe / UJe / lA / sge / rje /
+tat: the drone is bought once for 120 oil (key O at the cursor) and flies from your finished HQ at 18
+cells/s. It circles the point for 25 s, showing 49.5 cells round it (less at night) plus 6 cells
+round itself all the time, then flies home and refuels for 60 s; later flights cost nothing. A SAM
+site (120 oil, key U) fires a missile at an enemy drone within 24 cells every 10 s; the missile flies
+30 cells/s and downs the drone if it gets within 1.2 cells inside 8 s. A downed drone can be replaced
+(bought again) after 60 s. SAMs never shoot at ground units. After 150 s the bot sends its drone now
+and then (20% per think, buying it only with 240 oil in hand) over a target its groups are going for,
+a radar contact near home, an enemy rig or an enemy HQ it doesn't see now, skipping spots a known
+SAM covers. The bot builds SAMs only after seeing enemy aircraft, which never happens in a land
+match. Drones and missiles show in the game; the HUD shows the drone's state. APPROX: every side
+sees every drone and missile. Bot-vs-bot after this: about 15, 20 and 19 min.
+
+Rocket artillery (2026-11-09), traced from the game's orderBarrage / salvo / rocketLands / P_ / Xb /
+Qze / eUe / Gst / Gbe: the factory trains it (key M, 160, the game's 12% bot pick). It never fires on
+its own. Select launchers and press I with the cursor on a point at least 18 cells away; a launcher
+out of its 72-cell range drives to 0.9 x range first. Once stopped it raises its rails for 3 s, then
+(reloaded, 45 s) fires 8 rockets about 0.75 s apart, each landing within 3.3 cells of the point
+(pattern from a seed of its id and the time, as the game). Each rocket deals dps x reload / 8 to
+everything in its splash (units x hit table x cover x bunching, buildings, trucks, roads). After the
+last rocket it lowers its rails and drives 'scootCells' away from its target. The bot fires each idle,
+reloaded launcher at the best target in reach: a known enemy building (cost, +200 if armed), an
+enemy unit seen this think, or an enemy rig worth more (pump rate x paySec, not struck again within
+againSec). APPROX: a launcher waiting on its barrage is kept out of the bot's attack groups.
+Bot-vs-bot after this: about 15, 21 and 28 min; in one match the bots fired 47 barrages.
+
+Artillery base (2026-11-10), traced from the game's killsOf / payKills / killUnit / cA / vI / mJ / mge / gJ /
+wge / Dst / Zst / m0e: each enemy unit a side kills (the last hit counts) adds one kill. The base costs
+20 kills and no oil (key ; or its button), goes up in 20 s, and reaches 270 cells (the whole Saddle map).
+With the cursor on a point, . fires a barrage (15 kills; then 20 s before the next): 18 shells about
+0.3 s apart within 7.2 cells, 1600 damage shared, each hitting 3.3 cells round it (soft 1.3, armour 1,
+buildings 1.3). Each enemy SAM site that is built, reloaded and in range of where shells land stops up
+to 6 of them, then reloads for 20 s. , fires flares (5 kills): 5 flares about 0.9 s apart within 12
+cells; each bursts on arrival and lights 40.5 cells round it for your side for 100 s, drifting downwind
+at 0.18 cells/s. The bot builds a base once it has a barracks and 20 kills, fires barrages at the
+most valuable cluster it knows of when it is worth 260 x (margin / 1.5), and fires flares over what
+its groups are attacking (30% a think by night, 8% by day) or the best cluster by night. The HUD shows
+kills and the base's waits; only you see your flares. Bot-vs-bot after this: about 15, 19 and 19 min;
+in one match the bases fired 3 barrages and 17 flare volleys.
+
+Night operations tower (2026-11-10), traced from the game's wb / vge / nV / xje / wQ / Cje / Mje / m1e /
+Lje / Dst: at full night a side sees 0.4 of its sight, or 0.9 while it has a finished Night
+Operations Tower that is switched on (160 oil, key ' or its button). By night (from 0.5 dark) a side
+without one gets none of the game's quiet alerts (rig attacked or being captured, convoy held, and so
+on). A lost tower can only be replaced after 300 s. The bot builds one once it has a barracks and a
+factory. The HUD shows night vision on, off, or the wait for a new tower. Not in the client yet: the
+on/off switch (the sim has it). Bot-vs-bot after this: about 15, 20 and 17 min; both bots build it.
+
+Veterancy (2026-11-10), traced from the game's $5 / Yat / AN / A0e / TN / PN / Jat / Qat: the unit
+whose hit finishes off an enemy unit counts a kill. At 3, 8 and 15 kills it becomes veteran, elite and
+hero. Each rank adds 30% damage, takes 9% off its reload (never below half) and makes hits on it do
+1 / (1 + 0.45 x rank) of their damage. A hero heals 2.5% of its hp a second while nobody is shooting at
+it and it isn't firing. Units show ^ marks per rank and an alert names each promotion. Kills by
+buildings promote nobody. Bot-vs-bot after this: about 13, 19 and 18 min; 7 promotions in one match.
+
+IFV transport (2026-11-10), traced from the game's B3 / Pk / Tm / VV / IQ / EQ / OQ / Up / VQ / gbe / uG /
+ybe / wbe / jst (land part): an IFV carries 2 infantry or AT. Right click your IFV with them selected
+and the nearest ones (as many as there is room for) walk over and get in within 3.6 cells. They give
+up if it drives more than 36 cells away first. Riders are out of the world, so nothing sees or hits
+them, and they ride along. / sets them down 3.6 cells behind the IFV. If the IFV is destroyed each
+rider loses 35% of its full hp and jumps out round the wreck. Units show +N for riders aboard. The
+bot fills idle IFVs at home (within 48 cells of its HQ) with idle riders within 18 cells, and
+unloads them when an armed enemy is in the IFV's sight or the IFV stands idle away from home. Not
+ported: ships, heroes. Bot-vs-bot after this: about 15, 24 and 19 min; up to 14 riders aboard at once.
+
 ## Next
-1. You run Studio tests B18–B31 (defences, mortar, artillery, scout) and commit.
-2. Then: engineers' repair work, vehicle steering, a closer look at the bot's HQ push; later shared group
-   routes and separation.
+1. You run Studio tests B18–B48 (defences, mortar, artillery, scout) and commit.
+2. Done since: engineers' repair, vehicle steering, the bot's HQ push, shared group routes,
+   separation, the 100/250/500-unit performance check (`lune run tools/perf.luau 250`) and the
+   convoy rules (spacing, town/bridge/off-road pace, held and stranded trucks), airfield drops and
+   the capital's paratroopers and bomb truck, the recon drone and SAM sites, rocket artillery, the artillery base, the night operations tower, veterancy, IFV transport.
+3. Next: more of the game's land units and buildings that the slice still passes over.
 
 ## Open questions
 1. Rights scope: original art, audio, voice; public redistribution of extracted data.

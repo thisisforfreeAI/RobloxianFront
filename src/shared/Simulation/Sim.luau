@@ -153,7 +153,7 @@ local TRUCK = "truck"
 local BULLET_SPEED = 70 -- cells/s, the game's bullet flight speed
 -- cells/s, the game's shot speeds for the other weapons
 local SHOT_SPEED: { [string]: number } = {
-	cannon = 38, rocket = 22, missile = 18, shell = 13, salvo = 9.5, bomb = 11, mortar = 6.5, barrage = 11,
+	cannon = 38, rocket = 22, missile = 18, shell = 13, salvo = 9.5, bomb = 11, mortar = 6.5, barrage = 11, flare = 12,
 }
 
 function Sim.new(deps: Deps)
@@ -185,6 +185,7 @@ function Sim.new(deps: Deps)
 		return v :: number
 	end
 	self.num = num
+	self.rules = r
 	local function numOr(key: string, default: number): number
 		return if r:has(key) then num(key) else default
 	end
@@ -240,6 +241,17 @@ function Sim.new(deps: Deps)
 		return cell % W + 0.5, cell // W + 0.5
 	end
 
+	-- the game's N7e: how much road wear slows traffic on a cell (0 below roads.wear.from, up to
+	-- 1 - roads.wear.slow on a fully worn road)
+	local function wearSlow(c: number): number
+		local n = roads.wearAt(c)
+		local from = num("roads.wear.from")
+		if n <= from then
+			return 0
+		end
+		return (n - from) / math.max(1e-6, 1 - from) * (1 - num("roads.wear.slow"))
+	end
+	self.wearSlow = wearSlow
 	-- Unit pace multiplier on a point (the game's paceOn; speed itself comes from units.<k>.speed).
 	local function paceAt(kind: string, x: number, y: number): number
 		local c = cellAt(x, y)
@@ -248,7 +260,7 @@ function Sim.new(deps: Deps)
 		end
 		local move = text(`units.{kind}.move`)
 		if roads.isRoad(c) and move ~= "sea" and text(`units.{kind}.armour`) ~= "air" then
-			local cu = num(`roads.classes.{Roads.CLASS_NAME[roads.classAt(c)]}.unit`)
+			local cu = num(`roads.classes.{Roads.CLASS_NAME[roads.classAt(c)]}.unit`) * (1 - wearSlow(c))
 			return 1 + (num(`units.{kind}.roadMult`) - 1) * cu
 		end
 		local t = roads.terrain(c)
@@ -272,6 +284,59 @@ function Sim.new(deps: Deps)
 	end
 	local pathing = deps.pathingLib.new(roads, num, text, legend)
 	pathing.paceAt = paceAt
+	-- the game's traffic: trucks and road vehicles slow each other within traffic.cells (FWe / BWe)
+	local trafficTick, trafficTrucks, trafficCars = -1, {} :: { Entity }, {} :: { Entity }
+	local function trafficLists()
+		if trafficTick ~= self.ticks then
+			trafficTick = self.ticks
+			table.clear(trafficTrucks)
+			table.clear(trafficCars)
+			for _, e in self.list do
+				if e.alive and e.cat == "unit" and not e.inside then
+					if e.kind == TRUCK then
+						table.insert(trafficTrucks, e)
+					else
+						local mv = text(`units.{e.kind}.move`)
+						if (mv == "tracks" or mv == "wheels") and roads.isRoad(cellAt(e.x, e.y)) then
+							table.insert(trafficCars, e)
+						end
+					end
+				end
+			end
+		end
+		return trafficTrucks, trafficCars
+	end
+	local function anyWithin(list: { Entity }, x: number, y: number, rr: number): boolean
+		for _, o in list do
+			if (o.x - x) ^ 2 + (o.y - y) ^ 2 <= rr * rr then
+				return true
+			end
+		end
+		return false
+	end
+	-- a tracked or wheeled unit on a road with a truck near keeps only traffic.unitShare of its road
+	-- bonus (the game's UWe)
+	pathing.trafficPace = function(e: Entity, cell: number, speed: number, u: number): number
+		if cell < 0 or not roads.isRoad(cell) then
+			return u
+		end
+		local mv = text(`units.{e.kind}.move`)
+		if mv ~= "tracks" and mv ~= "wheels" then
+			return u
+		end
+		local trucks = trafficLists()
+		if anyWithin(trucks, e.x, e.y, num("traffic.cells")) then
+			return speed + math.max(0, u - speed) * num("traffic.unitShare")
+		end
+		return u
+	end
+	-- a truck on a road with a road vehicle within traffic.cells drives at traffic.truckShare (FWe)
+	local function truckJammed(t: Entity): boolean
+		local _, cars = trafficLists()
+		return anyWithin(cars, t.x, t.y, num("traffic.cells"))
+	end
+	self.truckJammed = truckJammed
+	self.trafficPace = pathing.trafficPace
 	self.pathing = pathing
 
 	local function coverAt(c: number): number
@@ -287,11 +352,13 @@ function Sim.new(deps: Deps)
 
 	---------------------------------------------------------------- entities
 
+	local gridTick = -1 -- the unit grid's tick (see unitsNear); a new entity drops the grid
 	local function add(e: Entity): Entity
 		e.id = self.nextId
 		self.nextId += 1
 		self.entities[e.id] = e
 		table.insert(self.list, e)
+		gridTick = -1
 		return e
 	end
 
@@ -317,7 +384,7 @@ function Sim.new(deps: Deps)
 		})
 		self.sides[side] = {
 			oil = num("match.startOil"), hqId = hq.id, lost = false, trucksIdle = num("trucks.startIdle"),
-			oilMult = 1, oilEarned = 0, headlessSince = nil,
+			oilMult = 1, oilEarned = 0, headlessSince = nil, kills = 0, killsSpent = 0,
 		}
 	end
 	local rigList: { Entity } = {}
@@ -402,8 +469,8 @@ function Sim.new(deps: Deps)
 	---------------------------------------------------------------- structures and territory
 
 	-- The kinds the slice lets a nation place, and the units each producer may train in the slice.
-	local PLACEABLE = { barracks = true, factory = true, bunker = true, atgun = true }
-	local SLICE_UNITS = { infantry = true, engineer = true, at = true, tank = true, ifv = true, mortar = true, artillery = true, scout = true }
+	local PLACEABLE = { barracks = true, factory = true, bunker = true, atgun = true, radar = true, sam = true, artybase = true, nightops = true }
+	local SLICE_UNITS = { infantry = true, engineer = true, at = true, tank = true, ifv = true, mortar = true, artillery = true, scout = true, rocket = true }
 	self.PLACEABLE = PLACEABLE
 
 	local function footprintOf(kind: string): number
@@ -523,10 +590,13 @@ function Sim.new(deps: Deps)
 		local cx = math.clamp(math.floor(sd.x), 0, W - 1)
 		local cy = math.clamp(math.floor(sd.y), 0, H - 1)
 		local key = `settlements.{sd.kind}Radius`
+		local ikey = `settlements.{sd.kind}Integrity`
+		local integ = if r:has(ikey) then num(ikey) else 0
 		table.insert(settlements, {
 			id = i, name = sd.name or "", kind = sd.kind, cell = cy * W + cx, x = cx + 0.5, y = cy + 0.5,
 			radius = if r:has(key) then num(key) else 0, owner = 0, capture = nil, hold = 0, takenAt = -999,
 			warnedAt = -99, urbanR = 0, garrison = {},
+			integrity = integ, maxIntegrity = integ, destroyed = false, lastHitAt = -99,
 		})
 	end
 	self.settlements = settlements
@@ -638,6 +708,15 @@ function Sim.new(deps: Deps)
 		return r:flag("cities.traits.on") and st.trait ~= nil and st.owner > 0 and cityStatus(st) == "secured"
 	end
 	self.traitActive = traitActive
+	-- the game's Owe: a side holding a secured capital sees all of its own territory
+	function self.surveillanceOn(side: number): boolean
+		for _, st in settlements do
+			if st.kind == "capital" and st.owner == side and cityStatus(st) == "secured" then
+				return true
+			end
+		end
+		return false
+	end
 	-- the game's tZe: a truck within radius + rail.reach of its owner's working rail town drives
 	-- rail.pace times faster
 	local function railPace(side: number, x: number, y: number): number
@@ -911,10 +990,30 @@ function Sim.new(deps: Deps)
 	end
 	self.placeProblem = placeProblem
 
+	-- the game's killsOf / payKills: enemy units a side has killed, less what it has spent
+	function self.killsOf(side: number): number
+		local s = self.sides[side]
+		return if s then math.max(0, (s.kills or 0) - (s.killsSpent or 0)) else 0
+	end
+	function self.payKills(side: number, n: number): boolean
+		if n <= 0 then
+			return true
+		end
+		local s = self.sides[side]
+		if not s or s.lost or self.killsOf(side) < n then
+			return false
+		end
+		s.killsSpent = (s.killsSpent or 0) + n
+		return true
+	end
+
 	-- the game's canPlace, in its order
 	function self.canPlace(side: number, kind: string, cell: number): string?
 		if not PLACEABLE[kind] or not alive(side) or self.winner then
 			return "blocked"
+		end
+		if kind == "nightops" and self.nightOpsRebuildIn(side) > 0 then
+			return "rebuildWait"
 		end
 		local why = placeProblem(cell, kind)
 		if why then
@@ -950,6 +1049,10 @@ function Sim.new(deps: Deps)
 		if self.sides[side].oil < num(`structures.{kind}.cost`) then
 			return "oil"
 		end
+		local kc = numOr(`structures.{kind}.killCost`, 0)
+		if kc > 0 and self.killsOf(side) < kc then
+			return "kills"
+		end
 		return nil
 	end
 
@@ -959,6 +1062,7 @@ function Sim.new(deps: Deps)
 		if why then
 			return nil, why
 		end
+		self.payKills(side, numOr(`structures.{kind}.killCost`, 0))
 		self.sides[side].oil -= num(`structures.{kind}.cost`)
 		local hp = num(`structures.{kind}.hp`)
 		local st = add({
@@ -1079,7 +1183,7 @@ function Sim.new(deps: Deps)
 	---------------------------------------------------------------- orders
 
 	local function orderable(e: Entity?, side: number): boolean
-		return e ~= nil and e.alive and e.cat == "unit" and e.side == side and e.kind ~= TRUCK
+		return e ~= nil and e.alive and e.cat == "unit" and e.side == side and e.kind ~= TRUCK and e.carrier == nil
 	end
 
 	-- Each order returns the ids refused because the side does not own them.
@@ -1149,7 +1253,9 @@ function Sim.new(deps: Deps)
 		if (e.reconLeft or 0) > 0 then
 			packRecon(e)
 		end
-		e.repairId = nil -- any new order also ends a repair job (the game's clearOrders)
+		e.repairId, e.roadJob, e.sabotageCell = nil, nil, nil -- any new order also ends a repair job (the game's clearOrders)
+		e.barrage = nil -- and a rocket barrage order
+		e.boarding = nil -- and boarding a carrier
 	end
 	-- the game's deployRecon (qJe): the scout stops and sees intel.scoutReconRadius around it for
 	-- intel.scoutDeploySec. Returns (count deployed, reason when none).
@@ -1344,6 +1450,682 @@ function Sim.new(deps: Deps)
 		end
 	end
 
+	---------------------------------------------------------------- road cuts, wear and road repair
+
+	-- the game's XY: the class rules of a road cell (roads.classes.<class>)
+	local function roadClassName(c: number): string
+		return Roads.CLASS_NAME[roads.classAt(c)]
+	end
+	-- the game's uI with the class factor
+	local function wearRoad(c: number, amount: number)
+		if roads.isRoad(c) then
+			roads.addWear(c, amount, numOr(`roads.classes.{roadClassName(c)}.wear`, 1))
+		end
+	end
+	self.wearRoad = wearRoad
+	-- the game's IWe: a tracked or wheeled unit entering a road cell wears it
+	local function unitWear(kind: string, c: number)
+		local move = text(`units.{kind}.move`)
+		if move == "tracks" then
+			wearRoad(c, num("roads.wear.tracks"))
+		elseif move == "wheels" then
+			wearRoad(c, num("roads.wear.wheels"))
+		end
+	end
+
+	self.roadCuts = {} :: { [number]: any }
+	local roadStrikes: { [number]: { damage: number, lastHitAt: number } } = {}
+	local nextCutId = 1
+	-- road cells (still road) whose centre lies within r of (x, y) (the game's H4 filtered to road)
+	local function roadCellsNear(x: number, y: number, rr: number): { number }
+		local out = {}
+		local r2 = rr * rr
+		for cy = math.floor(y - rr), math.ceil(y + rr) do
+			if cy >= 0 and cy < H then
+				for cx = math.floor(x - rr), math.ceil(x + rr) do
+					if cx >= 0 and cx < W and (cx + 0.5 - x) ^ 2 + (cy + 0.5 - y) ^ 2 <= r2 then
+						local c = cy * W + cx
+						if roads.isRoad(c) then
+							table.insert(out, c)
+						end
+					end
+				end
+			end
+		end
+		return out
+	end
+	-- the game's wh (cutRoad): every road cell within roads.cutRadius of the cell's centre stops being
+	-- road until repaired; a cut on a bridge deck drops the bridge (impassable). Trucks whose way
+	-- crosses it re-route, rig routes are redone and rig links re-checked.
+	local function cutRoad(cell: number, by: number): any?
+		if not roads.isRoad(cell) then
+			return nil
+		end
+		local x, y = centre(cell)
+		local cells = roadCellsNear(x, y, math.max(0.5, num("roads.cutRadius")))
+		local hit = {}
+		for _, c in cells do
+			roads.setRoad(c, false)
+			roadStrikes[c] = nil
+			hit[c] = true
+		end
+		local bridge = false
+		for _, c in cells do
+			if not roads.passable(c) and roads.buildingAt(c) < 0 then
+				bridge = true
+			end
+		end
+		local cut = { id = nextCutId, cell = cell, x = x, y = y, cells = cells, by = by, at = self.time, repair = 0, repairBy = -1, bridge = bridge }
+		nextCutId += 1
+		self.roadCuts[cut.id] = cut
+		local users: { [number]: boolean } = {} -- sides whose rig routes or trucks used it (the game's Ig)
+		for _, rig in rigList do
+			if rig.route then
+				for _, c in rig.route do
+					if hit[c] then
+						users[rig.side] = true
+						resetRoute(rig)
+						break
+					end
+				end
+			end
+		end
+		for _, t in self.list do
+			if t.alive and t.kind == TRUCK and t.path and t.pathIndex then
+				for i = t.pathIndex, #t.path do
+					if hit[t.path[i]] then
+						users[t.side] = true
+						t.reroute = true
+						break
+					end
+				end
+			end
+		end
+		updateConnections()
+		local list = {}
+		for sd in users do
+			if sd > 0 then
+				table.insert(list, sd)
+			end
+		end
+		table.sort(list)
+		event({ type = if bridge then "bridgeDown" else "roadCut", id = cut.id, x = x, y = y, side = by, users = list })
+		return cut
+	end
+	self.cutRoad = cutRoad
+	-- the game's GX: a shell landing near a road wears the nearest road cell within roads.blastReach
+	-- and adds to its strike damage; when the strikes within roads.cutRadius add up to
+	-- roads.strikeHp the road is cut there.
+	local function roadBlast(x: number, y: number, damage: number, by: number)
+		local share = num("roads.blastShare")
+		if damage <= 0 or share <= 0 then
+			return
+		end
+		local rr = math.max(0.5, num("roads.blastReach"))
+		local best, bestD = -1, rr * rr
+		for cy = math.floor(y - rr), math.floor(y + rr) do
+			for cx = math.floor(x - rr), math.floor(x + rr) do
+				if cx >= 0 and cy >= 0 and cx < W and cy < H then
+					local c = cy * W + cx
+					if roads.isRoad(c) then
+						local d = (cx + 0.5 - x) ^ 2 + (cy + 0.5 - y) ^ 2
+						if d <= bestD then
+							best, bestD = c, d
+						end
+					end
+				end
+			end
+		end
+		if best < 0 then
+			return
+		end
+		wearRoad(best, damage * num("roads.wear.blast"))
+		local s = roadStrikes[best]
+		if not s then
+			s = { damage = 0, lastHitAt = self.time }
+			roadStrikes[best] = s
+		end
+		s.damage += damage * share * (1 - 0.5 * math.sqrt(bestD) / rr)
+		s.lastHitAt = self.time
+		local hx, hy = best % W, best // W
+		local cr = num("roads.cutRadius")
+		local sum = 0
+		for c, k in roadStrikes do
+			if (c % W - hx) ^ 2 + (c // W - hy) ^ 2 <= cr * cr then
+				sum += k.damage
+			end
+		end
+		if sum >= num("roads.strikeHp") then
+			cutRoad(best, by)
+		end
+	end
+	self.roadBlast = roadBlast
+	-- strikes older than roads.strikeForgetSec are forgotten (checked every 10 ticks)
+	local function forgetStrikes()
+		if self.ticks % 10 ~= 0 then
+			return
+		end
+		local keep = num("roads.strikeForgetSec")
+		for c, s in roadStrikes do
+			if self.time - s.lastHitAt > keep then
+				roadStrikes[c] = nil
+			end
+		end
+	end
+	function self.roadStrikeAt(c: number): number
+		local s = roadStrikes[c]
+		return if s then s.damage else 0
+	end
+
+	-- the game's JY: road cells within roads.wear.repairRadius of a cell worn at least `atLeast` (0..255)
+	local function wornNear(cell: number, atLeast: number): { number }
+		local x, y = centre(cell)
+		local out = {}
+		for _, c in roadCellsNear(x, y, num("roads.wear.repairRadius")) do
+			if roads.wearRaw(c) >= atLeast then
+				table.insert(out, c)
+			end
+		end
+		return out
+	end
+	-- the game's Km for road jobs: where the crew works from and how close it must be
+	local function roadJobSpot(job: any): (number?, number?, number?)
+		if job.kind == "wear" then
+			if not roads.isRoad(job.id) then
+				return nil
+			end
+			local x, y = centre(job.id)
+			return x, y, num("roads.repairReach")
+		end
+		local cut = self.roadCuts[job.id]
+		if not cut then
+			return nil
+		end
+		return cut.x, cut.y, num("roads.cutRadius") + num("roads.repairReach")
+	end
+	-- the game's jX for road jobs
+	local function roadJobProblem(job: any): string?
+		if job.kind == "wear" then
+			if not roads.isRoad(job.id) then
+				return "notRoad"
+			end
+			if #wornNear(job.id, num("roads.wear.repairFrom") * roads.WEAR_MAX) == 0 then
+				return "notWorn"
+			end
+			return nil
+		end
+		return if self.roadCuts[job.id] then nil else "noCut"
+	end
+	-- the cut whose cells (or centre) lie nearest (x, y) within r, for clicks and the bot
+	function self.cutNear(x: number, y: number, rr: number): any?
+		local best, bestD = nil, rr * rr
+		for _, cut in self.roadCuts do
+			local d = sq(cut.x, cut.y, x, y)
+			if d <= bestD then
+				best, bestD = cut, d
+			end
+		end
+		return best
+	end
+	-- the game's Jke: the most worn road cell (at least roads.wear.repairFrom) in the 3x3 round a cell
+	function self.wornCellNear(cell: number): number
+		if cell < 0 then
+			return -1
+		end
+		local from = num("roads.wear.repairFrom")
+		local cx, cy = cell % W, cell // W
+		local best, top = -1, 0
+		for dy = -1, 1 do
+			for dx = -1, 1 do
+				local x, y = cx + dx, cy + dy
+				if x >= 0 and y >= 0 and x < W and y < H then
+					local c = y * W + x
+					local v = roads.wearAt(c)
+					if roads.isRoad(c) and v >= from and v > top then
+						best, top = c, v
+					end
+				end
+			end
+		end
+		return best
+	end
+	-- the game's KX for a road job: kind "cut" (id = cut id) or "wear" (id = road cell). Taking on a
+	-- cut costs roads.repairCost oil once per side. Returns (count sent, reason when none).
+	function self.orderRoadRepair(side: number, kind: string, id: number, ids: { number }?): (number, string?)
+		local job = { kind = kind, id = id }
+		local why = roadJobProblem(job)
+		if why then
+			return 0, why
+		end
+		local x, y, reach = roadJobSpot(job)
+		if not x then
+			return 0, "blocked"
+		end
+		local crew = {}
+		if ids and #ids > 0 then
+			for _, eid in ids do
+				local e = self.entities[eid]
+				if e and orderable(e, side) and isEngineer(e :: Entity) then
+					table.insert(crew, e)
+				end
+			end
+		else
+			for _, e in self.list do
+				if orderable(e, side) and isEngineer(e) and not e.repairId and not e.roadJob and not e.attackId then
+					table.insert(crew, e)
+				end
+			end
+			table.sort(crew, function(a: Entity, b: Entity)
+				return sq(a.x, a.y, x :: number, y :: number) < sq(b.x, b.y, x :: number, y :: number)
+			end)
+			local max = if kind == "cut" then num("roads.repairCrewMax") else num("engineers.crewMax")
+			for i = #crew, max + 1, -1 do
+				crew[i] = nil
+			end
+		end
+		if #crew == 0 then
+			return 0, "noEngineers"
+		end
+		if kind == "cut" then
+			local cut = self.roadCuts[id]
+			if cut.repairBy ~= side then
+				local s = self.sides[side]
+				local cost = num("roads.repairCost")
+				if s.oil < cost then
+					return 0, "oil"
+				end
+				s.oil -= cost
+				cut.repairBy = side
+			end
+		end
+		for _, e in crew do
+			e.attackId, e.chasing = nil, nil
+			clearRecon(e)
+			leaveGarrison(e)
+			e.roadJob = job
+			walkNear(e, x :: number, y :: number, (reach :: number) * 0.8)
+		end
+		return #crew, nil
+	end
+	local function endRoadJob(e: Entity)
+		e.roadJob = nil
+		endJob(e)
+	end
+	local function roadThink(e: Entity)
+		local job = e.roadJob
+		-- the game's Sme: a wear job only ends here when the cell is no longer road
+		if (job.kind == "wear" and not roads.isRoad(job.id)) or (job.kind ~= "wear" and roadJobProblem(job)) then
+			endRoadJob(e)
+			return
+		end
+		local x, y, reach = roadJobSpot(job)
+		if x and sq(e.x, e.y, x, y :: number) > (reach :: number) ^ 2 then
+			walkNear(e, x, y :: number, (reach :: number) * 0.8)
+		end
+	end
+	-- the game's updateRepairs (Mme), road part: a worn stretch loses
+	-- max(1, round(roads.wear.repairPerSec x crew x dt x 255)) wear on every cell within
+	-- wear.repairRadius each tick; a cut fills dt / (roads.repairSec) x crew (crew up to
+	-- roads.repairCrewMax, only for the side that paid for it) and is road again at 1.
+	local function roadRepairsTick(dt: number)
+		local crews: { [string]: { job: any, n: number, by: number } } = {}
+		for _, e in self.list do
+			if e.alive and e.roadJob then
+				local x, y, reach = roadJobSpot(e.roadJob)
+				if x and sq(e.x, e.y, x, y :: number) <= (reach :: number) ^ 2 then
+					e.path, e.target, e.spot = nil, nil, nil
+					e.aimX, e.aimY = x, y
+					local key = e.roadJob.kind .. e.roadJob.id
+					local g = crews[key]
+					if g then
+						g.n += 1
+					else
+						crews[key] = { job = e.roadJob, n = 1, by = e.side }
+					end
+				end
+			end
+		end
+		local function release(job: any)
+			for _, e in self.list do
+				if e.alive and e.roadJob and e.roadJob.kind == job.kind and e.roadJob.id == job.id then
+					endRoadJob(e)
+				end
+			end
+		end
+		for _, g in crews do
+			local job = g.job
+			if job.kind == "wear" then
+				local d = math.min(g.n, num("engineers.crewMax"))
+				local by = math.max(1, math.floor(num("roads.wear.repairPerSec") * d * dt * roads.WEAR_MAX + 0.5))
+				local left = false
+				for _, c in wornNear(job.id, 1) do
+					if not roads.mendWear(c, by) then
+						left = true
+					end
+				end
+				if not left then
+					event({ type = "roadMended", cell = job.id, side = g.by })
+					release(job)
+				end
+			else
+				local cut = self.roadCuts[job.id]
+				if cut and cut.repairBy == g.by then
+					local d = math.min(g.n, num("roads.repairCrewMax"))
+					cut.repair = math.min(1, cut.repair + dt / math.max(0.01, num("roads.repairSec")) * d)
+					if cut.repair >= 1 then
+						for _, c in cut.cells do
+							roads.setRoad(c, true)
+							roads.clearWear(c)
+						end
+						self.roadCuts[cut.id] = nil
+						updateConnections()
+						event({ type = "roadRepaired", id = cut.id, x = cut.x, y = cut.y, side = g.by })
+						release(job)
+					end
+				end
+			end
+		end
+	end
+
+	---------------------------------------------------------------- road sabotage
+
+	-- the game's sabotages: engineers plant a charge on a road cell (sabotage.plantSec while one of
+	-- the crew stands within sabotage.reach), then it is armed and blows after fuseMinSec..fuseMaxSec,
+	-- cutting the road like a shell strike would. A crew member that dies, takes damage or gets
+	-- another order ends the planting ("sabotageFailed").
+	self.sabotages = {} :: { [number]: any }
+	local nextSabotageId = 1
+	local function sabotageAt(cell: number): any?
+		for _, s in self.sabotages do
+			if s.cell == cell then
+				return s
+			end
+		end
+		return nil
+	end
+	self.sabotageAt = sabotageAt
+	-- the game's Ig: sides whose rig routes or trucks' ways cross the cells
+	local function routeUsers(cell: number): { [number]: boolean }
+		local out = {}
+		for _, rig in rigList do
+			if rig.side > 0 and rig.route and table.find(rig.route, cell) then
+				out[rig.side] = true
+			end
+		end
+		for _, t in self.list do
+			if t.alive and t.kind == TRUCK and t.path and table.find(t.path, cell) then
+				out[t.side] = true
+			end
+		end
+		return out
+	end
+	-- the game's XX: send engineers (the given ones, or the engineers.crewMax nearest idle ones) to
+	-- sabotage a road cell. Returns (count sent, reason when none).
+	function self.orderSabotage(side: number, cell: number, ids: { number }?): (number, string?)
+		if cell < 0 or cell >= W * H then
+			return 0, "notRoad"
+		end
+		if not roads.isRoad(cell) then
+			for _, cut in self.roadCuts do
+				if table.find(cut.cells, cell) then
+					return 0, "alreadyCut"
+				end
+			end
+			return 0, "notRoad"
+		end
+		local s = sabotageAt(cell)
+		if s and s.phase == "armed" then
+			return 0, "alreadyCut"
+		end
+		local x, y = centre(cell)
+		local crew = {}
+		if ids and #ids > 0 then
+			for _, eid in ids do
+				local e = self.entities[eid]
+				if e and orderable(e, side) and isEngineer(e :: Entity) then
+					table.insert(crew, e)
+				end
+			end
+		else
+			for _, e in self.list do
+				if orderable(e, side) and isEngineer(e) and not e.repairId and not e.roadJob and not e.sabotageCell and not e.attackId then
+					table.insert(crew, e)
+				end
+			end
+			table.sort(crew, function(a: Entity, b: Entity)
+				return sq(a.x, a.y, x, y) < sq(b.x, b.y, x, y)
+			end)
+			for i = #crew, num("engineers.crewMax") + 1, -1 do
+				crew[i] = nil
+			end
+		end
+		if #crew == 0 then
+			return 0, if ids and #ids > 0 then "noSaboteurs" else "noEngineers"
+		end
+		for _, e in crew do
+			e.attackId, e.chasing = nil, nil
+			clearRecon(e)
+			leaveGarrison(e)
+			e.sabotageCell = cell
+			walkNear(e, x, y, num("sabotage.reach") * 0.8)
+		end
+		return #crew, nil
+	end
+	local function endSabotageJob(e: Entity)
+		e.sabotageCell = nil
+		endJob(e)
+	end
+	-- the game's l1e
+	local function failSabotage(s: any, notify: boolean)
+		self.sabotages[s.id] = nil
+		for _, id in s.crew do
+			local e = self.entities[id]
+			if e and e.alive and e.sabotageCell == s.cell then
+				endSabotageJob(e)
+			end
+		end
+		if notify then
+			event({ type = "sabotageFailed", id = s.id, side = s.side, x = s.x, y = s.y })
+		end
+	end
+	-- the game's Sme for sabotage, every 20 ticks while standing
+	local function sabotageThink(e: Entity)
+		local cell = e.sabotageCell :: number
+		if not roads.isRoad(cell) then
+			endSabotageJob(e)
+			return
+		end
+		local x, y = centre(cell)
+		local rr = num("sabotage.reach")
+		if sq(e.x, e.y, x, y) > rr * rr then
+			walkNear(e, x, y, rr * 0.8)
+		end
+	end
+	-- the game's _me
+	local function sabotageTick(dt: number)
+		local rr = num("sabotage.reach")
+		for _, e in self.list do
+			if e.alive and e.sabotageCell then
+				local cell = e.sabotageCell
+				local x, y = centre(cell)
+				if sq(e.x, e.y, x, y) <= rr * rr then
+					if e.path then
+						e.path, e.target, e.spot = nil, nil, nil
+					end
+					if not roads.isRoad(cell) then
+						endSabotageJob(e)
+						continue
+					end
+					e.aimX, e.aimY = x, y
+					local s = sabotageAt(cell)
+					if not s then
+						local victims = {}
+						for v in routeUsers(cell) do
+							if v ~= e.side then
+								table.insert(victims, v)
+							end
+						end
+						s = { id = nextSabotageId, side = e.side, cell = cell, x = x, y = y, phase = "planting", progress = 0,
+							fuseAt = 0, crew = {}, crewHp = {}, victims = victims }
+						nextSabotageId += 1
+						self.sabotages[s.id] = s
+					end
+					if s.side == e.side and s.phase == "planting" and not table.find(s.crew, e.id) then
+						table.insert(s.crew, e.id)
+						table.insert(s.crewHp, e.hp)
+					end
+				end
+			end
+		end
+		for id, s in self.sabotages do
+			if s.phase == "armed" then
+				if self.time >= s.fuseAt then
+					-- the game's FZe: the charge blows and cuts the road
+					self.sabotages[id] = nil
+					local cut = cutRoad(s.cell, s.side)
+					if cut then
+						cut.sabotage = true
+						event({ type = "sabotageDone", id = s.id, side = s.side, x = s.x, y = s.y })
+						for _, v in s.victims do
+							event({ type = "roadSabotaged", id = cut.id, side = v, x = s.x, y = s.y })
+						end
+					end
+				end
+				continue
+			end
+			if not roads.isRoad(s.cell) then
+				failSabotage(s, false)
+				continue
+			end
+			local anyone, working, broken = false, false, false
+			for i, eid in s.crew do
+				local e = self.entities[eid]
+				if not e or not e.alive or e.sabotageCell ~= s.cell then
+					broken = true
+					continue
+				end
+				if e.hp < s.crewHp[i] - 0.001 then
+					broken = true
+				end
+				s.crewHp[i] = e.hp
+				anyone = true
+				if not e.path and sq(e.x, e.y, s.x, s.y) <= rr * rr then
+					working = true
+				end
+			end
+			if broken or not anyone then
+				failSabotage(s, true)
+				continue
+			end
+			if working then
+				s.progress = math.min(1, s.progress + dt / math.max(0.01, num("sabotage.plantSec")))
+				if s.progress >= 1 then
+					-- the game's DZe: armed; the crew walks off to the nearest own finished building
+					s.phase, s.progress = "armed", 1
+					s.fuseAt = self.time + num("sabotage.fuseMinSec") + rand() * math.max(0, num("sabotage.fuseMaxSec") - num("sabotage.fuseMinSec"))
+					event({ type = "sabotageArmed", id = s.id, side = s.side, x = s.x, y = s.y })
+					local home, hd = nil, math.huge
+					for _, st in self.list do
+						if st.alive and st.cat == "structure" and st.side == s.side and (st.built or 1) >= 1 and st.kind ~= "rig" then
+							local d = sq(st.x, st.y, s.x, s.y)
+							if d < hd then
+								home, hd = st, d
+							end
+						end
+					end
+					for _, eid in s.crew do
+						local e = self.entities[eid]
+						if e and e.alive then
+							endSabotageJob(e)
+							if home then
+								walkNear(e, home.x, home.y, footprintOf(home.kind) + 1)
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+
+	local joinShared: (Entity, number, number, number, { any }) -> boolean
+	-- the game's straightPassable: a straight walk from (x, y) to a cell's centre over passable cells,
+	-- sampled 8 times a cell, with 0.32-cell corners clear after the first step
+	local function straightPassable(x: number, y: number, cell: number): boolean
+		local ax, ay = centre(cell)
+		local n = math.max(1, math.ceil(math.sqrt((ax - x) ^ 2 + (ay - y) ^ 2) * 8))
+		local l = 0.32
+		local function ok(px: number, py: number): boolean
+			local c = cellAt(px, py)
+			return c >= 0 and roads.passable(c)
+		end
+		for h = 0, n do
+			local u, d = x + (ax - x) * h / n, y + (ay - y) * h / n
+			if not ok(u, d) or (h > 0 and not (ok(u - l, d - l) and ok(u + l, d - l) and ok(u - l, d + l) and ok(u + l, d + l))) then
+				return false
+			end
+		end
+		return true
+	end
+	-- the game's joinAt: where a unit can step straight onto another's path (nearest point of it, then
+	-- further along it as far as a straight walk allows), or -1
+	local function joinAt(e: Entity, path: { number }): number
+		local n = #path - 1
+		if n < 1 then
+			return -1
+		end
+		local best, bestD = 1, math.huge
+		for r = 1, n do
+			local cx, cy = centre(path[r])
+			local d = (cx - e.x) ^ 2 + (cy - e.y) ^ 2
+			if d < bestD then
+				best, bestD = r, d
+			end
+		end
+		local r = math.min(n - best, math.floor(math.sqrt(bestD) + 0.5))
+		while r >= 0 do
+			if straightPassable(e.x, e.y, path[best + r]) then
+				return best + r
+			end
+			r = if r > 1 then r // 2 else r - 1
+		end
+		return -1
+	end
+	-- the game's route sharing in orderMove: a unit within movement.shareCells (x cell scale) of a
+	-- groupmate already routed, whose route ends where a straight walk reaches this unit's slot, takes
+	-- that route from where it can join it, then steps to its own slot. Returns true when it did.
+	function joinShared(e: Entity, slot: number, sx: number, sy: number, shared: { any }): boolean
+		local reach = num("movement.shareCells") * num("match.cellScale")
+		local c = nil
+		for _, p in shared do
+			if (p.x - e.x) ^ 2 + (p.y - e.y) ^ 2 <= reach * reach then
+				c = p
+				break
+			end
+		end
+		if not c or #c.path <= 2 then
+			return false
+		end
+		local lx, ly = centre(c.path[#c.path])
+		if not straightPassable(lx, ly, slot) then
+			return false
+		end
+		local m = joinAt(e, c.path)
+		if m < 0 then
+			return false
+		end
+		local path = {}
+		for i = m, #c.path - 1 do
+			table.insert(path, c.path[i])
+		end
+		table.insert(path, slot)
+		e.path, e.pathIndex, e.stall, e.stallTries = path, 1, 0, 0
+		e.spot = { x = sx, y = sy }
+		e.target = { x = sx, y = sy }
+		e.goalCell = slot
+		e.post, e.chasing = slot, nil
+		return true
+	end
+
 	function self.orderMove(side: number, ids: { number }, x: number, y: number): { number }
 		local refused = {}
 		local group = {}
@@ -1363,11 +2145,17 @@ function Sim.new(deps: Deps)
 			planTo(group[1], cell, x, y)
 		elseif #group >= 1 then
 			local slots = pathing.groupSlots(group, cell, onRig(cell))
+			local shared = {}
 			for i, e in group do
 				local s = slots[i]
 				if s then
 					local sx, sy = centre(s)
-					planTo(e, s, sx, sy)
+					if not joinShared(e, s, sx, sy, shared) then
+						planTo(e, s, sx, sy)
+						if e.path and #e.path > 0 then
+							table.insert(shared, { x = e.x, y = e.y, path = e.path })
+						end
+					end
 				else
 					e.target, e.path = nil, nil
 				end
@@ -1586,9 +2374,68 @@ function Sim.new(deps: Deps)
 	end
 	eliminateRef = eliminate
 
-	local function hitStructure(by: number, st: Entity, damage: number)
+	-- the game's settlementCoreAt: the settlement whose radius holds (x, y), nearest centre first
+	local function settlementCoreAt(x: number, y: number): Entity?
+		local best, bd = nil, math.huge
+		for _, st in settlements do
+			local d = (st.x - x) ^ 2 + (st.y - y) ^ 2
+			if d <= st.radius * st.radius and d < bd then
+				best, bd = st, d
+			end
+		end
+		return best
+	end
+	-- the game's lf (settlement part): shell fire landing in a settlement takes damage x
+	-- settlements.collateral off its integrity; at 0 it lies in ruins (OD)
+	local function collateral(x: number, y: number, damage: number, by: number)
+		if damage <= 0 then
+			return
+		end
+		local st = settlementCoreAt(x, y)
+		if not st then
+			return
+		end
+		st.integrity = math.max(0, st.integrity - damage * num("settlements.collateral"))
+		st.lastHitAt = self.time
+		if not st.destroyed and st.integrity <= 0 then
+			st.destroyed, st.integrity = true, 0
+			event({ type = "settlementDestroyed", id = st.id, side = st.owner, by = by })
+		end
+	end
+	-- the game's integrityBand
+	function self.integrityBand(st: Entity): string
+		if st.destroyed or st.integrity <= 0 then
+			return "destroyed"
+		end
+		local o = st.integrity / math.max(1, st.maxIntegrity)
+		return if o < num("settlements.criticalBelow") then "critical" elseif o < num("settlements.damagedBelow") then "damaged" else "intact"
+	end
+	-- the game's RZe: after settlements.rebuild.quietSec without hits a settlement mends to full over
+	-- rebuild.fullSec; ruins stand again at rebuild.standShare
+	local function rebuildTick(dt: number)
+		local full = num("settlements.rebuild.fullSec")
+		if full <= 0 then
+			return
+		end
+		for _, st in settlements do
+			if st.integrity < st.maxIntegrity and self.time - st.lastHitAt >= num("settlements.rebuild.quietSec") then
+				st.integrity = math.min(st.maxIntegrity, st.integrity + st.maxIntegrity / full * dt)
+				if st.destroyed and st.integrity >= st.maxIntegrity * num("settlements.rebuild.standShare") then
+					st.destroyed = false
+					event({ type = "settlementRebuilt", id = st.id, side = st.owner })
+				end
+			end
+		end
+	end
+
+	local function hitStructure(by: number, st: Entity, damage: number, bombard: boolean?)
 		if not st.alive then
 			return
+		end
+		if bombard then
+			local cx, cy = centre(st.cell)
+			collateral(cx, cy, damage, by)
+			roadBlast(cx, cy, damage, by)
 		end
 		st.hp -= damage
 		st.lastHitAt = self.time
@@ -1598,6 +2445,12 @@ function Sim.new(deps: Deps)
 		st.alive, st.hp = false, 0
 		setFootprint(st, false)
 		event({ type = "destroyed", id = st.id, kind = st.kind, side = st.side, by = by })
+		if st.kind == "nightops" and self.sides[st.side] then
+			-- the game's Mje: a lost tower can be replaced only after nightOps.rebuildSec
+			local sd = self.sides[st.side]
+			sd.nvRebuildAt = math.max(sd.nvRebuildAt or 0, self.time + num("nightOps.rebuildSec"))
+			event({ type = "nightOpsLost", side = st.side, sec = num("nightOps.rebuildSec") })
+		end
 		if st.kind == "hq" then
 			-- an active factory lets the nation rehouse within hqLoss.graceSec, else it is out
 			if hasBuilding(st.side, "factory", true) then
@@ -1611,10 +2464,161 @@ function Sim.new(deps: Deps)
 	local function hasHull(e: Entity): boolean
 		return e.cat == "unit" and e.kind ~= TRUCK and text(unitKey(e) .. ".move") ~= "foot"
 	end
+	-- A per-tick grid of units (8-cell buckets) so that "who is near" questions do not scan every
+	-- unit. Candidates come in bucket order; callers that break ties by list order use listIndex, so
+	-- results (ties included) match a full scan. Built at
+	-- the first question of a tick from positions then; queries pad the radius by 2 cells for units
+	-- that move later in the same tick. Spawning a unit drops the grid.
+	local GRID_B = 8
+	local gridBuckets: { [number]: { Entity } } = {}
+	local gridIndex: { [Entity]: number } = {}
+	local function unitsNear(x: number, y: number, rr: number): { Entity }
+		if gridTick ~= self.ticks then
+			gridTick = self.ticks
+			table.clear(gridBuckets)
+			table.clear(gridIndex)
+			for i, o in self.list do
+				if o.alive and o.cat == "unit" then
+					gridIndex[o] = i
+					local k = (o.y // GRID_B) * 1024 + (o.x // GRID_B)
+					local b = gridBuckets[k]
+					if b then
+						table.insert(b, o)
+					else
+						gridBuckets[k] = { o }
+					end
+				end
+			end
+		end
+		local r = rr + 2
+		local out = {}
+		for by = (y - r) // GRID_B, (y + r) // GRID_B do
+			for bx = (x - r) // GRID_B, (x + r) // GRID_B do
+				local b = gridBuckets[by * 1024 + bx]
+				if b then
+					for _, o in b do
+						table.insert(out, o)
+					end
+				end
+			end
+		end
+		return out
+	end
+	self.unitsNear = unitsNear
+	local function listIndex(o: Entity): number
+		return gridIndex[o] or math.huge -- spawned after the grid was built: last in the list
+	end
+	-- the game's separate: each tick units ease apart. Friends closer than movement.separationCells
+	-- (contactSpaceCells for a foot soldier in contact: firing or hit within contactSec) push at up to
+	-- separationPace; enemies closer than enemySpaceCells push at up to enemySpacePace. A push that
+	-- would leave passable ground (or move a soldier in contact to worse cover) is dropped; vehicles
+	-- only slide along their heading. APPROX: no yard clearance, trenches or traffic jams.
+	local function separate(dt: number)
+		local sepPace = num("movement.separationPace") * dt
+		local foePace = num("movement.enemySpacePace") * dt
+		local foeSpace = if num("movement.enemySpaceCells") > 0 and foePace > 0 then num("movement.enemySpaceCells") else 0
+		local sepCells = num("movement.separationCells")
+		if (sepCells <= 0 or sepPace <= 0) and foeSpace <= 0 then
+			return
+		end
+		local contactSec = num("movement.contactSec")
+		for _, i in self.list do
+			if not i.alive or i.cat ~= "unit" or i.kind == TRUCK or i.inside or i.class == "air" then
+				continue
+			end
+			local move = text(unitKey(i) .. ".move")
+			if move == "sea" or ((i.repairId or i.roadJob or i.sabotageCell) and not i.path) then
+				continue
+			end
+			local contact = move == "foot" and (i.firing or (i.hitAt ~= nil and self.time - i.hitAt < contactSec))
+			local h = if sepPace > 0 then (if contact then math.max(sepCells, num("movement.contactSpaceCells")) else sepCells) else 0
+			local u = math.max(h, foeSpace)
+			if u <= 0 then
+				continue
+			end
+			local fx, fy, ex, ey = 0, 0, 0, 0
+			for _, o in unitsNear(i.x, i.y, u) do
+				if o == i or not o.alive or o.inside or o.cat ~= "unit" or o.kind == TRUCK then
+					continue
+				end
+				local same = o.side == i.side
+				local p = if same then h else foeSpace
+				if p <= 0 or o.class == "air" or (not same and (text(unitKey(o) .. ".move") == "sea" or not canAttack(i.side, o.side))) then
+					continue
+				end
+				local dx, dy = i.x - o.x, i.y - o.y
+				local t = dx * dx + dy * dy
+				if t < p * p then
+					local dist = math.sqrt(t)
+					local b = (p - dist) / p
+					local px, py
+					if dist > 1e-6 then
+						px, py = dx / dist * b, dy / dist * b
+					else
+						local ang = ((math.min(i.id, o.id) * 0.618034 + math.max(i.id, o.id) * 0.381966) % 1) * math.pi * 2
+						local z = if i.id < o.id then 1 else -1
+						px, py = math.cos(ang) * z * b, math.sin(ang) * z * b
+					end
+					if same then
+						fx += px
+						fy += py
+					else
+						ex += px
+						ey += py
+					end
+				end
+			end
+			if fx == 0 and fy == 0 and ex == 0 and ey == 0 then
+				continue
+			end
+			local here = cellAt(i.x, i.y)
+			local function ok(x: number, y: number): boolean
+				local c = cellAt(x, y)
+				return c >= 0 and roads.passable(c) and (c == here or roads.buildingAt(c) < 0)
+			end
+			local kx, ky = 0, 0
+			if fx ~= 0 or fy ~= 0 then
+				local m = math.sqrt(fx * fx + fy * fy)
+				local sp = sepPace * math.min(1, m)
+				kx, ky = fx / m * sp, fy / m * sp
+				if contact and here >= 0 then
+					local c = cellAt(i.x + kx, i.y + ky)
+					if c >= 0 and c ~= here and coverAt(c) < coverAt(here) then
+						kx, ky = 0, 0
+					end
+				end
+			end
+			if ex ~= 0 or ey ~= 0 then
+				local m = math.sqrt(ex * ex + ey * ey)
+				local sp = foePace * math.min(1, m)
+				kx += ex / m * sp
+				ky += ey / m * sp
+			end
+			local hull = hasHull(i) and i.heading ~= nil
+			if hull then
+				local cx, cy = math.cos(i.heading), math.sin(i.heading)
+				local along = kx * cx + ky * cy
+				kx, ky = cx * along, cy * along
+			end
+			if math.abs(kx) >= 1e-9 or math.abs(ky) >= 1e-9 then
+				if ok(i.x + kx, i.y + ky) then
+					i.x += kx
+					i.y += ky
+				elseif not hull then
+					if kx ~= 0 and ok(i.x + kx, i.y) then
+						i.x += kx
+					elseif ky ~= 0 and ok(i.x, i.y + ky) then
+						i.y += ky
+					end
+				end
+			end
+		end
+	end
+
 	-- the game's qat: the nearest enemy ground unit within r (ties to the lower id)
 	local function nearestFoe(e: Entity, rr: number): Entity?
 		local best, bestD = nil, rr * rr
-		for _, o in self.list do
+		for _, o in unitsNear(e.x, e.y, rr) do
 			if o.alive and o.cat == "unit" and o.kind ~= TRUCK and not o.inside and canAttack(e.side, o.side)
 				and o.class ~= "air" and text(unitKey(o) .. ".move") ~= "sea" then
 				local h = (o.x - e.x) ^ 2 + (o.y - e.y) ^ 2
@@ -1702,16 +2706,93 @@ function Sim.new(deps: Deps)
 		return 1 + math.min(num("combat.bunchMax"), share * math.max(0, n - 1))
 	end
 
+	-- Veterancy (the game's $5 / Yat / AN / A0e / TN / PN / Jat / Qat): a unit that finishes off an enemy
+	-- unit counts a kill; at veterancy.killsFor kills it ranks up (veteran, elite, hero). Each rank adds
+	-- damagePerRank to its damage, takes reloadPerRank off its reload (not below half) and makes hits on
+	-- it hurt 1 / (1 + healthPerRank x rank). From healFromRank it heals healPerSec of its hp a second
+	-- when out of contact.
+	self.RANKS = { "veteran", "elite", "hero" }
+	function self.vetDamage(e: Entity): number
+		local rk = e.rank or 0
+		return if rk > 0 then 1 + rk * num("veterancy.damagePerRank") else 1
+	end
+	function self.vetReload(e: Entity): number
+		local rk = e.rank or 0
+		return if rk > 0 then math.max(0.5, 1 - rk * num("veterancy.reloadPerRank")) else 1
+	end
+	function self.vetTaken(e: Entity): number
+		local rk = e.rank or 0
+		return if rk > 0 then 1 / (1 + rk * num("veterancy.healthPerRank")) else 1
+	end
+	-- hp loss with the veterancy share; remembers which unit downed it (the game's PN)
+	function self.vetHit(u: Entity, p: number, shooter: number?)
+		local before = u.hp
+		u.hp -= p * self.vetTaken(u)
+		if shooter and p > 0 and u.hp <= 0 and before > 0 then
+			u.downBy = shooter
+		end
+	end
+	function self.vetPromote(u: Entity)
+		if not (r:has("veterancy.on") and r:flag("veterancy.on")) or not u.downBy then
+			return
+		end
+		local o = self.entities[u.downBy]
+		if not o or not o.alive or o.cat ~= "unit" or o.side == u.side or not canAttack(o.side, u.side) then
+			return
+		end
+		o.kills = (o.kills or 0) + 1
+		local need = r.data["veterancy.killsFor"] :: { number }
+		local rk = 0
+		for i, k in need do
+			if o.kills >= k then
+				rk = i
+			end
+		end
+		rk = math.min(rk, #self.RANKS)
+		if rk > (o.rank or 0) then
+			o.rank, o.promotedAt = rk, self.time
+			event({ type = "unitPromoted", id = o.id, side = o.side, kind = o.kind, rank = self.RANKS[rk] })
+		end
+	end
+	function self.vetHeal(dt: number)
+		if not (r:has("veterancy.on") and r:flag("veterancy.on")) or num("veterancy.healPerSec") <= 0 then
+			return
+		end
+		local n = math.max(1, math.floor(num("veterancy.healEveryTicks") + 0.5))
+		if self.ticks % n ~= 0 then
+			return
+		end
+		local from, rate, contactSec = num("veterancy.healFromRank"), num("veterancy.healPerSec"), num("movement.contactSec")
+		for _, u in self.list do
+			if u.alive and u.cat == "unit" and (u.rank or 0) >= from and u.hp > 0 then
+				local base = num(unitKey(u) .. ".hp")
+				local contact = u.firing or (u.hitAt ~= nil and self.time - u.hitAt < contactSec)
+				if u.hp < base and not contact then
+					u.hp = math.min(base, u.hp + base * rate * dt * n)
+				end
+			end
+		end
+	end
+
 	local function killIfDead(u: Entity, by: number)
 		if u.hp <= 0 and u.alive then
 			u.alive = false
+			self.vetPromote(u)
+			if u.cargo and #u.cargo > 0 then
+				self.bail(u) -- the game's gbe: riders jump out of a destroyed carrier
+			end
+			-- the game's killUnit: the side that hit it last gets a kill if they are enemies
+			local ks = self.sides[by]
+			if ks and u.cat == "unit" and by ~= u.side and canAttack(by, u.side) then
+				ks.kills = (ks.kills or 0) + 1
+			end
 			event({ type = "destroyed", id = u.id, kind = u.kind, side = u.side, by = by })
 		end
 	end
 
 	-- the game's hitUnit. splash > 0: the hit grows with bunching and half of it also lands on the
 	-- target's comrades within splash cells. bombard (artillery fire): no flanking, no armour facing.
-	local function hitUnit(target: Entity, dps: number, key: string, secs: number, by: number, fromX: number, fromY: number, splash: number?, bombard: boolean?)
+	local function hitUnit(target: Entity, dps: number, key: string, secs: number, by: number, fromX: number, fromY: number, splash: number?, bombard: boolean?, shooter: number?)
 		local s = splash or 0
 		local p = dps * vsOf(key, target.class) * secs
 		if s > 0 then
@@ -1731,13 +2812,17 @@ function Sim.new(deps: Deps)
 		if g ~= 0 then
 			p *= g
 		end
-		target.hp -= p
+		self.vetHit(target, p, shooter)
 		target.hitAt, target.hitBy = self.time, by
+		if bombard and target.class ~= "air" then
+			collateral(target.x, target.y, p, by) -- shells landing in a town damage it
+			roadBlast(target.x, target.y, p, by) -- and near a road wear it, and can cut it
+		end
 		if s > 0 then
 			for _, b in self.list do
 				if b ~= target and b.alive and b.cat == "unit" and b.kind ~= TRUCK and b.side == target.side
 					and d2(b.x, b.y, target.x, target.y) <= s * s and vsOf(key, b.class) > 0 then
-					b.hp -= p * 0.5 * (if b.inside and not target.inside then insideCover(b) else 1)
+					self.vetHit(b, p * 0.5 * (if b.inside and not target.inside then insideCover(b) else 1), shooter)
 					b.hitAt, b.hitBy = self.time, by
 					killIfDead(b, by)
 				end
@@ -1747,7 +2832,7 @@ function Sim.new(deps: Deps)
 	end
 
 	local function hitTruck(t: Entity, dps: number, key: string, secs: number, by: number)
-		t.hp -= dps * vsOf(key, "armour") * secs
+		t.hp -= dps * (if key == "" then 1 else vsOf(key, "armour")) * secs
 		if t.hp <= 0 and t.alive then
 			t.alive = false
 			local rig = self.entities[t.from]
@@ -1762,6 +2847,7 @@ function Sim.new(deps: Deps)
 		end
 	end
 
+	local rocketLands: (by: number, x: number, y: number, damage: number, key: string, aimed: Entity?, splash: number?, shooter: number?) -> ()
 	local function landStrikes()
 		if #self.strikes == 0 then
 			return
@@ -1773,13 +2859,15 @@ function Sim.new(deps: Deps)
 		self.strikes = later
 		for _, s in now do
 			local t = self.entities[s.target]
-			if t and t.alive then
+			if s.kind == "rocket" then
+				rocketLands(s.by, s.x, s.y, s.damage, s.key, if t and t.alive then t else nil, s.splash, s.shooter)
+			elseif t and t.alive then
 				if s.kind == "unit" then
-					hitUnit(t, s.dps, s.key, s.secs, s.by, s.fromX, s.fromY, s.splash, s.bombard)
+					hitUnit(t, s.dps, s.key, s.secs, s.by, s.fromX, s.fromY, s.splash, s.bombard, s.shooter)
 				elseif s.kind == "convoy" then
 					hitTruck(t, s.dps, s.key, s.secs, s.by)
 				else
-					hitStructure(s.by, t, s.damage)
+					hitStructure(s.by, t, s.damage, s.bombard)
 				end
 			end
 		end
@@ -1794,11 +2882,13 @@ function Sim.new(deps: Deps)
 	local function nearestUnit(x: number, y: number, side: number, range: number, key: string, minR: number?, ok: ((Entity) -> boolean)?): Entity?
 		local best, bestD = nil, range * range
 		local lo = (minR or 0) ^ 2
-		for _, o in self.list do
+		local bestI = -1
+		for _, o in unitsNear(x, y, range) do
 			if validUnitTarget(side, o, key) then
 				local d = d2(x, y, o.x, o.y)
-				if d >= lo and d <= bestD and (not ok or ok(o)) then -- the game keeps the last of equally near targets
-					best, bestD = o, d
+				-- the game keeps the last (in list order) of equally near targets
+				if d >= lo and (d < bestD or (d == bestD and listIndex(o) > bestI)) and (not ok or ok(o)) then
+					best, bestD, bestI = o, d, listIndex(o)
 				end
 			end
 		end
@@ -1864,13 +2954,15 @@ function Sim.new(deps: Deps)
 		if e.cat == "unit" and not hasHull(e) then
 			e.heading = math.atan2(ty - e.y, tx - e.x) -- presentation only for foot units
 		end
-		local secs = shoot(e, num(key .. ".reloadSec"), dt)
+		local vr = if e.cat == "unit" then self.vetReload(e) else 1
+		local secs = shoot(e, num(key .. ".reloadSec") * vr, dt)
 		if secs <= 0 then
 			return
 		end
 		local arty = e.cat == "unit" and text(key .. ".nato") == "artillery"
 		if e.cat == "unit" then
 			e.firedAt = self.time
+			dps = dps * self.vetDamage(e) / vr -- the game's AN / A0e: same reload share off, more damage on
 		end
 		if arty then
 			-- the game's Jze: a firing gun is revealed to the enemy and stays deployed (packs before moving)
@@ -1879,7 +2971,7 @@ function Sim.new(deps: Deps)
 		end
 		local strike: { [string]: any } = {
 			kind = kind, at = self.time + flight(key, e.x, e.y, tx, ty), target = target.id, dps = dps,
-			key = key, secs = secs, by = e.side, fromX = e.x, fromY = e.y,
+			key = key, secs = secs, by = e.side, fromX = e.x, fromY = e.y, shooter = if e.cat == "unit" then e.id else nil,
 		}
 		if kind == "unit" and e.cat == "unit" then
 			strike.splash = numOr(key .. ".splash", 0)
@@ -1887,6 +2979,7 @@ function Sim.new(deps: Deps)
 		end
 		if kind == "structure" then
 			strike.damage = dps * vsOf(key, "structure") * secs
+			strike.bombard = arty
 		end
 		table.insert(self.strikes, strike)
 	end
@@ -1898,7 +2991,7 @@ function Sim.new(deps: Deps)
 			if st.alive and isStructure(st) and st.built >= 1 and not self.inactiveReason(st) then
 				local key = `structures.{st.kind}`
 				local dps = numOr(key .. ".dps", 0)
-				if dps > 0 then
+				if dps > 0 and numOr(key .. ".vs.air", 0) < 1 then -- SAM sites shoot only aircraft and drones
 					local range = num(key .. ".range")
 					local u = nearestUnit(st.x, st.y, st.side, range, key)
 					if u then
@@ -1945,7 +3038,7 @@ function Sim.new(deps: Deps)
 	-- cells, like the other units' approach.
 	local function mortarApproach(e: Entity, t: Entity, range: number, minR: number): Entity?
 		local spot = revealed(t) or spotted(e.side, t.x, t.y)
-		local reach = (if spot then range else math.min(range, num(unitKey(e) .. ".sight") * self.sightFactor()))
+		local reach = (if spot then range else math.min(range, num(unitKey(e) .. ".sight") * self.sightFactor(e.side)))
 			* num("combat.attackRangeShare")
 		local f = math.min(reach * 0.9, minR * num("mortar.backOffShare"))
 		local p = math.sqrt(d2(e.x, e.y, t.x, t.y))
@@ -1975,12 +3068,358 @@ function Sim.new(deps: Deps)
 		return nil
 	end
 
+	-- Rocket artillery (weapon "salvo"; the game's orderBarrage / salvo / rocketLands / Qze / eUe):
+	-- it fires only on an order. Sent at a point at least artillery.rocketMinRange away, it drives to
+	-- 0.9 x range if out of range, raises its rails for raiseSec once stopped, then (when reloaded,
+	-- reloadSec 45) fires artillery.rockets rockets about stagger 0.75 s apart (+-45%), each landing
+	-- within rocketSpread of the point (random angle, sqrt-spread radius, from a seed of its id and the
+	-- time, as the game). Each rocket carries dps x reloadSec / rockets and hits everything within
+	-- rocketSplash: units x hit table x cover x bunching, buildings whose edge is within the splash
+	-- (and the building aimed at), trucks, and the nearest road. After the last rocket it lowers its
+	-- rails for lowerSec, then drives scootCells away from where it fired.
+	local salvoTick: (e: Entity, key: string, dt: number) -> ()
+	do
+		local R: any = {}
+		function R.imul(a: number, b: number): number
+			a, b = a % 4294967296, b % 4294967296
+			local ah, al = a // 65536, a % 65536
+			local bh, bl = b // 65536, b % 65536
+			return (((ah * bl + al * bh) % 65536) * 65536 + al * bl) % 4294967296
+		end
+		-- the game's Xb: a seed from the launcher's id and the time
+		function R.seed(id: number, t: number): number
+			return bit32.bxor(R.imul(id + 1, 2654435761), R.imul(math.floor(t * 1000 + 0.5) + 1, 2246822507))
+		end
+		-- the game's P_: n rockets { at, a, r } from a seed
+		function R.pattern(seed: number, n: number, stagger: number, jitter: number): { any }
+			local st = seed % 4294967296
+			local function nextR(): number
+				st = (st + 1831565813) % 4294967296
+				local l = R.imul(bit32.bxor(st, bit32.rshift(st, 15)), bit32.bor(1, st))
+				l = bit32.bxor((l + R.imul(bit32.bxor(l, bit32.rshift(l, 7)), bit32.bor(61, l))) % 4294967296, l)
+				return bit32.bxor(l, bit32.rshift(l, 14)) / 4294967296
+			end
+			local out, at = {}, 0
+			for i = 0, n - 1 do
+				if i > 0 then
+					at += stagger * (1 + (nextR() * 2 - 1) * jitter)
+				end
+				local a = nextR() * math.pi * 2
+				local rr = math.sqrt(nextR())
+				table.insert(out, { at = at, a = a, r = rr })
+			end
+			return out
+		end
+		local STAGGER, JITTER = 0.75, 0.45 -- the game's Hu.stagger / staggerJitter
+		self.salvoSeed = R.seed
+		function self.salvoPattern(seed: number, n: number, stagger: number, jitter: number?): { any }
+			return R.pattern(seed, n, stagger, jitter or JITTER)
+		end
+		function rocketLands(by: number, x: number, y: number, damage: number, key: string, aimed: Entity?, splash: number?, shooter: number?)
+			local c = splash or num("artillery.rocketSplash")
+			local bunch = bunchFactor(by, x, y)
+			for _, u in self.list do
+				if u.alive and u.cat == "unit" and u.kind ~= TRUCK and canAttack(by, u.side) and u.class ~= "air" then
+					local vs = vsOf(key, u.class)
+					if vs > 0 and (u.x - x) ^ 2 + (u.y - y) ^ 2 <= c * c then
+						local cover = if u.inside then insideCover(u) else 1 - coverAt(cellAt(u.x, u.y))
+						self.vetHit(u, damage * vs * cover * bunch, shooter)
+						u.hitAt, u.hitBy = self.time, by
+						killIfDead(u, by)
+					end
+				end
+			end
+			for _, st in self.list do
+				if st.alive and isStructure(st) and st.kind ~= "rig" and canAttack(by, st.side) then
+					local cx, cy = centre(st.cell)
+					if math.sqrt((cx - x) ^ 2 + (cy - y) ^ 2) - footprintOf(st.kind) <= c or st == aimed then
+						hitStructure(by, st, damage * vsOf(key, "structure"), false)
+					end
+				end
+			end
+			for _, t in self.list do
+				if t.alive and t.kind == TRUCK and canAttack(by, t.side) and (t.x - x) ^ 2 + (t.y - y) ^ 2 <= c * c then
+					hitTruck(t, damage, key, 1, by)
+				end
+			end
+			roadBlast(x, y, damage, by)
+		end
+		-- the game's salvo(): the rockets as strikes; returns when the last one leaves
+		function R.salvo(e: Entity, key: string, tx: number, ty: number, total: number): number
+			local n = math.max(1, math.floor(num("artillery.rockets") + 0.5))
+			local spread = num("artillery.rocketSpread")
+			local each = total / n
+			local cell = cellAt(tx, ty)
+			local bid = if cell >= 0 then roads.buildingAt(cell) else -1
+			local aimed = if bid >= 0 then self.entities[bid] else nil
+			if aimed and not (aimed.alive and canAttack(e.side, aimed.side)) then
+				aimed = nil
+			end
+			local list = R.pattern(R.seed(e.id, self.time), n, STAGGER, JITTER)
+			for _, k in list do
+				local x, y = tx + math.cos(k.a) * k.r * spread, ty + math.sin(k.a) * k.r * spread
+				table.insert(self.strikes, { kind = "rocket", at = self.time + k.at + flight(key, e.x, e.y, x, y), x = x, y = y,
+					damage = each, key = key, by = e.side, target = if aimed then aimed.id else -1, shooter = e.id })
+			end
+			return list[#list].at
+		end
+		function salvoTick(e: Entity, key: string, dt: number)
+			e.shotTimer -= dt
+			local b = e.barrage
+			local moving = e.target ~= nil and e.path ~= nil
+			if not b or moving then
+				return
+			end
+			local range = num(key .. ".range")
+			local p = math.sqrt((b.x - e.x) ^ 2 + (b.y - e.y) ^ 2)
+			if p > range then
+				if (e.id + self.ticks) % 20 == 0 then
+					walkNear(e, b.x, b.y, range * 0.9)
+				end
+			elseif p < num("artillery.rocketMinRange") then
+				e.barrage = nil
+			else
+				e.firing, e.aimX, e.aimY = true, b.x, b.y
+				if (e.still or 0) >= num("artillery.raiseSec") and e.shotTimer <= 0 then
+					local reload = num(key .. ".reloadSec")
+					local j = num("combat.reloadJitter")
+					e.shotTimer = reload * self.vetReload(e) * (1 - j + rand() * 2 * j)
+					e.firedAt = self.time
+					e.revealedUntil = self.time + num("artillery.revealSec")
+					local last = R.salvo(e, key, b.x, b.y, num(key .. ".dps") * reload * self.vetDamage(e))
+					e.packAt = self.time + last + num("artillery.lowerSec")
+					e.barrage = nil
+					event({ type = "barrageFired", id = e.id, side = e.side, x = b.x, y = b.y })
+				end
+			end
+		end
+		-- the game's eUe: once the rails are down, an idle launcher drives scootCells away from its aim
+		function self.scoot(e: Entity)
+			if e.barrage or (e.target and e.path) or e.attackId then
+				return
+			end
+			local sx, sy = e.x - (e.aimX or e.x), e.y - (e.aimY or e.y)
+			local r = math.sqrt(sx * sx + sy * sy)
+			if r < 1e-6 then
+				sx, sy = 0, 1
+			else
+				sx, sy = sx / r, sy / r
+			end
+			local d = num("artillery.scootCells")
+			walkNear(e, math.clamp(e.x + sx * d, 0.5, W - 0.5), math.clamp(e.y + sy * d, 0.5, H - 0.5), num("match.cellScale"))
+		end
+	end
+	-- Artillery base (the game's artyBase: cA / vI / mJ / mge / gJ / wge). Built for structures.artybase.killCost
+	-- kills (no oil); strikes are paid in kills too. A barrage (barrage.price kills, then waitSec before
+	-- the next) lands barrage.rounds shells about gapSec apart (+-45%) within barrage.spread of the point,
+	-- barrage.damage shared out, each hitting barrage.splash round it with the barrage.vs table. Enemy SAM
+	-- sites that are built, reloaded and in range of a landing point each stop up to intercept.perSam
+	-- shells and then reload for intercept.reloadSec. A flare shot (flare.price kills) fires flare.count
+	-- flares about shellGapSec apart within flare.spread; each bursts on arrival and lights flare.radius
+	-- for burnSec for its side, drifting downwind at flare.drift cells/s. Range artyBase.range from the
+	-- base's cell.
+	self.flares = {} :: { any }
+	self.samShotAt = {} :: { [number]: number }
+	do
+	local nextFlare = 1
+	local WIND_X, WIND_Y = 0.85, 0.25 -- the game's Ks.windX / windY
+	function self.artyProblem(side: number, baseId: number, kind: string, x: number, y: number): string?
+		local b = self.entities[baseId]
+		if not b or b.kind ~= "artybase" or not b.alive or b.side ~= side then
+			return "notOwned"
+		end
+		if not alive(side) then
+			return "blocked"
+		end
+		if self.inactiveReason(b) then
+			return "notOperational"
+		end
+		if x ~= x or y ~= y or cellAt(x, y) < 0 then
+			return "blocked"
+		end
+		local cx, cy = centre(b.cell)
+		local rg = num("artyBase.range")
+		if (x - cx) ^ 2 + (y - cy) ^ 2 > rg * rg then
+			return "outOfRange"
+		end
+		if ((b.strikeReady or {})[kind] or 0) - self.time > 0 then
+			return "cooldown"
+		end
+		if self.killsOf(side) < num(`artyBase.{kind}.price`) then
+			return "kills"
+		end
+		return nil
+	end
+	-- the game's mge: SAM sites stop shells headed into their cover
+	local function intercept(side: number, list: { any }): { [number]: boolean }
+		local stopped: { [number]: boolean } = {}
+		local per = numOr("artyBase.barrage.intercept.perSam", 0)
+		if per <= 0 or #list == 0 then
+			return stopped
+		end
+		local order = {}
+		for i = 1, #list do
+			order[i] = i
+		end
+		table.sort(order, function(a, b)
+			return if list[a].at ~= list[b].at then list[a].at < list[b].at else a < b
+		end)
+		local n, total = 0, 0
+		local bySide: { [number]: number } = {}
+		local reload, samReload = num("artyBase.barrage.intercept.reloadSec"), num("structures.sam.reloadSec")
+		for _, st in self.list do
+			if st.alive and st.kind == "sam" and st.built >= 1 and canAttack(st.side, side)
+				and self.time - (self.samShotAt[st.id] or -math.huge) >= samReload then
+				local sx, sy = centre(st.cell)
+				local range = num("structures.sam.range")
+				local d = 0
+				for _, i in order do
+					if d >= per then
+						break
+					end
+					if not stopped[i] and (list[i].x - sx) ^ 2 + (list[i].y - sy) ^ 2 <= range * range then
+						stopped[i] = true
+						d += 1
+					end
+				end
+				if d > 0 then
+					self.samShotAt[st.id] = self.time + math.max(0, reload) - samReload
+					bySide[st.side] = (bySide[st.side] or 0) + d
+					n += d
+				end
+			end
+		end
+		total = #list
+		if n > 0 then
+			local first = list[order[1]]
+			event({ type = "barrageIntercepted", side = side, n = n, total = total, x = first.x, y = first.y })
+			for s, k in bySide do
+				event({ type = "barrageStopped", side = s, n = k, x = first.x, y = first.y })
+			end
+		end
+		return stopped
+	end
+	-- the game's vI: pay, set the wait, fire
+	function self.artyStrike(side: number, baseId: number, kind: string, x: number, y: number): (boolean, string?)
+		local why = self.artyProblem(side, baseId, kind, x, y)
+		if why then
+			return false, why
+		end
+		if not self.payKills(side, num(`artyBase.{kind}.price`)) then
+			return false, "kills"
+		end
+		local b = self.entities[baseId]
+		local wait = num("artyBase.cooldownSec")
+		if kind == "barrage" then
+			wait = math.max(wait, numOr("artyBase.barrage.waitSec", 0))
+		end
+		b.strikeReady = b.strikeReady or {}
+		b.strikeReady[kind] = self.time + wait
+		b.firedAt, b.fired = self.time, kind
+		local bx, by = centre(b.cell)
+		if kind == "barrage" then
+			local seed = self.salvoSeed(-2 - b.id, self.time)
+			local n = math.max(1, math.floor(num("artyBase.barrage.rounds") + 0.5))
+			local spread = num("artyBase.barrage.spread")
+			local list = {}
+			for _, k in self.salvoPattern(seed, n, num("artyBase.barrage.gapSec")) do
+				local px, py = x + math.cos(k.a) * k.r * spread, y + math.sin(k.a) * k.r * spread
+				table.insert(list, { x = px, y = py, at = k.at + math.sqrt(d2(bx, by, px, py)) / SHOT_SPEED.barrage })
+			end
+			local stopped = intercept(side, list)
+			local cell = cellAt(x, y)
+			local bid = if cell >= 0 then roads.buildingAt(cell) else -1
+			local aimed = if bid >= 0 then self.entities[bid] else nil
+			local aimId = if aimed and aimed.alive and canAttack(side, aimed.side) then aimed.id else -1
+			local each = num("artyBase.barrage.damage") / n
+			for i, k in list do
+				if not stopped[i] then
+					table.insert(self.strikes, { kind = "rocket", at = self.time + k.at, x = k.x, y = k.y, damage = each,
+						key = "artyBase.barrage", by = side, target = aimId, splash = num("artyBase.barrage.splash") })
+				end
+			end
+			event({ type = "artyBarrage", id = b.id, side = side, x = x, y = y, seed = seed })
+		else
+			local count = math.max(1, math.floor(num("artyBase.flare.count") + 0.5))
+			local spread, gap, jit = num("artyBase.flare.spread"), num("artyBase.flare.shellGapSec"), num("artyBase.flare.shellGapJitter")
+			local t = self.time
+			for i = 1, count do
+				if i > 1 then
+					t += gap * (1 + (rand() * 2 - 1) * jit)
+				end
+				local a = rand() * math.pi * 2
+				local f = math.sqrt(rand()) * spread
+				local px, py = math.clamp(x + math.cos(a) * f, 0.5, W - 0.5), math.clamp(y + math.sin(a) * f, 0.5, H - 0.5)
+				local burst = t + math.sqrt(d2(bx, by, px, py)) / SHOT_SPEED.flare
+				table.insert(self.flares, { id = nextFlare, side = side, x = px, y = py, firedAt = t, burstAt = burst,
+					untilT = burst + num("artyBase.flare.burnSec"), r = num("artyBase.flare.radius") })
+				nextFlare += 1
+			end
+			event({ type = "artyFlares", id = b.id, side = side, x = x, y = y })
+		end
+		return true, nil
+	end
+	-- the game's wge: burning flares drift downwind; spent ones go
+	function self.flaresTick(dt: number)
+		if #self.flares == 0 then
+			return
+		end
+		local w = math.max(1e-6, math.sqrt(WIND_X * WIND_X + WIND_Y * WIND_Y))
+		local o = num("artyBase.flare.drift") * dt
+		local keep = {}
+		for _, f in self.flares do
+			if self.time < f.untilT then
+				if self.time >= f.burstAt then
+					f.x = math.clamp(f.x + WIND_X / w * o, 0.5, W - 0.5)
+					f.y = math.clamp(f.y + WIND_Y / w * o, 0.5, H - 0.5)
+				end
+				table.insert(keep, f)
+			end
+		end
+		self.flares = keep
+	end
+	end
+
+	-- the game's orderBarrage: launchers among ids that are at least rocketMinRange from the point
+	-- take the order; those out of range drive to 0.9 x range. Returns (count, reason when none).
+	function self.orderBarrage(side: number, ids: { number }, x: number, y: number): (number, string?)
+		local launchers = {}
+		for _, id in ids do
+			local e = self.entities[id]
+			if orderable(e, side) and not e.inside and text(unitKey(e) .. ".weapon") == "salvo" then
+				table.insert(launchers, e)
+			end
+		end
+		if #launchers == 0 then
+			return 0, "noLaunchers"
+		end
+		local n = 0
+		for _, e in launchers do
+			if math.sqrt((e.x - x) ^ 2 + (e.y - y) ^ 2) >= num("artillery.rocketMinRange") then
+				e.target, e.attackId, e.path, e.chasing = nil, nil, nil, nil
+				clearRecon(e)
+				e.barrage = { x = x, y = y }
+				local range = num(unitKey(e) .. ".range")
+				if math.sqrt((e.x - x) ^ 2 + (e.y - y) ^ 2) > range then
+					walkNear(e, x, y, range * 0.9)
+				end
+				n += 1
+			end
+		end
+		if n == 0 then
+			return 0, "tooClose"
+		end
+		return n, nil
+	end
+
 	local function unitsFire(dt: number)
 		for _, e in self.list do
 			if e.alive and e.hp > 0 and e.cat == "unit" and e.kind ~= TRUCK then
 				local key = unitKey(e)
 				local dps = num(key .. ".dps")
-				if dps > 0 then
+				if text(key .. ".weapon") == "salvo" then
+					salvoTick(e, key, dt) -- rocket artillery fires only on a barrage order
+				elseif dps > 0 then
 					local range = num(key .. ".range")
 					-- inside a secured settlement: cities.securedFire.<kind> x dps, + rooftopRange.<kind>
 					local sec = securedIn(e)
@@ -2389,11 +3828,17 @@ function Sim.new(deps: Deps)
 	-- Discounts: secured settlements cut unit prices (cities.discount.<kind>, max discountMax).
 	-- Traits (towns and cities, assigned at the start, work while secured): hospital heals foot units
 	-- nearby, rail speeds own trucks within rail.reach, factory cuts vehicle prices.
+	-- Capital: holding it secured shows all of your territory (surveillance); its holder gets the
+	-- paratroopers and bomb truck powers (see air drops below).
+	-- Integrity: artillery and mortar shells landing in a settlement (on units or buildings there) take
+	-- damage x settlements.collateral off it; at 0 it lies in ruins until it mends (rebuild.quietSec
+	-- without hits, full over rebuild.fullSec, standing again at standShare). Ruins only change the look
+	-- in the slice (the game's refineries, dams and events that read them are not in the slice).
 	-- Workforce: secured settlements speed all training by cities.workforce.<kind> (max workforceMax).
 	-- Forward training (queueForward): a held, secured town or city trains cities.forward.trains
 	-- (infantry, AT) itself; the queue waits while it is not secured and is refunded if it is lost.
-	-- Not in the slice: the radio trait's radar and the airfield's air drop (no radar or air units yet),
-	-- integrity damage.
+	-- A secured radio town sweeps cities.traits.radio.radar for radar contacts (radarsOf); a secured
+	-- airfield town calls air drops (callAirfield, below).
 	local function settlementsTick(dt: number)
 		local minPace, need = num("rigs.minPace"), math.max(0.1, num("rigs.need"))
 		garrisonTick()
@@ -2478,6 +3923,7 @@ function Sim.new(deps: Deps)
 
 	local function sendHome(t: Entity, rig: Entity?, hq: Entity)
 		t.state, t.queue, t.timer = "home", nil, 0
+		t.stopped, t.waiting, t.convoySpeed = nil, 0, 0
 		local route = if rig then routeOf(rig) else nil
 		if rig and route and cellAt(t.x, t.y) == rig.cell then
 			t.path, t.pathIndex = route, 1
@@ -2491,6 +3937,7 @@ function Sim.new(deps: Deps)
 
 	local function sendOut(t: Entity, rig: Entity)
 		t.state, t.queue, t.timer = "out", nil, 0
+		t.stopped, t.waiting, t.convoySpeed = nil, 0, 0
 		t.path, t.pathIndex = backPath(rig), 1
 	end
 
@@ -2502,6 +3949,186 @@ function Sim.new(deps: Deps)
 		local v = oil * s.oilMult
 		s.oil += v
 		s.oilEarned += v
+	end
+
+	-- the game's convoy driving (kme / wUe / gUe / SZe / MZe), on the slice's cell-centre paths
+	local function stopShort(): number
+		-- convoys.stopShortCells is not scaled in the match data (like movement.shareCells)
+		return num("convoys.stopShortCells") * num("match.cellScale")
+	end
+	-- a path cell a truck can no longer use: a road that was cut, or ground that is no longer
+	-- passable (a dropped bridge); building yards are left to the route search
+	local function brokenOn(path: { number }, from: number): number?
+		for i = math.max(1, from), #path do
+			local c = path[i]
+			if (roads.wasRoad(c) and not roads.isRoad(c)) or (not roads.passable(c) and roads.buildingAt(c) < 0) then
+				return i
+			end
+		end
+		return nil
+	end
+	-- distance along the path from the truck to the centre of path[i]
+	local function alongTo(t: Entity, path: { number }, i: number): number
+		local x, y, d = t.x, t.y, 0
+		for k = t.pathIndex, math.min(i, #path) do
+			local cx, cy = centre(path[k])
+			d += math.sqrt((cx - x) ^ 2 + (cy - y) ^ 2)
+			x, y = cx, cy
+		end
+		return d
+	end
+	-- the game's hostileNear: an armed enemy ground unit within r
+	local function hostileNear(side: number, x: number, y: number, r: number): boolean
+		for _, o in unitsNear(x, y, r) do
+			if o.alive and o.kind ~= TRUCK and canAttack(side, o.side) and o.class ~= "air"
+				and numOr(`units.{o.kind}.dps`, 0) > 0 and text(`units.{o.kind}.move`) ~= "sea"
+				and (o.x - x) ^ 2 + (o.y - y) ^ 2 <= r * r then
+				return true
+			end
+		end
+		return false
+	end
+	self.hostileNear = hostileNear
+	-- the game's MZe: the first path index within convoys.lookAhead with armed enemies near it
+	-- (every other cell, and the last)
+	local function hostileAhead(t: Entity, path: { number }): number?
+		local look, reach = num("convoys.lookAhead"), num("convoys.enemyReach")
+		local d, x, y = 0, t.x, t.y
+		for i = t.pathIndex, #path do
+			if d > look then
+				break
+			end
+			local cx, cy = centre(path[i])
+			d += math.sqrt((cx - x) ^ 2 + (cy - y) ^ 2)
+			x, y = cx, cy
+			-- the game's path is 0-based: it checks even indices
+			if ((i - 1) % 2 == 0 or i == #path) and hostileNear(t.side, cx, cy, reach) then
+				return i
+			end
+		end
+		return nil
+	end
+	-- the game's SZe: on a road, the speed that keeps convoys.spacingCells behind the own truck
+	-- ahead (same way within spacingDeg, at most half a spacing to the side); also whether that
+	-- truck is stopped
+	local function convoyLeader(t: Entity): (number, boolean)
+		local s = num("convoys.spacingCells")
+		if s <= 0 then
+			return math.huge, false
+		end
+		local c = cellAt(t.x, t.y)
+		if c < 0 or not roads.isRoad(c) then
+			return math.huge, false
+		end
+		local hd = t.heading or 0
+		local cx, cy = math.cos(hd), math.sin(hd)
+		local cosDeg = math.cos(math.rad(num("convoys.spacingDeg")))
+		local best, bestSpeed, held = math.huge, 0, false
+		for _, m in trafficLists() do
+			if m ~= t and m.alive and m.kind == TRUCK and m.side == t.side then
+				local dx, dy = m.x - t.x, m.y - t.y
+				if dx * dx + dy * dy < 4 * s * s then
+					local v = dx * cx + dy * cy
+					if v > 0 and v < math.min(best, s * 2) and math.abs(-dx * cy + dy * cx) <= s * 0.5
+						and math.cos((m.heading or hd) - hd) >= cosDeg then
+						local mc = cellAt(m.x, m.y)
+						local merging = v < s * num("convoys.mergeShare") and (m.convoySpeed or 0) < 0.001 and not m.stopped and m.id > t.id
+						if mc >= 0 and roads.isRoad(mc) and not merging then
+							best, bestSpeed, held = v, m.convoySpeed or 0, m.stopped ~= nil
+						end
+					end
+				end
+			end
+		end
+		if best == math.huge then
+			return math.huge, false
+		end
+		return math.max(0, bestSpeed + (best - s) * num("movement.columnCatchUp")), held
+	end
+	-- the game's gUe cruise for the leg into path[i]: truck speed, x offRoadShare off road, x
+	-- bridgeShare over impassable ground, x townShare in town; x bendShare in a bend
+	-- (APPROX: the bend uses the turn at the next cell, not the game's bendCells window)
+	local function legCruise(path: { number }, i: number, fromX: number, fromY: number): number
+		local c = path[i]
+		local v = num("convoys.speed")
+		if not roads.isRoad(c) then
+			v *= num("convoys.offRoadShare")
+		else
+			local tName = map.terrainAt(c)
+			if tName and not terrainPassable(tName) then
+				v *= num("convoys.bridgeShare")
+			elseif map.urbanAt and map.urbanAt(c) then
+				v *= num("convoys.townShare")
+			end
+		end
+		local nxt = path[i + 1]
+		if nxt then
+			local ax, ay = centre(c)
+			local bx, by = centre(nxt)
+			local ux, uy, wx, wy = ax - fromX, ay - fromY, bx - ax, by - ay
+			local m = math.sqrt(ux * ux + uy * uy) * math.sqrt(wx * wx + wy * wy)
+			if m > 0 then
+				local ang = math.acos(math.clamp((ux * wx + uy * wy) / m, -1, 1))
+				local free = math.rad(num("convoys.bendFreeDeg"))
+				local k = math.clamp((ang - free) / math.max(1e-6, math.pi / 2 - free), 0, 1)
+				v *= 1 - (1 - num("convoys.bendShare")) * k
+			end
+		end
+		return v
+	end
+	self.truckCruise = legCruise
+	-- the game's wUe speed profile: pull away over pullAwaySec, brake to the next leg's cruise
+	-- and to a stop point over brakeSec, crawl at crawlShare when nothing holds it
+	local function driveTruck(t: Entity, path: { number }, dt: number, stopAt: number, limit: number)
+		local u = t.convoySpeed or 0
+		if t.pathIndex > #path then
+			t.convoySpeed = 0
+			return
+		end
+		local i = t.pathIndex
+		local tx, ty = centre(path[i])
+		local cruise = legCruise(path, i, t.x, t.y)
+		local y = cruise / math.max(0.001, num("convoys.brakeSec"))
+		local toNext = math.sqrt((tx - t.x) ^ 2 + (ty - t.y) ^ 2)
+		local nextCap = if path[i + 1] then legCruise(path, i + 1, tx, ty) else 0
+		local w = math.min(cruise, math.sqrt(nextCap * nextCap + 2 * y * toNext))
+		local stopping = stopAt < math.huge
+		w = math.min(w, limit)
+		if stopping then
+			w = math.min(w, if stopAt > 0 then math.sqrt(2 * y * stopAt) else math.max(0, u - 2 * y * dt))
+		end
+		if u < w then
+			u = math.min(w, u + cruise / math.max(0.001, num("convoys.pullAwaySec")) * dt)
+		else
+			u = if stopping then w else math.max(w, u - 2 * y * dt)
+		end
+		if not stopping then
+			u = math.max(u, math.min(cruise * num("convoys.crawlShare"), limit))
+		end
+		t.convoySpeed = u
+		local stepLen = u * dt
+		if stopping then
+			stepLen = math.min(stepLen, math.max(0, stopAt))
+		end
+		while stepLen > 0 and t.pathIndex <= #path do
+			local px, py = centre(path[t.pathIndex])
+			local dx, dy = px - t.x, py - t.y
+			local d = math.sqrt(dx * dx + dy * dy)
+			if d > 1e-6 then
+				t.heading = math.atan2(dy, dx)
+			end
+			if d <= stepLen then
+				t.x, t.y = px, py
+				stepLen -= d
+				wearRoad(path[t.pathIndex], num("roads.wear.truck")) -- the game's $We
+				t.pathIndex += 1
+			else
+				t.x += dx / d * stepLen
+				t.y += dy / d * stepLen
+				stepLen = 0
+			end
+			t.moved = true
+		end
 	end
 
 	local function trucks(dt: number)
@@ -2557,6 +4184,7 @@ function Sim.new(deps: Deps)
 					sendHome(t, nil, hq)
 				end
 				if t.state == "loading" and rig then
+					t.convoySpeed = 0
 					if head[rig.id] == t then
 						local v = math.min(num("trucks.loadPerSec") * dt, capacity - t.payload, rig.tank)
 						t.payload += v
@@ -2571,6 +4199,7 @@ function Sim.new(deps: Deps)
 					continue
 				end
 				if t.state == "unloading" then
+					t.convoySpeed = 0
 					t.timer += dt
 					if t.timer < num("trucks.unloadSec") then
 						continue
@@ -2591,32 +4220,81 @@ function Sim.new(deps: Deps)
 					end
 					continue
 				end
-				-- driving along the path (APPROX: cell centre to cell centre)
+				-- driving along the path: cell centre to cell centre (APPROX: the game smooths corners
+				-- into curves, mUe/QO, and snaps to the road's drawn line)
 				local path = t.path
-				local speed = num("convoys.speed") * num("trucks.kinds.light.paceShare") * railPace(t.side, t.x, t.y)
+				local truckSpeed = num("convoys.speed")
 				local c = cellAt(t.x, t.y)
+				-- the game's NWe: road class x wear x traffic, 1 off road
+				local pace = 1
+				t.jam = nil
 				if roads.isRoad(c) then
-					speed *= num(`roads.classes.{Roads.CLASS_NAME[roads.classAt(c)]}.truck`)
-				end
-				local stepLen = speed * dt
-				while stepLen > 0 and t.pathIndex <= #path do
-					local tx, ty = centre(path[t.pathIndex])
-					local dx, dy = tx - t.x, ty - t.y
-					local d = math.sqrt(dx * dx + dy * dy)
-					if d > 1e-6 then
-						t.heading = math.atan2(dy, dx)
+					pace = num(`roads.classes.{Roads.CLASS_NAME[roads.classAt(c)]}.truck`) * (1 - wearSlow(c))
+					if truckJammed(t) then
+						pace *= num("traffic.truckShare")
+						t.jam = true
 					end
-					if d <= stepLen then
-						t.x, t.y = tx, ty
-						stepLen -= d
-						t.pathIndex += 1
+				end
+				-- the game's kme checks: every 10 ticks (every tick while waiting) look for a cut on
+				-- the way, else for armed enemies ahead (MZe)
+				local stopAt = math.huge -- distance along the path it may still drive (the game's w)
+				local checkNow = (t.waiting or 0) > 0 or #path == 0 or t.reroute or (self.ticks + t.id) % 10 == 0
+				if checkNow then
+					local broken = if t.reroute then (brokenOn(path, t.pathIndex) or t.pathIndex) else brokenOn(path, t.pathIndex)
+					local ahead = if broken then nil else hostileAhead(t, path)
+					if broken then
+						local fixed = false
+						if t.reroute or self.time >= (t.retryAt or -math.huge) then
+							local goal = if t.state == "out" and rig then rig.cell else hq.cell
+							local p2 = roads.search(c, goal, roads.truckCostFn(c, goal), { minCost = 1, fourWay = true })
+							if p2 and #p2 > 0 and not brokenOn(p2, 1) then
+								t.path, t.pathIndex, t.waiting = p2, 1, 0
+								path = p2
+								fixed = true
+							else
+								t.retryAt = self.time + 2 -- the game's retryAt + 2 s
+							end
+						end
+						t.reroute = nil
+						if fixed then
+							t.stopped = nil
+						else
+							t.stopped = "cut"
+							local was = t.waiting or 0
+							t.waiting = was + dt * (if was > 0 then 1 else 10)
+							if was < num("convoys.waitSec") and t.waiting >= num("convoys.waitSec") then
+								event({ type = "convoyStranded", id = t.id, side = t.side, x = t.x, y = t.y, rig = t.from })
+							end
+							stopAt = alongTo(t, path, broken) - stopShort()
+						end
+					elseif ahead then
+						if (t.waiting or 0) == 0 then
+							event({ type = "convoyHeld", id = t.id, side = t.side, x = t.x, y = t.y, rig = t.from })
+						end
+						t.stopped = "enemy"
+						t.waiting = (t.waiting or 0) + dt * (if (t.waiting or 0) > 0 then 1 else 10)
+						stopAt = alongTo(t, path, ahead) - stopShort()
 					else
-						t.x += dx / d * stepLen
-						t.y += dy / d * stepLen
-						stepLen = 0
+						t.waiting, t.stopped = 0, nil
 					end
-					t.moved = true
+				elseif t.stopped then
+					stopAt = -math.huge
 				end
+				-- spacing behind the truck ahead, and the stall creep (the game's SZe / stallSec)
+				local held = false
+				local limit
+				limit, held = convoyLeader(t)
+				local creep = truckSpeed * num("convoys.stallCreepShare")
+				if stopAt == math.huge and limit < creep and not held then
+					t.convoyStall = (t.convoyStall or 0) + dt
+					if t.convoyStall >= num("convoys.stallSec") then
+						limit = creep
+					end
+				else
+					t.convoyStall = nil
+				end
+				limit = math.min(limit, truckSpeed * num("trucks.kinds.light.paceShare") * pace * railPace(t.side, t.x, t.y))
+				driveTruck(t, path, dt, stopAt, limit)
 				if t.pathIndex > #path then
 					if t.state == "out" and rig then
 						t.state, t.queue = "loading", nil
@@ -2625,6 +4303,650 @@ function Sim.new(deps: Deps)
 					end
 				end
 			end
+		end
+	end
+
+	---------------------------------------------------------------- air drops and the capital's powers
+	local airTick: (dt: number) -> ()
+	do
+		local A: any = {}
+
+		-- The game's paradrops ($X / G_ / KGe): a transport flies in from the map edge and drops sticks
+		-- along its line; each lands drop.chuteSec after leaving the plane. Called by a secured airfield
+		-- town (callAirfield: cities.traits.airfield.squads rifle squads within reach, then cooldownSec)
+		-- or by the capital (callParatroopers: capital.paraCount paratroopers, then cooldownSec.para).
+		-- The capital also sends a bomb truck (deployDemo, cooldownSec.demo) that blows up at an enemy
+		-- building or the unit it was sent at (the game's GGe / XGe / pq).
+		self.paradrops = {} :: { any }
+		local nextDropId = 1
+		function A.capitalOf(): Entity?
+			for _, st in settlements do
+				if st.kind == "capital" then
+					return st
+				end
+			end
+			return nil
+		end
+		self.capitalOf = A.capitalOf
+		-- the game's AD: how many of n more units the side may still field (match.unitCap)
+		function A.unitRoom(side: number, n: number): number
+			return math.max(0, math.min(math.floor(n + 0.5), num("match.unitCap") - unitsAndQueued(side)))
+		end
+		-- the game's gS: a drop point away from the map edge, on passable ground (not water)
+		function A.dropProblem(x: number, y: number): string?
+			local e = num("capital.paraEdgeCells")
+			if x < e or y < e or x > W - e or y > H - e then
+				return "terrain"
+			end
+			local c = cellAt(x, y)
+			if c < 0 or not roads.passable(c) then
+				return "terrain"
+			end
+			local t = map.terrainAt(c)
+			if t == "deep" or t == "shallow" then
+				return "terrain"
+			end
+			return nil
+		end
+		self.dropProblem = A.dropProblem
+		-- the game's jie: distance from (x, y) to the map edge going along angle a
+		function A.edgeDist(x: number, y: number, a: number): number
+			local c, s = math.cos(a), math.sin(a)
+			local rx = if c > 1e-6 then (W - x) / c elseif c < -1e-6 then -x / c else math.huge
+			local ry = if s > 1e-6 then (H - y) / s elseif s < -1e-6 then -y / s else math.huge
+			return math.max(0, math.min(rx, ry))
+		end
+		function A.openSpot(x: number, y: number): boolean -- the game's fI
+			local c = cellAt(x, y)
+			return c >= 0 and roads.passable(c) and roads.buildingAt(c) < 0
+		end
+		function A.freeSpotAt(x: number, y: number): (number, number) -- the game's freeSpotAt
+			if A.openSpot(x, y) then
+				return x, y
+			end
+			return freePointNear(math.clamp(x, 0, W - 1e-6), math.clamp(y, 0, H - 1e-6))
+		end
+		self.freeSpotAt = A.freeSpotAt
+		-- the game's G_: the plane picks, of 16 headings from a random start, the one whose run in from the
+		-- edge is closest to drop.approachShare of the map's short side; sticks leave it gap apart
+		-- (centred on the point), each blown up to 0.6 x cellScale aside
+		function A.planeFor(side: number, x: number, y: number, loads: { string }, flySec: number, gap: number): any
+			local want = math.min(W, H) * num("drop.approachShare")
+			local bestH, bestD = 0, -1
+			local f = rand() * math.pi * 2
+			local function score(d: number): number
+				return if d >= want then d - want else (want - d) * 4
+			end
+			for i = 0, 15 do
+				local a = f + i / 16 * math.pi * 2
+				local d = A.edgeDist(x, y, a)
+				if bestD < 0 or score(d) < score(bestD) then
+					bestH, bestD = a, d
+				end
+			end
+			local heading = bestH + math.pi
+			local run = bestD + 4
+			local speed = run / flySec
+			local fromX, fromY = x - math.cos(heading) * run, y - math.sin(heading) * run
+			local overT = self.time + flySec
+			local goneT = overT + (A.edgeDist(x, y, heading) + 6) / speed
+			local out = {}
+			local spin = rand() * math.pi * 2
+			local chute = num("drop.chuteSec")
+			for i, kind in loads do
+				local m = i - 1
+				local along = (m - (#loads - 1) / 2) * gap
+				local side_ = (if m % 2 == 1 then 1 else -1) * gap * 0.35
+				local ax = x + math.cos(heading) * along - math.sin(heading) * side_
+				local ay = y + math.sin(heading) * along + math.cos(heading) * side_
+				local h = 0.6 * num("match.cellScale") * (0.6 + rand() * 0.8)
+				local px, py = ax + math.cos(spin) * h, ay + math.sin(spin) * h
+				if not A.openSpot(px, py) then
+					px, py = ax, ay
+					if not A.openSpot(px, py) then
+						px, py = A.freeSpotAt(x, y)
+					end
+				end
+				local outT = overT + along / speed
+				table.insert(out, { kind = kind, x = px, y = py, outT = outT, landT = outT + chute })
+			end
+			return { side = side, fromX = fromX, fromY = fromY, heading = heading, speed = speed, startT = self.time, overT = overT, goneT = goneT, loads = out }
+		end
+		function A.launchDrop(side: number, x: number, y: number, loads: { string }, airfield: number?): number
+			local plane = A.planeFor(side, x, y, loads, num("capital.paraFlySec"), num("capital.paraStickGap"))
+			local id = nextDropId
+			nextDropId += 1
+			table.insert(self.paradrops, { id = id, side = side, x = x, y = y, plane = plane, landed = 0, airfield = airfield })
+			event({ type = if airfield then "airfieldAway" else "paraAway", id = id, side = side, x = x, y = y, n = #loads,
+				sec = math.ceil(num("capital.paraFlySec") + num("drop.chuteSec")), city = airfield })
+			return id
+		end
+		-- the game's KGe: land each stick at its time, then forget the drop once the plane is gone
+		function A.paradropTick()
+			if #self.paradrops == 0 then
+				return
+			end
+			for _, d in self.paradrops do
+				local loads = d.plane.loads
+				while d.landed < #loads and self.time >= loads[d.landed + 1].landT do
+					d.landed += 1
+					local a = loads[d.landed]
+					if alive(d.side) then
+						local x, y = A.freeSpotAt(a.x, a.y)
+						local u = self.spawnUnit(a.kind, d.side, x, y)
+						if d.landed == #loads then
+							event({ type = if d.airfield then "airfieldLanded" else "paraLanded", id = u.id, side = d.side, x = d.x, y = d.y, n = #loads })
+						end
+					end
+				end
+			end
+			local linger = num("capital.paraLingerSec")
+			local keep = {}
+			for _, d in self.paradrops do
+				local last = d.plane.loads[#d.plane.loads]
+				if d.landed < #d.plane.loads or self.time <= math.max(d.plane.goneT, (if last then last.landT else 0) + linger) then
+					table.insert(keep, d)
+				end
+			end
+			self.paradrops = keep
+		end
+
+		-- the game's TD / EX: can this side call the airfield town st now, onto (x, y)?
+		function A.airfieldProblem(side: number, st: Entity?, x: number?, y: number?): string?
+			if not st or st.trait ~= "airfield" or not r:flag("cities.traits.on") then
+				return "blocked"
+			end
+			if st.owner ~= side or side <= 0 then
+				return "notHeld"
+			end
+			if cityStatus(st) ~= "secured" then
+				return "notSecured"
+			end
+			if not alive(side) then
+				return "blocked"
+			end
+			if (st.airfieldReady or 0) > self.time then
+				return "cooldown"
+			end
+			if x == nil or y == nil then
+				return nil
+			end
+			if A.unitRoom(side, 1) <= 0 then
+				return "unitCap"
+			end
+			local reach = num("cities.traits.airfield.reach")
+			if (x - st.x) ^ 2 + (y - st.y) ^ 2 > reach * reach then
+				return "outOfRange"
+			end
+			return A.dropProblem(x, y)
+		end
+		self.airfieldProblem = A.airfieldProblem
+		-- the game's zpe: rifle squads from a secured airfield town
+		function self.callAirfield(side: number, cityId: number, x: number, y: number): (boolean, any)
+			local st = settlements[cityId]
+			local why = A.airfieldProblem(side, st, x, y)
+			if why then
+				return false, why
+			end
+			local loads = table.create(math.max(1, A.unitRoom(side, num("cities.traits.airfield.squads"))), "infantry")
+			local id = A.launchDrop(side, x, y, loads, cityId)
+			st.airfieldReady = self.time + num("cities.traits.airfield.cooldownSec")
+			return true, id
+		end
+		-- the game's Dpe / UGe: the capital's powers work for whoever holds it; each has its own cooldown
+		function A.powerLeft(side: number, power: string): number
+			local s = self.sides[side]
+			local at = s and s.capitalReady and s.capitalReady[power] or 0
+			return math.max(0, at - self.time)
+		end
+		function A.powerProblem(side: number, power: string): string?
+			local s = self.sides[side]
+			if not s or s.lost then
+				return "blocked"
+			end
+			local cap = A.capitalOf()
+			if not cap or cap.owner ~= side then
+				return "noCapital"
+			end
+			return if A.powerLeft(side, power) > 0 then "cooldown" else nil
+		end
+		function self.capitalPower(side: number, power: string): (string, number)
+			local left = A.powerLeft(side, power)
+			local cap = A.capitalOf()
+			if not cap then
+				return "none", left
+			end
+			if cap.owner ~= side or side <= 0 then
+				return "locked", left
+			end
+			return if left > 0 then "cooldown" else "ready", left
+		end
+		function A.powerUsed(side: number, power: string)
+			local s = self.sides[side]
+			s.capitalReady = s.capitalReady or {}
+			s.capitalReady[power] = self.time + num(`capital.cooldownSec.{power}`)
+		end
+		-- the game's qGe / RX: paratroopers from the capital
+		function self.callParatroopers(side: number, x: number, y: number): (boolean, any)
+			local why = A.powerProblem(side, "para") or (if A.unitRoom(side, 1) <= 0 then "unitCap" else nil) or A.dropProblem(x, y)
+			if why then
+				return false, why
+			end
+			local loads = table.create(math.max(1, A.unitRoom(side, num("capital.paraCount"))), "para")
+			local id = A.launchDrop(side, x, y, loads, nil)
+			A.powerUsed(side, "para")
+			return true, id
+		end
+		function A.isDemo(e: Entity): boolean
+			local ab = r.data[`units.{e.kind}.abilities`] :: { string }?
+			return ab ~= nil and table.find(ab, "demolition") ~= nil
+		end
+		self.isDemo = A.isDemo
+		-- the game's JGe: an enemy building within capital.demoAimCells of the point
+		function A.demoBuildingNear(side: number, x: number, y: number): Entity?
+			for _, st in self.list do
+				if st.alive and isStructure(st) and st.kind ~= "rig" and canAttack(side, st.side) then
+					local cx, cy = centre(st.cell)
+					if math.sqrt((cx - x) ^ 2 + (cy - y) ^ 2) - footprintOf(st.kind) <= num("capital.demoAimCells") then
+						return st
+					end
+				end
+			end
+			return nil
+		end
+		-- the game's QGe: the nearest enemy ground unit within capital.demoAimCells of the point
+		function A.demoUnitNear(side: number, x: number, y: number): Entity?
+			local best, bestD = nil, num("capital.demoAimCells")
+			for _, u in self.list do
+				if u.alive and u.cat == "unit" and u.kind ~= TRUCK and not u.inside and canAttack(side, u.side) and u.class ~= "air" then
+					local d = math.sqrt((u.x - x) ^ 2 + (u.y - y) ^ 2)
+					if d <= bestD then
+						best, bestD = u, d
+					end
+				end
+			end
+			return best
+		end
+		-- the game's GGe: a bomb truck leaves the capital's edge toward the point; it is sent at the unit
+		-- there unless an enemy building is near the point
+		function self.deployDemo(side: number, x: number, y: number): (boolean, any)
+			local why = A.powerProblem(side, "demo")
+			if why then
+				return false, why
+			end
+			local cap = A.capitalOf() :: Entity
+			local d = math.sqrt((x - cap.x) ^ 2 + (y - cap.y) ^ 2)
+			local k = if d > 1e-6 then math.min(d, cap.radius) / d else 0
+			local sx, sy = A.freeSpotAt(cap.x + (x - cap.x) * k, cap.y + (y - cap.y) * k)
+			local u = self.spawnUnit("demo", side, sx, sy)
+			A.powerUsed(side, "demo")
+			local target = if A.demoBuildingNear(side, x, y) then nil else A.demoUnitNear(side, x, y)
+			if target then
+				u.attackId = target.id
+			else
+				self.orderMove(side, { u.id }, x, y)
+			end
+			event({ type = "demoOut", id = u.id, side = side, x = sx, y = sy, city = cap.id })
+			return true, u.id
+		end
+		-- the game's pq: the blast. Buildings within demoBlastCells (edge distance) take
+		-- demoStructureDamage x (1 - half the way past demoReachCells); units within demoLethalCells die,
+		-- beyond it they take demoUnitDamage x demoVs, falling to demoEdgeShare at the edge, x cover (x
+		-- bunching for foot units); trucks take demoUnitDamage x demoVs.armour; the nearest road takes
+		-- demoStructureDamage x demoRoadShare of strike damage. APPROX: rigs can't be damaged in the slice.
+		function A.demoBlast(e: Entity)
+			if not e.alive then
+				return
+			end
+			local n = math.max(0.01, num("capital.demoBlastCells"))
+			local lethal = math.min(n, math.max(0, num("capital.demoLethalCells")))
+			local x, y, by = e.x, e.y, e.side
+			local function falloff(u: number): number
+				return 1 - 0.5 * math.clamp(u / n, 0, 1)
+			end
+			local function edge(u: number): number
+				return 1 - (1 - num("capital.demoEdgeShare")) * math.clamp((u - lethal) / math.max(1e-6, n - lethal), 0, 1)
+			end
+			local hitName: string? = nil
+			for _, st in self.list do
+				if st.alive and isStructure(st) and st.kind ~= "rig" and canAttack(by, st.side) then
+					local cx, cy = centre(st.cell)
+					local f = math.max(math.abs(cx - x), math.abs(cy - y)) - (footprintOf(st.kind) + 0.5)
+					if f <= n then
+						hitName = hitName or st.kind
+						hitStructure(by, st, num("capital.demoStructureDamage") * num("capital.demoVs.structure") * falloff(f - num("capital.demoReachCells")))
+					end
+				end
+			end
+			local bunch = bunchFactor(by, x, y)
+			for _, u in self.list do
+				if u ~= e and u.alive and u.cat == "unit" and canAttack(by, u.side) then
+					local vs = numOr(`capital.demoVs.{u.class}`, 0)
+					local p = math.sqrt((u.x - x) ^ 2 + (u.y - y) ^ 2)
+					if vs > 0 and p <= n then
+						if u.kind == TRUCK then
+							hitTruck(u, num("capital.demoUnitDamage") * num("capital.demoVs.armour"), "", 1, by)
+						else
+							u.hitAt, u.hitBy = self.time, by
+							if p <= lethal then
+								u.hp = math.min(u.hp, 0)
+							else
+								local cover = if u.inside then insideCover(u) else 1 - coverAt(cellAt(u.x, u.y))
+								local foot = text(unitKey(u) .. ".move") == "foot"
+								self.vetHit(u, num("capital.demoUnitDamage") * vs * edge(p) * cover * (if foot then bunch else 1))
+							end
+							killIfDead(u, by)
+						end
+					end
+				end
+			end
+			roadBlast(x, y, num("capital.demoStructureDamage") * num("capital.demoRoadShare"), by)
+			event({ type = "demoBlast", id = e.id, side = by, x = x, y = y, target = hitName })
+			e.hp, e.alive = 0, false
+			event({ type = "destroyed", id = e.id, kind = e.kind, side = e.side, by = by })
+		end
+		-- the game's ZGe: blow up the side's bomb trucks among ids now
+		function self.detonate(side: number, ids: { number }): (boolean, any)
+			local n = 0
+			for _, id in ids do
+				local e = self.entities[id]
+				if e and e.alive and e.side == side and A.isDemo(e) then
+					A.demoBlast(e)
+					n += 1
+				end
+			end
+			if n == 0 then
+				return false, "noDemo"
+			end
+			return true, n
+		end
+		-- the game's YGe / XGe: a bomb truck blows at an enemy building within demoReachCells (while
+		-- driving, only one near where it is going), or next to the unit it was sent at
+		-- (combat.demoUnitReachCells x cellScale). It has no gun, so it chases its unit itself.
+		function A.demoTick()
+			local unitReach = num("combat.demoUnitReachCells") * num("match.cellScale")
+			for _, e in self.list do
+				if e.alive and e.cat == "unit" and not e.inside and A.isDemo(e) then
+					local goal = if e.path and e.pathIndex and e.pathIndex <= #e.path then e.path[#e.path] else nil
+					local gx, gy
+					if goal then
+						gx, gy = centre(goal)
+					end
+					local hit = nil
+					local bestF = math.huge
+					for _, st in self.list do
+						if st.alive and isStructure(st) and st.kind ~= "rig" and canAttack(e.side, st.side) then
+							local cx, cy = centre(st.cell)
+							local foot = footprintOf(st.kind)
+							local f = math.max(math.abs(cx - e.x), math.abs(cy - e.y)) - (foot + 0.5)
+							if f <= num("capital.demoReachCells") and not (gx and math.sqrt((cx - gx) ^ 2 + (cy - gy) ^ 2) - foot > num("capital.demoAimCells")) and f < bestF then
+								hit, bestF = st, f
+							end
+						end
+					end
+					if hit then
+						A.demoBlast(e)
+					elseif e.attackId then
+						local t = self.entities[e.attackId]
+						if not t or not t.alive then
+							e.attackId = nil
+						elseif math.sqrt(d2(e.x, e.y, t.x, t.y)) <= unitReach then
+							A.demoBlast(e)
+						elseif (e.id + self.ticks) % 10 == 0 then
+							local c = cellAt(t.x, t.y)
+							if c >= 0 and (not e.goalCell or e.goalCell ~= c) then
+								planTo(e, c, t.x, t.y)
+							end
+						end
+					end
+				end
+			end
+		end
+		-- the game's jGe ready notices: the capital's powers and airfield towns coming off cooldown
+		function airTick(dt: number)
+			A.paradropTick()
+			A.demoTick()
+			local cap = A.capitalOf()
+			if cap and cap.owner > 0 then
+				local s = self.sides[cap.owner]
+				if s and not s.lost and s.capitalReady then
+					for _, p in { "para", "demo" } do
+						local at = s.capitalReady[p]
+						if at and at > self.time - dt and at <= self.time then
+							event({ type = "capitalPowerReady", side = cap.owner, power = p })
+						end
+					end
+				end
+			end
+			for _, st in settlements do
+				local at = st.airfieldReady
+				if at and st.trait == "airfield" and at > self.time - dt and at <= self.time and traitActive(st) then
+					event({ type = "airfieldReady", side = st.owner, city = st.id })
+				end
+			end
+		end
+	end
+
+	---------------------------------------------------------------- recon drone and SAM sites
+
+	-- The game's recon drone (NJe / WJe / mwe): bought once for intel.reconCost oil, it flies from the
+	-- finished HQ to a point at intel.droneSpeed, circles it at droneOrbitShare of its scan radius for
+	-- intel.reconSec while showing scoutReconRadius x droneVsScout round the point, then flies home and
+	-- refuels for droneRefuelSec. Shot down, it is gone; a new one can be bought after droneReplaceSec.
+	-- SAM sites (UJe / lA / sge / rje) fire a missile at an enemy drone within range every reloadSec;
+	-- the missile flies at samMissile.speed and downs the drone if it gets within hitCells before
+	-- maxSec. SAMs don't shoot at ground targets.
+	self.drones = {} :: { any }
+	self.samMissiles = {} :: { any }
+	local droneTick: (dt: number) -> ()
+	do
+		local D: any = {}
+		local nextDrone, nextMissile = 1, 1
+		local samShotAt: { [number]: number } = self.samShotAt
+		function D.droneOf(side: number): any
+			for _, d in self.drones do
+				if d.alive and d.side == side then
+					return d
+				end
+			end
+			return nil
+		end
+		function D.hqFor(side: number): Entity?
+			local hq = hqOf(side)
+			return if hq and hq.built >= 1 then hq else nil
+		end
+		function self.droneScanRadius(): number
+			return num("intel.scoutReconRadius") * num("intel.droneVsScout")
+		end
+		-- the game's mwe: out, refuel, ready, replace or buy
+		function self.droneState(side: number): (string, number)
+			local s = self.sides[side]
+			if not s then
+				return "replace", 0
+			end
+			if D.droneOf(side) then
+				return "out", 0
+			end
+			local left = math.max(0, (s.reconReadyAt or 0) - self.time)
+			if s.droneOwned then
+				return if left > 0 then "refuel" else "ready", left
+			end
+			return if left > 0 then "replace" else "buy", left
+		end
+		function self.launchDrone(side: number, x: number, y: number): (boolean, any)
+			local s = self.sides[side]
+			if not s or s.lost then
+				return false, "blocked"
+			end
+			local hq = D.hqFor(side)
+			if not hq then
+				return false, "noHq"
+			end
+			local state = self.droneState(side)
+			if state == "out" then
+				return false, "droneOut"
+			elseif state == "refuel" then
+				return false, "cooldown"
+			elseif state == "replace" then
+				return false, "replaceCooldown"
+			end
+			if state == "buy" then
+				if s.oil < num("intel.reconCost") then
+					return false, "oil"
+				end
+				s.oil -= num("intel.reconCost")
+				s.droneOwned = true
+			end
+			local hx, hy = centre(hq.cell)
+			local d = { id = nextDrone, side = side, x = hx, y = hy, tx = math.clamp(x, 0.5, W - 0.5), ty = math.clamp(y, 0.5, H - 0.5),
+				radius = self.droneScanRadius(), phase = "out", scanLeft = num("intel.reconSec"), hp = 1, alive = true }
+			nextDrone += 1
+			table.insert(self.drones, d)
+			event({ type = "droneOut", id = d.id, side = side, x = d.tx, y = d.ty })
+			return true, d.id
+		end
+		function D.orbit(d: any): number -- the game's j1e
+			return math.max(1, d.radius * num("intel.droneOrbitShare"))
+		end
+		-- the game's Z1e: fly toward (tx, ty) until `stop` short of it; true once there
+		function D.fly(d: any, dt: number, stop: number): boolean
+			local dx, dy = d.tx - d.x, d.ty - d.y
+			local r = math.sqrt(dx * dx + dy * dy)
+			local left = r - stop
+			if left <= 0 then
+				return true
+			end
+			local step = math.min(num("intel.droneSpeed") * dt, left)
+			d.x += dx / r * step
+			d.y += dy / r * step
+			return step >= left
+		end
+		-- the game's K1e: shot down (or homeless)
+		function D.lose(d: any, shot: boolean)
+			d.alive, d.hp = false, 0
+			local s = self.sides[d.side]
+			if s then
+				s.droneOwned = false
+				s.reconReadyAt = self.time + num("intel.droneReplaceSec")
+			end
+			event({ type = "droneLost", id = d.id, side = d.side, x = d.x, y = d.y, shot = shot })
+		end
+		function D.targeted(id: number): boolean -- the game's iA
+			for _, m in self.samMissiles do
+				if m.alive and m.target == id then
+					return true
+				end
+			end
+			return false
+		end
+		-- the game's UJe / rA / lA: the first SAM in range and reloaded fires at the drone
+		function D.samFire(d: any)
+			if D.targeted(d.id) then
+				return
+			end
+			for _, st in self.list do
+				if st.alive and st.kind == "sam" and st.built >= 1 and canAttack(st.side, d.side) then
+					local sx, sy = centre(st.cell)
+					local range = num("structures.sam.range")
+					if (sx - d.x) ^ 2 + (sy - d.y) ^ 2 <= range * range
+						and self.time - (samShotAt[st.id] or -math.huge) >= num("structures.sam.reloadSec") then
+						samShotAt[st.id] = self.time
+						table.insert(self.samMissiles, { id = nextMissile, side = st.side, site = st.id, x = sx, y = sy, tx = d.x, ty = d.y,
+							heading = math.atan2(d.y - sy, d.x - sx), target = d.id, launchedAt = self.time, alive = true })
+						nextMissile += 1
+						event({ type = "samFired", id = st.id, side = st.side, drone = d.id })
+						return
+					end
+				end
+			end
+		end
+		-- the game's sge: missiles home on their drone; a hit within hitCells downs it
+		function D.missilesTick(dt: number)
+			local keep = {}
+			for _, m in self.samMissiles do
+				local tgt = nil
+				for _, d in self.drones do
+					if d.id == m.target and d.alive and d.hp > 0 then
+						tgt = d
+					end
+				end
+				if tgt then
+					m.tx, m.ty = tgt.x, tgt.y
+				end
+				local dx, dy = m.tx - m.x, m.ty - m.y
+				local r = math.sqrt(dx * dx + dy * dy)
+				local step = num("samMissile.speed") * dt
+				if r > 1e-6 then
+					m.heading = math.atan2(dy, dx)
+				end
+				local hit = r <= step + num("samMissile.hitCells")
+				local late = self.time - m.launchedAt >= num("samMissile.maxSec")
+				if not hit and not late then
+					m.x += dx / r * step
+					m.y += dy / r * step
+					table.insert(keep, m)
+				else
+					if hit then
+						m.x, m.y = m.tx, m.ty
+					end
+					m.alive = false
+					if hit and tgt then
+						tgt.hp = 0
+						event({ type = "samHit", side = m.side, drone = tgt.id, x = m.x, y = m.y })
+					end
+				end
+			end
+			self.samMissiles = keep
+		end
+		-- the game's WJe
+		function droneTick(dt: number)
+			D.missilesTick(dt)
+			if #self.drones == 0 then
+				return
+			end
+			local keep = {}
+			for _, d in self.drones do
+				if d.alive and not alive(d.side) then
+					d.alive = false
+				elseif d.alive and d.hp <= 0 then
+					D.lose(d, true)
+				elseif d.alive then
+					if d.phase == "out" then
+						if D.fly(d, dt, D.orbit(d)) then
+							d.phase, d.scanLeft = "scan", num("intel.reconSec")
+							d.orbitAt = math.atan2(d.y - d.ty, d.x - d.tx)
+							event({ type = "droneScanned", id = d.id, side = d.side, x = d.tx, y = d.ty })
+						end
+					elseif d.phase == "scan" then
+						local o = D.orbit(d)
+						d.orbitAt = (d.orbitAt or 0) + num("intel.droneSpeed") / o * dt
+						d.x, d.y = d.tx + math.cos(d.orbitAt) * o, d.ty + math.sin(d.orbitAt) * o
+						d.scanLeft -= dt
+						if d.scanLeft <= 0 then
+							d.scanLeft, d.phase = 0, "home"
+						end
+					else
+						local hq = D.hqFor(d.side)
+						if not hq then
+							D.lose(d, false)
+						else
+							d.tx, d.ty = centre(hq.cell)
+							if D.fly(d, dt, 0) then
+								d.alive = false
+								self.sides[d.side].reconReadyAt = self.time + num("intel.droneRefuelSec")
+								event({ type = "droneHome", id = d.id, side = d.side })
+							end
+						end
+					end
+					if d.alive then
+						D.samFire(d)
+					end
+				end
+				if d.alive then
+					table.insert(keep, d)
+				end
+			end
+			self.drones = keep
 		end
 	end
 
@@ -2871,7 +5193,7 @@ function Sim.new(deps: Deps)
 		if num(key .. ".dps") <= 0 then
 			return false
 		end
-		for _, b in self.list do
+		for _, b in unitsNear(n + l, s + c, r) do
 			if b ~= e and b.alive and not b.inside and b.cat == "unit" and b.kind ~= TRUCK and canAttack(e.side, b.side) and b.class ~= "air"
 				and text(unitKey(b) .. ".move") ~= "sea" then
 				local x, y = b.x - n, b.y - s
@@ -2987,6 +5309,14 @@ function Sim.new(deps: Deps)
 			repairThink(e)
 			return
 		end
+		if e.roadJob then
+			roadThink(e)
+			return
+		end
+		if e.sabotageCell then
+			sabotageThink(e)
+			return
+		end
 		if e.attackId or e.firing or (e.reconLeft or 0) > 0 then
 			return
 		end
@@ -3034,6 +5364,235 @@ function Sim.new(deps: Deps)
 		return if text(unitKey(e) .. ".weapon") == "mortar" then num("mortar.packSec") else num("artillery.packSec")
 	end
 
+	-- Transport (the game's B3 / $S / Pk / Tm / VV / IQ / EQ / OQ / Up / VQ / gbe / uG / ybe / wbe, land
+	-- only): an IFV carries transport.capacity riders (infantry, AT). Ordered to board, riders (nearest
+	-- first, as many as there is room for) walk to it and get in within boardCells; they give up if it
+	-- drives off more than chaseCells away. Riders inside are out of the world: nothing sees or hits them
+	-- and they move with the carrier. Unloading sets them down behind it, unloadCells back, spread
+	-- across. If the carrier is destroyed each rider takes bailDamage of its full hp and jumps out
+	-- round the wreck.
+	self.carried = {} :: { [number]: Entity }
+	do
+		local T: any = {}
+		function T.isCarrier(e: Entity): boolean
+			return table.find((r.data["transport.carriers"] :: { string }?) or {}, e.kind) ~= nil
+		end
+		function self.canRide(e: Entity): boolean
+			return e.alive and e.cat == "unit" and e.carrier == nil and not e.inside and not e.garrisonCity
+				and table.find((r.data["transport.riders"] :: { string }?) or {}, e.kind) ~= nil
+		end
+		function T.boarders(c: Entity): { Entity }
+			local out = {}
+			for _, u in self.list do
+				if u.alive and u.boarding == c.id then
+					table.insert(out, u)
+				end
+			end
+			return out
+		end
+		function self.roomIn(c: Entity): number
+			if not T.isCarrier(c) then
+				return 0
+			end
+			return num("transport.capacity") - #(c.cargo or {}) - #T.boarders(c)
+		end
+		function T.stopBoarding(u: Entity)
+			u.boarding, u.path, u.target, u.spot = nil, nil, nil, nil
+		end
+		-- the game's wbe: into the carrier and out of the world
+		function T.stow(u: Entity, c: Entity)
+			T.stopBoarding(u)
+			u.firing, u.attackId, u.chasing, u.coverCell = false, nil, nil, nil
+			u.carrier, u.x, u.y = c.id, c.x, c.y
+			self.carried[u.id] = u
+			local keep = table.create(#self.list)
+			for _, e in self.list do
+				if e ~= u then
+					table.insert(keep, e)
+				end
+			end
+			self.list = keep
+			c.cargo = c.cargo or {}
+			table.insert(c.cargo, u.id)
+			gridTick = -1
+		end
+		-- the game's VQ: back into the world at a free spot near (x, y), facing (fx, fy)
+		function T.setDown(u: Entity, x: number, y: number, fx: number, fy: number)
+			local px, py = self.freeSpotAt(math.clamp(x, 0.5, W - 0.5), math.clamp(y, 0.5, H - 0.5))
+			self.carried[u.id] = nil
+			u.carrier = nil
+			u.x, u.y = px, py
+			u.path, u.target, u.spot = nil, nil, nil
+			u.post = cellAt(px, py)
+			u.still, u.firing = 0, false
+			u.heading = math.atan2(fy, fx)
+			table.insert(self.list, u)
+			gridTick = -1
+		end
+		function self.orderBoard(side: number, carrierId: number, ids: { number }): (number, string?)
+			local c = self.entities[carrierId]
+			if not c or not c.alive or c.side ~= side or c.carrier then
+				return 0, "notCarrier"
+			end
+			local riders = {}
+			for _, id in ids do
+				local u = self.entities[id]
+				if u and u.side == side and u.id ~= carrierId and self.canRide(u) then
+					table.insert(riders, u)
+				end
+			end
+			if not T.isCarrier(c) then
+				return 0, "notCarrier"
+			end
+			if #riders == 0 then
+				return 0, "noRiders"
+			end
+			local room = self.roomIn(c)
+			if room <= 0 then
+				return 0, "carrierFull"
+			end
+			table.sort(riders, function(a, b)
+				local da, db = d2(a.x, a.y, c.x, c.y), d2(b.x, b.y, c.x, c.y)
+				return if da ~= db then da < db else a.id < b.id
+			end)
+			local n = 0
+			for i = 1, math.min(room, #riders) do
+				local u = riders[i]
+				u.target, u.attackId, u.path, u.chasing = nil, nil, nil, nil
+				clearRecon(u)
+				u.boarding = c.id
+				local bc = num("transport.boardCells")
+				if d2(u.x, u.y, c.x, c.y) > bc * bc then
+					walkNear(u, c.x, c.y, bc * 0.5)
+				end
+				n += 1
+			end
+			return n, nil
+		end
+		-- the game's Up: riders out behind the carrier
+		function T.unload(c: Entity): number
+			local list = {}
+			for _, id in c.cargo or {} do
+				local u = self.carried[id]
+				if u then
+					table.insert(list, u)
+				end
+			end
+			c.cargo = {}
+			local fx, fy = math.cos(c.heading or 0), math.sin(c.heading or 0)
+			local uc = num("transport.unloadCells")
+			local ax, ay = c.x - fx * uc, c.y - fy * uc
+			for i, u in list do
+				local k = (i - 1 - (#list - 1) / 2) * uc * 0.6
+				T.setDown(u, ax - fy * k, ay + fx * k, -fx, -fy)
+			end
+			return #list
+		end
+		function self.orderUnload(side: number, ids: { number }): (number, string?)
+			local any, n = false, 0
+			for _, id in ids do
+				local c = self.entities[id]
+				if c and c.alive and c.side == side and (T.isCarrier(c) or (c.cargo and #c.cargo > 0)) then
+					any = true
+					if c.cargo and #c.cargo > 0 then
+						n += T.unload(c)
+					end
+				end
+			end
+			if not any then
+				return 0, "notCarrier"
+			end
+			if n == 0 then
+				return 0, "noCargo"
+			end
+			return n, nil
+		end
+		-- the game's gbe / uG: out of a wreck, hurt
+		function self.bail(c: Entity)
+			local list = {}
+			for _, id in c.cargo or {} do
+				local u = self.carried[id]
+				if u then
+					table.insert(list, u)
+				end
+			end
+			c.cargo = {}
+			T.bailOut(list, c.x, c.y)
+		end
+		function T.bailOut(list: { Entity }, x: number, y: number)
+			local uc = num("transport.unloadCells")
+			for i, u in list do
+				u.hp -= num(unitKey(u) .. ".hp") * num("transport.bailDamage")
+				u.hitAt = self.time
+				if u.hp <= 0 then
+					self.carried[u.id] = nil
+					u.alive, u.hp = false, 0
+					self.entities[u.id] = nil
+					event({ type = "destroyed", id = u.id, kind = u.kind, side = u.side, by = -1 })
+				else
+					local a = (i - 1) / math.max(1, #list) * math.pi * 2 + 0.5
+					T.setDown(u, x + math.cos(a) * uc, y + math.sin(a) * uc, math.cos(a), math.sin(a))
+				end
+			end
+		end
+		-- the game's ybe (land part): boarders walk to their carrier and get in; riders ride along
+		function self.transportTick()
+			local bc, chase = num("transport.boardCells"), num("transport.chaseCells")
+			local ready = {}
+			for _, u in self.list do
+				if u.alive and u.boarding then
+					local c = self.entities[u.boarding]
+					if not c or not c.alive or c.side ~= u.side or not T.isCarrier(c) or #(c.cargo or {}) >= num("transport.capacity") then
+						T.stopBoarding(u)
+					else
+						local dd = d2(u.x, u.y, c.x, c.y)
+						if dd <= bc * bc then
+							table.insert(ready, { u, c })
+						elseif c.path and c.target and dd > chase * chase then
+							T.stopBoarding(u)
+						elseif not u.path or (u.id + self.ticks) % 10 == 0 then
+							local id = u.boarding
+							walkNear(u, c.x, c.y, bc * 0.5)
+							u.boarding = id
+							if not u.path and d2(u.x, u.y, c.x, c.y) > bc * bc then
+								T.stopBoarding(u)
+							end
+						end
+					end
+				end
+			end
+			for _, pr in ready do
+				local u, c = pr[1], pr[2]
+				if #(c.cargo or {}) < num("transport.capacity") then
+					T.stow(u, c)
+				else
+					T.stopBoarding(u)
+				end
+			end
+			if next(self.carried) == nil then
+				return
+			end
+			local orphans = {}
+			for _, u in self.carried do
+				local c = self.entities[u.carrier :: number]
+				if c and c.alive and c.cargo and table.find(c.cargo, u.id) then
+					u.x, u.y = c.x, c.y
+				else
+					table.insert(orphans, u)
+				end
+			end
+			for _, u in orphans do
+				if alive(u.side) then
+					T.bailOut({ u }, u.x, u.y)
+				else
+					self.carried[u.id] = nil
+					u.alive = false
+					self.entities[u.id] = nil
+				end
+			end
+		end
+	end
+
 	function self.step(dt: number)
 		if self.winner then
 			return
@@ -3066,6 +5625,9 @@ function Sim.new(deps: Deps)
 						held = true
 					else
 						e.packAt = nil
+						if not going and text(unitKey(e) .. ".weapon") == "salvo" then
+							self.scoot(e) -- the game's eUe
+						end
 					end
 				end
 				e.stillStep = if held then "held" elseif e.target and e.path then "move" else "still"
@@ -3077,6 +5639,12 @@ function Sim.new(deps: Deps)
 					if e.moved and holdAtEnemy(e, fromX, fromY) then
 						e.x, e.y, e.pathIndex, e.moved = fromX, fromY, fromIndex, false
 						e.pace = 0
+					end
+					if e.moved then
+						local c = cellAt(e.x, e.y)
+						if c >= 0 and c ~= cellAt(fromX, fromY) and roads.isRoad(c) then
+							unitWear(e.kind, c) -- the game's IWe
+						end
 					end
 					if e.path and e.pathIndex > #e.path then
 						-- arrive (idle where it stands; the game's arrive sets its post there)
@@ -3129,11 +5697,21 @@ function Sim.new(deps: Deps)
 				end
 			end
 		end
+		separate(dt)
+		self.transportTick()
 		rigs(dt)
 		settlementsTick(dt)
 		forwardTick(dt)
 		cityHealing(dt)
 		repairsTick(dt)
+		roadRepairsTick(dt)
+		sabotageTick(dt)
+		airTick(dt)
+		droneTick(dt)
+		self.flaresTick(dt)
+		self.vetHeal(dt)
+		forgetStrikes()
+		rebuildTick(dt)
 		updateRoutes()
 		trucks(dt)
 		hqTrickle(dt)
@@ -3158,10 +5736,53 @@ function Sim.new(deps: Deps)
 		end
 		return math.min(smooth(SUN_UP, SUN_UP + NIGHT_IN, phase), 1 - smooth(1 - NIGHT_OUT, 1, phase))
 	end
-	-- sight multiplier at night: nightOps.sightShare when night ops are on (the slice has no night
-	-- vision tower), else daylight.nightSightShare
-	local function sightFactor(): number
-		local share = if r:has("nightOps.enabled") and r:flag("nightOps.enabled") then num("nightOps.sightShare") else num("daylight.nightSightShare")
+	-- Night operations (the game's wb / vge / nV / kje / xje / Cje / m1e / Lje): with nightOps.enabled a
+	-- side sees nightOps.sightShare of its sight at full night, or nvSightShare while it has a finished,
+	-- switched-on Night Operations Tower; without the rules, daylight.nightSightShare. A side without a
+	-- tower also gets no nightOps.quietNotices alerts once night reaches blindFrom.
+	function self.nightOpsOn(): boolean
+		return r:has("nightOps.enabled") and r:flag("nightOps.enabled")
+	end
+	function self.nightVisionFor(side: number): boolean
+		if not self.nightOpsOn() then
+			return false
+		end
+		for _, st in self.list do
+			if st.alive and st.kind == "nightops" and st.side == side and st.built >= 1 and not st.nvOff then
+				return true
+			end
+		end
+		return false
+	end
+	function self.nightOpsRebuildIn(side: number): number
+		local sd = self.sides[side]
+		return if sd and sd.nvRebuildAt then math.max(0, sd.nvRebuildAt - self.time) else 0
+	end
+	function self.quietAtNight(kind: string, side: number): boolean
+		if not self.nightOpsOn() then
+			return false
+		end
+		local q = r.data["nightOps.quietNotices"] :: { string }?
+		if not q or not table.find(q, kind) or self.nightAmount() < num("nightOps.blindFrom") then
+			return false
+		end
+		return not self.nightVisionFor(side)
+	end
+	function self.switchNightOps(side: number, id: number, on: boolean): (boolean, string?)
+		local st = self.entities[id]
+		if not st or not st.alive or st.side ~= side then
+			return false, "notOwned"
+		end
+		if st.kind ~= "nightops" then
+			return false, "blocked"
+		end
+		st.nvOff = if on then nil else true
+		return true, nil
+	end
+	-- the game's wQ: a side's sight multiplier now
+	local function sightFactor(side: number): number
+		local share = if not self.nightOpsOn() then num("daylight.nightSightShare")
+			elseif self.nightVisionFor(side) then num("nightOps.nvSightShare") else num("nightOps.sightShare")
 		return 1 + (share - 1) * self.nightAmount()
 	end
 	self.sightFactor = sightFactor
@@ -3193,7 +5814,7 @@ function Sim.new(deps: Deps)
 				end
 			end
 		end
-		local c = sightFactor()
+		local c = sightFactor(side)
 		for _, st in self.list do
 			if st.alive and isStructure(st) and st.side == side then
 				local x, y = st.cell % W + 0.5, st.cell // W + 0.5
@@ -3241,11 +5862,38 @@ function Sim.new(deps: Deps)
 				end
 			end
 		end
+		-- the game's surveillanceOn (Owe): holding a secured capital shows all of the side's territory
+		if self.surveillanceOn(side) then
+			local owners = territory.update(baseSources())
+			for i = 1, W * H do
+				if owners[i] == side then
+					grid[i] = 2
+				end
+			end
+		end
 		-- deployed scouts see intel.scoutReconRadius (not shortened by night)
 		local rr = num("intel.scoutReconRadius")
 		for _, e in self.list do
 			if e.alive and e.side == side and (e.reconLeft or 0) > 0 then
 				circle(e.x, e.y, rr)
+			end
+		end
+		-- a recon drone shows its scan circle while circling (x night) and a small trail where it flies
+		local trail = num("intel.droneTrailRadius")
+		for _, d in self.drones do
+			if d.alive and d.side == side then
+				if d.phase == "scan" then
+					circle(d.tx, d.ty, d.radius * c)
+				end
+				if trail > 0 then
+					circle(d.x, d.y, trail)
+				end
+			end
+		end
+		-- burning flares light flare.radius round them (the game's yge in its vision pass)
+		for _, f in self.flares do
+			if f.side == side and self.time >= f.burstAt and self.time < f.untilT then
+				circle(f.x, f.y, f.r)
 			end
 		end
 		-- enemy guns that fired lately are revealed (artillery.revealCells around them)
@@ -3255,6 +5903,148 @@ function Sim.new(deps: Deps)
 				circle(e.x, e.y, rc)
 			end
 		end
+	end
+
+	-- the game's radars(): own finished buildings with a radar sweep (structures.<k>.radar), and
+	-- secured radio-trait towns (cities.traits.radio.radar). APPROX: no radar boost, no power.
+	function self.radarsOf(side: number): { { x: number, y: number, r: number } }
+		local out = {}
+		for _, st in self.list do
+			if st.alive and st.cat == "structure" and st.side == side and (st.built or 1) >= 1 then
+				local rr = numOr(`structures.{st.kind}.radar`, 0)
+				if rr > 0 then
+					local x, y = centre(st.cell)
+					table.insert(out, { x = x, y = y, r = rr })
+				end
+			end
+		end
+		for _, st in settlements do
+			if st.owner == side and st.trait == "radio" and traitActive(st) then
+				table.insert(out, { x = st.x, y = st.y, r = num("cities.traits.radio.radar") })
+			end
+		end
+		return out
+	end
+	-- the game's wwe: enemy units in a sweep grouped in chains of units within
+	-- intel.radarClusterCells of each other; a group's strength comes from its members' capture
+	-- values (air units count intel.radarAirControl): medium from radarMediumControl, heavy from
+	-- radarHeavyControl.
+	local function clusters(list: { Entity }): { { members: { Entity }, strength: string } }
+		local n = math.max(1, num("intel.radarClusterCells"))
+		local buckets: { [number]: { Entity } } = {}
+		local function key(e: Entity, dx: number, dy: number): number
+			return (math.floor(e.y / n) + dy) * 4096 + math.floor(e.x / n) + dx
+		end
+		for _, e in list do
+			local k = key(e, 0, 0)
+			buckets[k] = buckets[k] or {}
+			table.insert(buckets[k], e)
+		end
+		local done: { [Entity]: boolean } = {}
+		local out = {}
+		for _, e in list do
+			if done[e] then
+				continue
+			end
+			local air = text(`units.{e.kind}.armour`) == "air"
+			done[e] = true
+			local group = { e }
+			local control = 0
+			local i = 1
+			while i <= #group do
+				local p = group[i]
+				control += if air then num("intel.radarAirControl") else numOr(`units.{p.kind}.capture`, 0)
+				for dy = -1, 1 do
+					for dx = -1, 1 do
+						local b = buckets[key(p, dx, dy)]
+						if b then
+							for _, k in b do
+								if not done[k] and (text(`units.{k.kind}.armour`) == "air") == air and (k.x - p.x) ^ 2 + (k.y - p.y) ^ 2 <= n * n then
+									done[k] = true
+									table.insert(group, k)
+								end
+							end
+						end
+					end
+				end
+				i += 1
+			end
+			local strength = if control >= num("intel.radarHeavyControl") then "heavy"
+				elseif control >= num("intel.radarMediumControl") then "medium" else "light"
+			table.insert(out, { members = group, strength = strength })
+		end
+		return out
+	end
+	-- the game's ywe as the bot's knowledge uses it (eQe): enemy units inside its sweeps but out of
+	-- sight on `vis`, one entry per group at the group's mean position.
+	function self.contactGroups(side: number, vis: { number }?): { any }
+		local radars = self.radarsOf(side)
+		if #radars == 0 then
+			return {}
+		end
+		local foes = {}
+		for _, e in self.list do
+			if e.alive and e.cat == "unit" and e.kind ~= TRUCK and e.side ~= side and e.side > 0 and not e.inside then
+				local c = cellAt(e.x, e.y)
+				local inSight = vis == nil or (c >= 0 and vis[c + 1] == 2)
+				if not inSight then
+					for _, rd in radars do
+						if (e.x - rd.x) ^ 2 + (e.y - rd.y) ^ 2 <= rd.r * rd.r then
+							table.insert(foes, e)
+							break
+						end
+					end
+				end
+			end
+		end
+		local out = {}
+		for _, g in clusters(foes) do
+			local sx, sy = 0, 0
+			for _, m in g.members do
+				sx += m.x
+				sy += m.y
+			end
+			table.insert(out, { x = sx / #g.members, y = sy / #g.members, strength = g.strength, count = #g.members })
+		end
+		return out
+	end
+	-- the game's jJe: radar contacts for a side, one per enemy unit (and truck, always light) inside
+	-- any of its sweeps, with its group's strength; `seen` when that cell is in sight on `vis`.
+	function self.contactsFor(side: number, vis: { number }?): { any }
+		local radars = self.radarsOf(side)
+		if #radars == 0 then
+			return {}
+		end
+		local function swept(x: number, y: number): boolean
+			for _, rd in radars do
+				if (x - rd.x) ^ 2 + (y - rd.y) ^ 2 <= rd.r * rd.r then
+					return true
+				end
+			end
+			return false
+		end
+		local function seen(x: number, y: number): boolean
+			local c = cellAt(x, y)
+			return vis ~= nil and c >= 0 and vis[c + 1] == 2
+		end
+		local hz = num("match.tickHz")
+		local foes, out = {}, {}
+		for _, e in self.list do
+			if e.alive and e.cat == "unit" and e.side ~= side and e.side > 0 and swept(e.x, e.y) then
+				if e.kind == TRUCK then
+					table.insert(out, { x = e.x, y = e.y, dx = 0, dy = 0, strength = "light", count = 1, seen = seen(e.x, e.y) })
+				else
+					table.insert(foes, e)
+				end
+			end
+		end
+		for _, g in clusters(foes) do
+			for _, m in g.members do
+				table.insert(out, { x = m.x, y = m.y, dx = (m.x - (m.px or m.x)) * hz, dy = (m.y - (m.py or m.y)) * hz,
+					strength = g.strength, count = 1, seen = seen(m.x, m.y) })
+			end
+		end
+		return out
 	end
 	function self.fogOn(): boolean
 		return r:has("intel.fog") and r:flag("intel.fog")

@@ -19,7 +19,7 @@ local BuildController = {}
 
 local S = World.STUDS_PER_CELL
 local FOOT = 1 -- production.footprint.facility and .defence
-local KEYS = { [Enum.KeyCode.B] = "barracks", [Enum.KeyCode.F] = "factory", [Enum.KeyCode.K] = "bunker", [Enum.KeyCode.G] = "atgun" }
+local KEYS = { [Enum.KeyCode.B] = "barracks", [Enum.KeyCode.F] = "factory", [Enum.KeyCode.K] = "bunker", [Enum.KeyCode.G] = "atgun", [Enum.KeyCode.Y] = "radar", [Enum.KeyCode.U] = "sam", [Enum.KeyCode.Semicolon] = "artybase", [Enum.KeyCode.Quote] = "nightops" }
 local placing: string? = nil
 local lastPlaced = -1
 local ghost: Part

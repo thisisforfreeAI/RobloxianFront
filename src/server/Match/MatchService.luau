@@ -119,6 +119,108 @@ local function onIntent(player: Player, raw: any)
 		if n == 0 then
 			Net.sendState(player, { notice = why })
 		end
+	elseif i.kind == "roadRepair" then
+		-- a cut within its work reach of the point first, else the most worn road cell next to it
+		local cut = sim.cutNear(i.x, i.y, rules:number("roads.cutRadius") + rules:number("roads.repairReach"))
+		local n, why = 0, "notWorn"
+		if cut then
+			n, why = sim.orderRoadRepair(side, "cut", cut.id, i.unitIds)
+		else
+			local c = sim.wornCellNear(sim.roads.cellAt(i.x, i.y))
+			if c >= 0 then
+				n, why = sim.orderRoadRepair(side, "wear", c, i.unitIds)
+			end
+		end
+		if n == 0 then
+			Net.sendState(player, { notice = why })
+		end
+	elseif i.kind == "sabotage" then
+		-- the road cell nearest the point (within 1.5 cells; APPROX: the game takes the clicked cell)
+		local best, bd = -1, 1.5 * 1.5
+		for dy = -2, 2 do
+			for dx = -2, 2 do
+				local cx, cy = math.floor(i.x) + dx, math.floor(i.y) + dy
+				local c = sim.roads.cellAt(cx + 0.5, cy + 0.5)
+				local d = (cx + 0.5 - i.x) ^ 2 + (cy + 0.5 - i.y) ^ 2
+				if c >= 0 and sim.roads.isRoad(c) and d <= bd then
+					best, bd = c, d
+				end
+			end
+		end
+		local n, why = sim.orderSabotage(side, if best >= 0 then best else sim.roads.cellAt(i.x, i.y), i.unitIds)
+		if n == 0 then
+			Net.sendState(player, { notice = why })
+		end
+	elseif i.kind == "power" then
+		local ok, why
+		if i.power == "para" then
+			ok, why = sim.callParatroopers(side, i.x, i.y)
+		elseif i.power == "drone" then
+			ok, why = sim.launchDrone(side, i.x, i.y)
+		elseif i.power == "demo" then
+			ok, why = sim.deployDemo(side, i.x, i.y)
+		elseif i.power == "barrage" or i.power == "flare" then
+			-- the nearest own artillery base that can fire there now; else the first reason
+			local best, bd, first = nil, math.huge, "noArtyBase"
+			for _, b in sim.list do
+				if b.alive and b.kind == "artybase" and b.side == side then
+					local w = sim.artyProblem(side, b.id, i.power, i.x, i.y)
+					local d = (b.x - i.x) ^ 2 + (b.y - i.y) ^ 2
+					if not w and d < bd then
+						best, bd = b, d
+					elseif w and first == "noArtyBase" then
+						first = w
+					end
+				end
+			end
+			if best then
+				ok, why = sim.artyStrike(side, best.id, i.power, i.x, i.y)
+			else
+				ok, why = false, first
+			end
+		else
+			-- the nearest own airfield town that could fly there now; else the first reason
+			local best, bd, first = nil, math.huge, "noAirfield"
+			for _, st in sim.settlements do
+				if st.trait == "airfield" and st.owner == side then
+					local w = sim.airfieldProblem(side, st, i.x, i.y)
+					local d = (st.x - i.x) ^ 2 + (st.y - i.y) ^ 2
+					if not w and d < bd then
+						best, bd = st, d
+					elseif w and first == "noAirfield" then
+						first = w
+					end
+				end
+			end
+			if best then
+				ok, why = sim.callAirfield(side, best.id, i.x, i.y)
+			else
+				ok, why = false, first
+			end
+		end
+		if not ok then
+			Net.sendState(player, { notice = why })
+		end
+	elseif i.kind == "barrage" then
+		local n, why = sim.orderBarrage(side, i.unitIds, i.x, i.y)
+		if n == 0 then
+			Net.sendState(player, { notice = why })
+		end
+	elseif i.kind == "board" then
+		local n, why = sim.orderBoard(side, i.carrierId, i.unitIds)
+		if n == 0 then
+			Net.sendState(player, { notice = why })
+		end
+	elseif i.kind == "unload" then
+		local n, why = sim.orderUnload(side, i.unitIds)
+		if n == 0 then
+			Net.sendState(player, { notice = why })
+		end
+	elseif i.kind == "detonate" then
+		local ok, why = sim.detonate(side, i.unitIds)
+		if not ok then
+			Net.sendState(player, { notice = why })
+		end
 	elseif i.kind == "recon" then
 		local n, why = sim.deployRecon(side, i.unitIds)
 		if n == 0 then
@@ -164,13 +266,23 @@ local function structureRow(e: any, owner: number, details: boolean): { any }
 	}
 end
 
--- 0 none, 1 scout deployed (recon), 2 gun packing up, 3 gun setting up, 4 inside a settlement
+-- 0 none, 1 scout deployed (recon), 2 gun packing up, 3 gun setting up, 4 inside a settlement,
+-- 5 repairing, 6 sabotage
 local function unitStatus(e: any): number
 	if e.inside then
 		return 4
 	end
-	if e.repairId then
+	if e.repairId or e.roadJob then
 		return 5
+	end
+	if e.sabotageCell then
+		return 6
+	end
+	if e.stopped == "enemy" then
+		return 7
+	end
+	if e.stopped == "cut" then
+		return 8
 	end
 	if (e.reconLeft or 0) > 0 then
 		return 1
@@ -201,7 +313,7 @@ local function viewFor(side: number): ({ any }, { any }, { number }?)
 	for _, e in sim.list do
 		if e.cat == "unit" then
 			if not viewer or viewer.unitVisible(e) then
-				table.insert(units, { e.id, e.kind, e.side, e.x, e.y, e.heading, e.hp, e.maxHp, unitStatus(e) })
+				table.insert(units, { e.id, e.kind, e.side, e.x, e.y, e.heading, e.hp, e.maxHp, unitStatus(e), e.rank or 0, if e.cargo then #e.cargo else 0 })
 			end
 		elseif e.kind == "rig" then
 			local seen = not viewer or e.side == side or viewer.visibleAt(e.x, e.y)
@@ -246,6 +358,8 @@ end
 -- Own territory as row runs { y, x0, x1, ... } (sent only when it changes): the client tints the
 -- placement ghost with it; the server still checks every placement.
 local sentTerritory: { [Player]: string } = {}
+local sentWear: { [Player]: number } = {}
+local wearSentAt: { [Player]: number } = {}
 local function territoryRuns(side: number): { number }
 	local owners = sim.territoryOwners()
 	local w, h = map.width, map.height
@@ -270,10 +384,144 @@ end
 
 local sentCities: { [Player]: string } = {}
 local citySeen: { [number]: { [number]: number } } = {} -- per side: settlement id -> owner last seen
+
+-- On-screen alerts for match events, sent to the sides the game alerts (PLACEHOLDER wording; the
+-- game's own text is not used). Each side's alerts go out with its next private state.
+local pendingAlerts: { [number]: { string } } = {}
+local convoyNoticeAt: { [string]: number } = {}
+local function alertSide(side: number?, text: string)
+	if side and side > 0 then
+		local list = pendingAlerts[side] or {}
+		if #list < 6 then
+			table.insert(list, text)
+		end
+		pendingAlerts[side] = list
+	end
+end
+local function nameOf(kind: string?): string
+	if not kind then
+		return "?"
+	end
+	if rules:has(`units.{kind}.name`) then
+		return rules:text(`units.{kind}.name`)
+	end
+	if rules:has(`structures.{kind}.name`) then
+		return rules:text(`structures.{kind}.name`)
+	end
+	return kind
+end
+local function townOf(id: number?): string
+	local st = if id then sim.settlements[id] else nil
+	return if st and st.name ~= "" then st.name else "A town"
+end
+local function rigName(id: number?): string
+	local rig = if id then sim.entities[id] else nil
+	return if rig and rig.name then `Oil rig {rig.name}` else "An oil rig"
+end
+local function alertsFor(ev: any)
+	local t = ev.type
+	-- the game's Cje: by night a side without night vision misses these alerts
+	if ev.side and sim.quietAtNight(t, ev.side) then
+		return
+	end
+	if t == "rigUnderAttack" then
+		alertSide(ev.side, `{rigName(ev.id)} is under attack`)
+	elseif t == "rigCaptureStarted" then
+		alertSide(ev.side, `{rigName(ev.id)} is being captured`)
+	elseif t == "rigCaptured" then
+		alertSide(ev.side, `{rigName(ev.id)} captured`)
+	elseif t == "rigLost" then
+		alertSide(ev.side, `{rigName(ev.id)} lost`)
+	elseif t == "rigNoTrucks" then
+		alertSide(ev.side, `{rigName(ev.id)} has no trucks left`)
+	elseif t == "convoyLost" then
+		alertSide(ev.side, "Oil truck destroyed")
+	elseif t == "droneScanned" then
+		alertSide(ev.side, "The drone is over the area")
+	elseif t == "droneLost" and ev.shot then
+		alertSide(ev.side, "Recon drone shot down")
+	elseif t == "unitPromoted" then
+		alertSide(ev.side, `{rules:text(`units.{ev.kind}.name`)} promoted: {ev.rank}`)
+	elseif t == "nightOpsLost" then
+		alertSide(ev.side, `Night operations tower destroyed: a new one can go up in {ev.sec} s`)
+	elseif t == "barrageIntercepted" then
+		alertSide(ev.side, `SAM sites stopped {ev.n} of {ev.total} shells`)
+	elseif t == "barrageStopped" then
+		alertSide(ev.side, `Our SAM sites stopped {ev.n} enemy shells`)
+	elseif t == "droneHome" then
+		alertSide(ev.side, "The drone is back: refuelling")
+	elseif t == "paraAway" then
+		alertSide(ev.side, `Paratroopers away: down in about {ev.sec} s`)
+	elseif t == "airfieldAway" then
+		alertSide(ev.side, `Transport away from {townOf(ev.city)}: down in about {ev.sec} s`)
+	elseif t == "paraLanded" or t == "airfieldLanded" then
+		alertSide(ev.side, `{ev.n} squads are on the ground`)
+	elseif t == "airfieldReady" then
+		alertSide(ev.side, `The airfield at {townOf(ev.city)} is ready`)
+	elseif t == "capitalPowerReady" then
+		alertSide(ev.side, if ev.power == "para" then "Paratroopers ready" else "Bomb truck ready")
+	elseif t == "demoOut" then
+		alertSide(ev.side, "Bomb truck on its way")
+	elseif t == "demoBlast" then
+		alertSide(ev.side, if ev.target then `Bomb truck hit the {nameOf(ev.target)}` else "Bomb truck blew up")
+	elseif t == "convoyHeld" or t == "convoyStranded" then
+		-- the game's notice keys: one per rig, held every 45 s, stranded every 30 s at most
+		local key = `{t}{ev.side}:{ev.rig or -1}`
+		local gap = if t == "convoyHeld" then 45 else 30
+		local now = sim.time
+		if now - (convoyNoticeAt[key] or -math.huge) >= gap then
+			convoyNoticeAt[key] = now
+			local from = if ev.rig and ev.rig > 0 then ` from {rigName(ev.rig)}` else ""
+			alertSide(ev.side, if t == "convoyHeld" then `Oil trucks{from} held up by enemies ahead` else `Oil trucks{from} stranded: the road is cut`)
+		end
+	elseif t == "cityUnderAttack" then
+		alertSide(ev.side, `{townOf(ev.id)} is under attack`)
+	elseif t == "cityTaken" then
+		alertSide(ev.side, `{townOf(ev.id)} taken`)
+	elseif t == "cityLost" then
+		alertSide(ev.side, `{townOf(ev.id)} lost`)
+	elseif t == "settlementDestroyed" then
+		alertSide(ev.side, `{townOf(ev.id)} lies in ruins`)
+	elseif t == "built" then
+		alertSide(ev.side, `{nameOf(ev.kind)} ready`)
+	elseif t == "unitReady" then
+		alertSide(ev.side, `{nameOf(ev.kind)} ready`)
+	elseif t == "forwardReady" then
+		alertSide(ev.side, `{nameOf(ev.kind)} ready at {townOf(ev.city)}`)
+	elseif t == "destroyed" and ev.kind ~= "truck" and rules:has(`structures.{ev.kind}.name`) then
+		alertSide(ev.side, `{nameOf(ev.kind)} destroyed`)
+	elseif t == "repaired" then
+		alertSide(ev.side, `{nameOf(ev.kind)} repaired`)
+	elseif t == "roadCut" or t == "bridgeDown" then
+		local text = if t == "bridgeDown" then "A bridge is down" else "A road was cut"
+		alertSide(ev.side, text)
+		for _, sd in ev.users or {} do
+			if sd ~= ev.side then
+				alertSide(sd, if t == "bridgeDown" then "A bridge on your supply route is down" else "Your supply road was cut")
+			end
+		end
+	elseif t == "roadSabotaged" then
+		alertSide(ev.side, "Your supply road was sabotaged")
+	elseif t == "roadRepaired" then
+		alertSide(ev.side, "Road repaired")
+	elseif t == "roadMended" then
+		alertSide(ev.side, "Road surface mended")
+	elseif t == "sabotageArmed" then
+		alertSide(ev.side, "Charge armed: get clear")
+	elseif t == "sabotageDone" then
+		alertSide(ev.side, "Sabotage done: road cut")
+	elseif t == "sabotageFailed" then
+		alertSide(ev.side, "Sabotage failed")
+	elseif t == "hqLostRebuild" then
+		alertSide(ev.side, "HQ lost")
+	end
+end
+
 local function privateState()
 	for player, side in sideOf do
 		local s = sim.sides[side]
 		local payload: { [string]: any } = { winner = sim.winner }
+		payload.alerts = pendingAlerts[side]
 		if s then
 			local hq = sim.hqOf(side)
 			payload.oil = math.floor(s.oil)
@@ -305,6 +553,109 @@ local function privateState()
 				end
 			end
 			payload.forwards = forwards
+			-- the capital's powers and own airfield towns: state and seconds left
+			local paraState, paraLeft = sim.capitalPower(side, "para")
+			local demoState, demoLeft = sim.capitalPower(side, "demo")
+			local droneState, droneLeft = sim.droneState(side)
+			payload.powers = { para = { paraState, math.ceil(paraLeft) }, demo = { demoState, math.ceil(demoLeft) }, drone = { droneState, math.ceil(droneLeft) } }
+			-- kills to spend, and the soonest own working artillery base's barrage / flare wait (-1: no base)
+			payload.kills = sim.killsOf(side)
+			payload.nv = { if sim.nightVisionFor(side) then 1 else 0, math.ceil(sim.nightOpsRebuildIn(side)) }
+			local artyB, artyF = -1, -1
+			for _, b in sim.list do
+				if b.alive and b.kind == "artybase" and b.side == side and not sim.inactiveReason(b) then
+					local r = b.strikeReady or {}
+					local wb, wf = math.ceil(math.max(0, (r.barrage or 0) - sim.time)), math.ceil(math.max(0, (r.flare or 0) - sim.time))
+					artyB = if artyB < 0 then wb else math.min(artyB, wb)
+					artyF = if artyF < 0 then wf else math.min(artyF, wf)
+				end
+			end
+			payload.arty = { artyB, artyF }
+			local airfields = {}
+			for _, st in sim.settlements do
+				if st.trait == "airfield" and st.owner == side then
+					table.insert(airfields, { st.id, math.ceil(math.max(0, (st.airfieldReady or 0) - sim.time)), if sim.traitActive(st) then 1 else 0 })
+				end
+			end
+			payload.airfields = airfields
+			-- transport flights in the air (APPROX: every side sees every plane): the client flies
+			-- them on from these numbers and its own clock
+			local flights = {}
+			for _, d in sim.paradrops do
+				local pl = d.plane
+				local sticks = {}
+				for _, l in pl.loads do
+					table.insert(sticks, { l.x, l.y, l.outT, l.landT })
+				end
+				table.insert(flights, { id = d.id, side = d.side, fromX = pl.fromX, fromY = pl.fromY, heading = pl.heading,
+					speed = pl.speed, startT = pl.startT, goneT = pl.goneT, sticks = sticks })
+			end
+			payload.flights = flights
+			-- recon drones and SAM missiles (APPROX: every side sees them all): x, y, side, phase
+			local drones = {}
+			for _, d in sim.drones do
+				table.insert(drones, { d.x, d.y, d.side, d.phase })
+			end
+			payload.drones = drones
+			local missiles = {}
+			for _, m in sim.samMissiles do
+				table.insert(missiles, { m.x, m.y, m.heading, m.side })
+			end
+			payload.missiles = missiles
+			-- own flares (others only see what they light): x, y, burstAt, until, radius
+			local flares = {}
+			for _, f in sim.flares do
+				if f.side == side then
+					table.insert(flares, { f.x, f.y, f.burstAt, f.untilT, f.r })
+				end
+			end
+			payload.flares = flares
+			payload.time = sim.time
+			-- road cuts (APPROX: everyone sees every cut) and worn road cells, banded, when they change
+			local cuts = {}
+			for _, cut in sim.roadCuts do
+				table.insert(cuts, { cut.id, cut.x, cut.y, rules:number("roads.cutRadius"), math.floor(cut.repair * 100), if cut.bridge then 1 else 0 })
+			end
+			payload.cuts = cuts
+			-- own charges being planted or armed
+			local charges = {}
+			for _, sb in sim.sabotages do
+				if sb.side == side then
+					table.insert(charges, { sb.id, sb.x, sb.y, math.floor(sb.progress * 100), if sb.phase == "armed" then 1 else 0 })
+				end
+			end
+			payload.charges = charges
+			-- radar contacts out of sight: flat x, y, strength (1 light, 2 medium, 3 heavy)
+			local blips = {}
+			local viewer = viewers[side]
+			if not sim.fogOn() then
+				viewer = nil
+			end
+			if viewer or not sim.fogOn() then
+				for _, ct in sim.contactsFor(side, if viewer then viewer.grid else nil) do
+					if not ct.seen and sim.fogOn() then
+						table.insert(blips, math.floor(ct.x * 10 + 0.5) / 10)
+						table.insert(blips, math.floor(ct.y * 10 + 0.5) / 10)
+						table.insert(blips, if ct.strength == "heavy" then 3 elseif ct.strength == "medium" then 2 else 1)
+					end
+				end
+			end
+			payload.contacts = blips
+			-- enemy units last seen a moment ago (the game's unit intel markers)
+			payload.ghosts = if viewers[side] then viewers[side].ghosts() else {}
+			if sentWear[player] ~= sim.roads.wearEpoch and sim.time - (wearSentAt[player] or -math.huge) >= 5 then -- at most every 5 s
+				sentWear[player], wearSentAt[player] = sim.roads.wearEpoch, sim.time
+				local worn = {}
+				local from = rules:number("roads.wear.from")
+				for c = 0, sim.roads.width * sim.roads.height - 1 do
+					local v = sim.roads.wearAt(c)
+					if v >= from and sim.roads.isRoad(c) then
+						table.insert(worn, c)
+						table.insert(worn, if v >= 0.8 then 3 elseif v >= 0.55 then 2 else 1)
+					end
+				end
+				payload.worn = worn
+			end
 			local runs = territoryRuns(side)
 			local key = table.concat(runs, ",")
 			if sentTerritory[player] ~= key then
@@ -323,10 +674,11 @@ local function privateState()
 			local seen = not viewer or st.owner == side or viewer.visibleAt(st.x, st.y)
 			if seen then
 				seenOwners[st.id] = st.owner
-				table.insert(cities, { st.id, st.owner, if st.capture then st.capture.by else 0, if st.capture then math.floor(st.capture.progress * 100) / 100 else 0, math.floor(st.hold * 100) / 100, #st.garrison, rules:number(`cities.garrisonFull.{st.kind}`), st.trait or "", if sim.traitActive(st) then 1 else 0 })
+				table.insert(cities, { st.id, st.owner, if st.capture then st.capture.by else 0, if st.capture then math.floor(st.capture.progress * 100) / 100 else 0, math.floor(st.hold * 100) / 100, #st.garrison, rules:number(`cities.garrisonFull.{st.kind}`), st.trait or "", if sim.traitActive(st) then 1 else 0,
+					math.floor(st.integrity / math.max(1, st.maxIntegrity) * 100), if st.destroyed then 1 else 0 })
 			else
 				-- the trait is known from the map; garrison and whether it works are not
-				table.insert(cities, { st.id, seenOwners[st.id] or 0, 0, 0, 1, 0, 0, st.trait or "", 0 })
+				table.insert(cities, { st.id, seenOwners[st.id] or 0, 0, 0, 1, 0, 0, st.trait or "", 0, -1, 0 })
 			end
 		end
 		local ck = HttpService:JSONEncode(cities)
@@ -336,6 +688,7 @@ local function privateState()
 		end
 		Net.sendState(player, payload)
 	end
+	table.clear(pendingAlerts)
 end
 
 function MatchService.start(mapModule: string)
@@ -398,6 +751,7 @@ function MatchService.start(mapModule: string)
 	Players.PlayerRemoving:Connect(function(p)
 		sideOf[p] = nil
 		sentTerritory[p] = nil
+		sentWear[p], wearSentAt[p] = nil, nil
 		sentCities[p] = nil
 		sentVision[p] = nil
 		updateBots()
@@ -415,6 +769,7 @@ function MatchService.start(mapModule: string)
 			end
 			sim.step(step)
 			for _, ev in sim.takeEvents() do
+				alertsFor(ev)
 				if ev.type == "rigCaptured" or ev.type == "rigLost" or ev.type == "victory" or ev.type == "eliminated" or ev.type == "delivered" or ev.type == "convoyLost" then
 					print(`[Match] {ev.type} side {ev.side}{if ev.id then " id " .. ev.id else ""}{if ev.oil then " oil " .. math.floor(ev.oil) else ""}`)
 				elseif ev.type == "destroyed" and ev.kind == "hq" then

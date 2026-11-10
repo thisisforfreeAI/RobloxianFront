@@ -11,9 +11,11 @@
 	              the map until the cell is seen again without it.
 	  rigs        always on the map; an enemy or neutral rig shows the owner last seen there
 	              (unknown, shown neutral, until first seen) and no capture or oil details unless seen.
-	With intel.fog off everything is visible.
-	Not in the slice: radar contacts, drones, last-known enemy unit markers (the game's unit intel
-	ghosts), allies.
+	  unit intel  the game's unitIntel: every enemy unit seen is remembered where it was last seen;
+	              the memory goes after intel.unitIntelSec without a sighting, or sooner when the unit
+	              is dead and its last spot is seen again (ghosts()).
+	With intel.fog off everything is visible. Radar contacts come from Sim.contactsFor.
+	Not in the slice: drones, allies.
 ]]
 
 local Fog = {}
@@ -25,6 +27,8 @@ function Fog.newViewer(sim: any, side: number)
 		grid = table.create(W * H, 0) :: { number },
 		lastSeen = {} :: { [number]: { kind: string, side: number, x: number, y: number, cell: number } },
 		rigSeen = {} :: { [number]: number },
+		unitIntel = {} :: { [number]: { kind: string, side: number, x: number, y: number, t: number, seq: number } },
+		seq = 0,
 	}
 
 	function self.update()
@@ -41,6 +45,39 @@ function Fog.newViewer(sim: any, side: number)
 			local e = sim.entities[id]
 			if (not e or not e.alive) and grid[info.cell + 1] == 2 then
 				self.lastSeen[id] = nil
+			end
+		end
+		-- the game's unit intel (JJe): enemy units seen now are remembered with the time
+		local now = sim.time
+		self.seq = (self.seq or 0) + 1
+		local seq = self.seq
+		for _, e in sim.list do
+			if e.alive and e.cat == "unit" and e.side ~= side and e.side > 0 and not e.inside then
+				local c = sim.roads.cellAt(e.x, e.y)
+				if c >= 0 and grid[c + 1] == 2 then
+					local m = self.unitIntel[e.id]
+					if m then
+						m.kind, m.side, m.x, m.y, m.t, m.seq = e.kind, e.side, e.x, e.y, now, seq
+					else
+						self.unitIntel[e.id] = { kind = e.kind, side = e.side, x = e.x, y = e.y, t = now, seq = seq }
+					end
+				end
+			end
+		end
+		local keep = sim.num("intel.unitIntelSec")
+		for id, m in self.unitIntel do
+			if m.seq ~= seq then
+				if now - m.t > keep then
+					self.unitIntel[id] = nil
+				else
+					local e = sim.entities[id]
+					if not (e and e.alive) then
+						local c = sim.roads.cellAt(m.x, m.y)
+						if c >= 0 and grid[c + 1] == 2 then
+							self.unitIntel[id] = nil
+						end
+					end
+				end
 			end
 		end
 		for _, e in sim.list do
@@ -79,6 +116,20 @@ function Fog.newViewer(sim: any, side: number)
 			return rig.side
 		end
 		return self.rigSeen[rig.id] or 0
+	end
+
+	-- remembered enemy units not in sight now: { id, kind, side, x, y, age in s }
+	function self.ghosts(): { { any } }
+		local out = {}
+		if not sim.fogOn() then
+			return out
+		end
+		for id, m in self.unitIntel do
+			if m.seq ~= self.seq then
+				table.insert(out, { id, m.kind, m.side, math.floor(m.x * 10 + 0.5) / 10, math.floor(m.y * 10 + 0.5) / 10, math.floor(sim.time - m.t) })
+			end
+		end
+		return out
 	end
 
 	-- the cells seen now, as row runs { y, x0, x1, ... }

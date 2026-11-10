@@ -138,7 +138,7 @@ function UnitRenderer.start()
 	end)
 end
 
-local STATUS = { [1] = "RECON", [2] = "PACKING", [3] = "SETTING UP", [4] = "INSIDE", [5] = "REPAIR" }
+local STATUS = { [1] = "RECON", [2] = "PACKING", [3] = "SETTING UP", [4] = "INSIDE", [5] = "REPAIR", [6] = "SABOTAGE", [7] = "HELD", [8] = "CUT OFF" }
 
 -- units: { {id, kind, side, x, y, heading, hp, maxHp, status}, ... }
 function UnitRenderer.apply(tick: number, units: { any })
@@ -162,7 +162,17 @@ function UnitRenderer.apply(tick: number, units: { any })
 		v.to, v.toYaw, v.t, v.seen = target, heading, 0, tick
 		local frac = math.clamp((u[7] or 1) / math.max(1, u[8] or u[7] or 1), 0, 1)
 		v.barGui.Enabled = frac < 0.999
-		v.status.Text = STATUS[u[9] or 0] or ""
+		-- rank chevrons (veteran, elite, hero) before the status
+		local rank = string.rep("^", u[10] or 0)
+		local st = STATUS[u[9] or 0] or ""
+		local aboard = if (u[11] or 0) > 0 then `+{u[11]}` else ""
+		local bits = {}
+		for _, b in { rank, aboard, st } do
+			if b ~= "" then
+				table.insert(bits, b)
+			end
+		end
+		v.status.Text = table.concat(bits, " ")
 		v.bar.Size = UDim2.fromScale(frac, 1)
 		v.bar.BackgroundColor3 = if frac > 0.5 then Color3.fromRGB(110, 220, 90) elseif frac > 0.25 then Color3.fromRGB(240, 200, 60) else Color3.fromRGB(230, 70, 60)
 	end

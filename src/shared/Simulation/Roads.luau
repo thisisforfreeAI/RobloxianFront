@@ -14,7 +14,9 @@
 	    impassable. Impassable terrain without a road is impassable.
 	  * search: the game's A* (4-way, octile heuristic x minCost, binary heap, float32 distances), so
 	    ties resolve the same way.
-	Not modelled (not in the slice): road damage/wear, traffic jams, road signs, rail crossings,
+	  * cuts and wear (setRoad, addWear, mendWear): the game's road cuts and roadWear; the rules
+	    that drive them live in Sim.
+	Not modelled (not in the slice): traffic jams, road signs, rail crossings,
 	structures blocking cells.
 ]]
 
@@ -180,9 +182,15 @@ function Roads.build(cfg: Config)
 		end
 	end
 
-	-- 3. road networks (4-way flood fill, the game's scan order)
+	-- 3. road networks (4-way flood fill, the game's scan order); redone after a cut or repair
 	local piece = table.create(n, -1) :: { number }
 	local count = 0
+	local function computePieces()
+	table.clear(piece)
+	for c = 1, n do
+		piece[c] = -1
+	end
+	count = 0
 	for c = 0, n - 1 do
 		if buffer.readu8(road, c) == 1 and piece[c + 1] < 0 then
 			local stack = { c }
@@ -212,6 +220,9 @@ function Roads.build(cfg: Config)
 			count += 1
 		end
 	end
+	end
+	computePieces()
+	local piecesDirty = false
 
 	local self = { width = w, height = h, pieces = count }
 
@@ -239,6 +250,79 @@ function Roads.build(cfg: Config)
 	end
 	function self.groundEpoch(): number
 		return groundEpoch
+	end
+
+	-- Road cuts (the game's cutRoad / repairRoadCut): a cut cell stops being road (on a bridge deck
+	-- that makes it impassable) until it is repaired; road networks are redone lazily.
+	function self.setRoad(c: number, on: boolean)
+		if c < 0 or c >= n then
+			return
+		end
+		local v = if on then 1 else 0
+		if buffer.readu8(road, c) ~= v then
+			buffer.writeu8(road, c, v)
+			piecesDirty = true
+			groundEpoch += 1
+		end
+	end
+	-- true while the map had a road here (cut or not)
+	local original = buffer.create(n)
+	buffer.copy(original, 0, road, 0, n)
+	function self.wasRoad(c: number): boolean
+		return c >= 0 and c < n and buffer.readu8(original, c) == 1
+	end
+
+	-- Road wear (the game's roadWear, 0..255 per road cell, with fractional amounts owed).
+	local WEAR_MAX = 255
+	self.WEAR_MAX = WEAR_MAX
+	local wear = buffer.create(n)
+	local owed: { [number]: number } = {}
+	self.wearEpoch = 0
+	function self.wearAt(c: number): number -- 0..1
+		return if c >= 0 and c < n then buffer.readu8(wear, c) / WEAR_MAX else 0
+	end
+	function self.wearRaw(c: number): number
+		return if c >= 0 and c < n then buffer.readu8(wear, c) else 0
+	end
+	-- the game's uI: amount x the class's wear factor
+	function self.addWear(c: number, amount: number, classWear: number)
+		if c < 0 or c >= n or amount <= 0 or buffer.readu8(road, c) ~= 1 then
+			return
+		end
+		local a = amount * classWear * WEAR_MAX + (owed[c] or 0)
+		local whole = math.floor(a)
+		owed[c] = if a - whole > 0 then a - whole else nil
+		if whole <= 0 then
+			return
+		end
+		local was = buffer.readu8(wear, c)
+		local now = math.min(WEAR_MAX, was + whole)
+		if now ~= was then
+			buffer.writeu8(wear, c, now)
+			if (was * 8) // (WEAR_MAX + 1) ~= (now * 8) // (WEAR_MAX + 1) then
+				self.wearEpoch += 1
+			end
+		end
+	end
+	-- lower wear by an integer amount; returns true if the cell is now unworn
+	function self.mendWear(c: number, by: number): boolean
+		local was = buffer.readu8(wear, c)
+		local now = math.max(0, was - by)
+		buffer.writeu8(wear, c, now)
+		if (was * 8) // (WEAR_MAX + 1) ~= (now * 8) // (WEAR_MAX + 1) then
+			self.wearEpoch += 1
+		end
+		if now == 0 then
+			owed[c] = nil
+		end
+		return now == 0
+	end
+	function self.clearWear(c: number)
+		if buffer.readu8(wear, c) > 0 then
+			self.wearEpoch += 1
+		end
+		buffer.writeu8(wear, c, 0)
+		owed[c] = nil
 	end
 	-- 4-connected pieces of passable ground (the game's landPieces), -1 for impassable
 	local landPiece: { number }? = nil
@@ -290,6 +374,11 @@ function Roads.build(cfg: Config)
 
 	-- Road networks touching cells whose centre lies within r of (x, y).
 	function self.piecesNear(x: number, y: number, r: number): { [number]: boolean }
+		if piecesDirty then
+			piecesDirty = false
+			computePieces()
+			self.pieces = count
+		end
 		local out = {}
 		local r2 = r * r
 		for cy = math.floor(y - r), math.ceil(y + r) do

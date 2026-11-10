@@ -11,6 +11,10 @@ local UnitRenderer = require(script.Rendering.UnitRenderer)
 local StructureRenderer = require(script.Rendering.StructureRenderer)
 local FogOverlay = require(script.Rendering.FogOverlay)
 local CityOverlay = require(script.Rendering.CityOverlay)
+local RoadOverlay = require(script.Rendering.RoadOverlay)
+local ContactOverlay = require(script.Rendering.ContactOverlay)
+local GhostOverlay = require(script.Rendering.GhostOverlay)
+local AirOverlay = require(script.Rendering.AirOverlay)
 local CameraController = require(script.Camera.CameraController)
 local SelectionController = require(script.Input.SelectionController)
 local BuildController = require(script.Input.BuildController)
@@ -35,6 +39,10 @@ do
 	UnitRenderer.start()
 	StructureRenderer.start()
 	CityOverlay.start((map.data :: any).settlements or {})
+	RoadOverlay.start(map.width)
+	ContactOverlay.start()
+	GhostOverlay.start()
+	AirOverlay.start(info.side)
 	local function send(payload: any)
 		intent:FireServer(payload)
 	end
@@ -55,6 +63,30 @@ do
 		end
 		if state.cities then
 			CityOverlay.apply(state.cities)
+		end
+		if state.cuts then
+			RoadOverlay.applyCuts(state.cuts)
+		end
+		if state.ghosts then
+			GhostOverlay.apply(state.ghosts)
+		end
+		if state.contacts then
+			ContactOverlay.apply(state.contacts)
+		end
+		if state.charges then
+			RoadOverlay.applyCharges(state.charges)
+		end
+		if state.flights and state.time then
+			AirOverlay.apply(state.flights, state.time)
+		end
+		if state.drones then
+			AirOverlay.applyDrones(state.drones, state.missiles or {})
+			if state.flares and state.time then
+				AirOverlay.applyFlares(state.flares, state.time)
+			end
+		end
+		if state.worn then
+			RoadOverlay.applyWorn(state.worn)
 		end
 	end)
 	SelectionController.start(info.side, send, {

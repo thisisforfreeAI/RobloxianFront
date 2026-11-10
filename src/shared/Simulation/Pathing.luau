@@ -859,6 +859,9 @@ function Pathing.new(roads: any, num: (string) -> number, text: (string) -> stri
 		local speed = num(`units.{e.kind}.speed`)
 		local px, py = paceCell % W + 0.5, paceCell // W + 0.5
 		local u = speed * self.paceAt(e.kind, if paceCell == here then e.x else px, if paceCell == here then e.y else py)
+		if self.trafficPace then
+			u = self.trafficPace(e, paceCell, speed, u)
+		end
 		if self.isVehicle(e.kind) then
 			return drive(e, dt, u)
 		end

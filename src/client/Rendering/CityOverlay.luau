@@ -59,11 +59,13 @@ end
 -- trait names as the tag shows them (PLACEHOLDER wording)
 local TRAIT_NAME = { rail = "Rail", hospital = "Hospital", factory = "Factory", radio = "Radio", airfield = "Airfield" }
 
--- cities: { { id, owner, captureSide, captureProgress, hold, garrison, garrisonFull, trait, traitWorks }, ... }
+-- cities: { { id, owner, captureSide, captureProgress, hold, garrison, garrisonFull, trait, traitWorks,
+--             integrity %, ruined }, ... }
 function CityOverlay.apply(cities: { any })
 	for _, c in cities do
 		local id, owner, capSide, capProgress, hold, men, full = c[1], c[2], c[3], c[4], c[5], c[6], c[7]
 		local trait, works = c[8], c[9]
+		local integrity, ruined = c[10], c[11]
 		local v = views[id]
 		if v then
 			v.owner = owner
@@ -82,6 +84,15 @@ function CityOverlay.apply(cities: { any })
 			else
 				v.text.Text = ""
 			end
+			-- integrity: damaged (< 70%) / critical (< 30%) / in ruins (-1 = not seen now)
+			local band = if ruined == 1 then "In ruins"
+				elseif integrity and integrity >= 0 and integrity < 30 then `Critical {integrity}%`
+				elseif integrity and integrity >= 0 and integrity < 70 then `Damaged {integrity}%`
+				else nil
+			if band then
+				v.text.Text = if v.text.Text == "" then band else `{v.text.Text} · {band}`
+			end
+			v.ring.Material = if ruined == 1 then Enum.Material.Slate else Enum.Material.Neon
 			-- the trait, marked on when it works (held and secured)
 			local tn = trait and TRAIT_NAME[trait]
 			if tn then

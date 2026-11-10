@@ -13,8 +13,8 @@ Protocol.JOIN = "Join" -- RemoteFunction, client -> server, returns { map, side,
 Protocol.STATE = "State" -- RemoteEvent, server -> one client (2 Hz): own oil, HQ queue, match result
 
 -- Units the slice can train (the server checks which producer may train what) and buildings it can place.
-Protocol.PRODUCIBLE = { infantry = true, engineer = true, at = true, tank = true, ifv = true, mortar = true, artillery = true, scout = true }
-Protocol.BUILDABLE = { barracks = true, factory = true, bunker = true, atgun = true }
+Protocol.PRODUCIBLE = { infantry = true, engineer = true, at = true, tank = true, ifv = true, mortar = true, artillery = true, scout = true, rocket = true }
+Protocol.BUILDABLE = { barracks = true, factory = true, bunker = true, atgun = true, radar = true, sam = true, artybase = true, nightops = true }
 
 Protocol.MAX_UNITS_PER_ORDER = 64
 
@@ -27,8 +27,15 @@ export type ReconIntent = { kind: "recon", unitIds: { number } } -- deploy scout
 export type GarrisonIntent = { kind: "garrison", unitIds: { number }, x: number, y: number } -- into the held settlement at (x, y)
 export type ForwardIntent = { kind: "forward", cityId: number, item: string } -- train in a held, secured town
 export type RepairIntent = { kind: "repair", unitIds: { number }, targetId: number } -- engineers mend an own building
+export type RoadRepairIntent = { kind: "roadRepair", unitIds: { number }, x: number, y: number } -- engineers mend a road cut or worn road at a point
+export type SabotageIntent = { kind: "sabotage", unitIds: { number }, x: number, y: number } -- engineers plant a charge on a road
 export type TruckIntent = { kind: "truck", rigId: number } -- send an idle truck to a rig, or buy one
-export type Intent = MoveIntent | StopIntent | AttackIntent | ProduceIntent | TruckIntent | BuildIntent | ReconIntent | GarrisonIntent | RepairIntent | ForwardIntent
+export type PowerIntent = { kind: "power", power: string, x: number, y: number } -- paratroopers, bomb truck, an airfield drop, the recon drone, or an artillery base barrage / flares at a point
+export type BarrageIntent = { kind: "barrage", unitIds: { number }, x: number, y: number } -- rocket artillery fires on a point
+export type DetonateIntent = { kind: "detonate", unitIds: { number } } -- blow up selected bomb trucks
+export type BoardIntent = { kind: "board", unitIds: { number }, carrierId: number } -- riders get into an IFV
+export type UnloadIntent = { kind: "unload", unitIds: { number } } -- IFVs set their riders down
+export type Intent = MoveIntent | StopIntent | AttackIntent | ProduceIntent | TruckIntent | BuildIntent | ReconIntent | GarrisonIntent | RepairIntent | ForwardIntent | RoadRepairIntent | SabotageIntent | PowerIntent | DetonateIntent | BarrageIntent | BoardIntent | UnloadIntent
 
 local function finite(n: any): boolean
 	return type(n) == "number" and n == n and n ~= math.huge and n ~= -math.huge
@@ -92,6 +99,19 @@ function Protocol.parse(raw: any, mapWidth: number, mapHeight: number): (Intent?
 		end
 		return { kind = "forward", cityId = raw.cityId, item = raw.item }, nil
 	end
+	if raw.kind == "power" then
+		if raw.power ~= "para" and raw.power ~= "demo" and raw.power ~= "airfield" and raw.power ~= "drone"
+			and raw.power ~= "barrage" and raw.power ~= "flare" then
+			return nil, "unknown power"
+		end
+		if not finite(raw.x) or not finite(raw.y) then
+			return nil, "target must be numbers"
+		end
+		if raw.x < 0 or raw.y < 0 or raw.x >= mapWidth or raw.y >= mapHeight then
+			return nil, "target outside the map"
+		end
+		return { kind = "power", power = raw.power, x = raw.x, y = raw.y } :: any, nil
+	end
 	if raw.kind == "truck" then
 		if not finite(raw.rigId) or raw.rigId % 1 ~= 0 then
 			return nil, "rigId must be an integer"
@@ -114,11 +134,28 @@ function Protocol.parse(raw: any, mapWidth: number, mapHeight: number): (Intent?
 		return { kind = "stop", unitIds = ids }, nil
 	elseif raw.kind == "recon" then
 		return { kind = "recon", unitIds = ids }, nil
+	elseif raw.kind == "detonate" then
+		return { kind = "detonate", unitIds = ids } :: any, nil
+	elseif raw.kind == "unload" then
+		return { kind = "unload", unitIds = ids } :: any, nil
+	elseif raw.kind == "board" then
+		if not finite(raw.carrierId) or raw.carrierId % 1 ~= 0 then
+			return nil, "carrierId must be an integer"
+		end
+		return { kind = "board", unitIds = ids, carrierId = raw.carrierId } :: any, nil
 	elseif raw.kind == "repair" then
 		if not finite(raw.targetId) or raw.targetId % 1 ~= 0 then
 			return nil, "targetId must be an integer"
 		end
 		return { kind = "repair", unitIds = ids, targetId = raw.targetId }, nil
+	elseif raw.kind == "roadRepair" or raw.kind == "sabotage" or raw.kind == "barrage" then
+		if not finite(raw.x) or not finite(raw.y) then
+			return nil, "target must be numbers"
+		end
+		if raw.x < 0 or raw.y < 0 or raw.x >= mapWidth or raw.y >= mapHeight then
+			return nil, "target outside the map"
+		end
+		return { kind = raw.kind, unitIds = ids, x = raw.x, y = raw.y } :: any, nil
 	elseif raw.kind == "garrison" then
 		if not finite(raw.x) or not finite(raw.y) then
 			return nil, "target must be numbers"

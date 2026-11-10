@@ -3,7 +3,7 @@
 	StructureRenderer: live state of HQs and oil rigs from server snapshots, drawn over the static map.
 	  HQ: health bar; a dark slab when destroyed.
 	  Rig: ring in the owner's colour (none while neutral), capture progress bar, stored oil.
-	  Barracks / factory / bunker / AT gun: a 3 x 3 cell block in the owner's colour (pale while being
+	  Barracks / factory / bunker / AT gun / radar: a 3 x 3 cell block in the owner's colour (pale while being
 	  built; defences are low and darker), with its name, build progress or health. Removed when destroyed.
 	PLACEHOLDER visuals (TEMP-003).
 ]]
@@ -15,8 +15,8 @@ local StructureRenderer = {}
 
 export type View = { id: number, kind: string, side: number, x: number, y: number, anchor: Part, ring: Part?, block: Part?, bar: Frame, barBack: Frame, text: TextLabel, seen: number, built: number, hp: number?, maxHp: number? }
 
-local NAMES = { barracks = "Barracks", factory = "War Factory", bunker = "Bunker", atgun = "AT Gun" }
-local DEFENCE = { bunker = true, atgun = true }
+local NAMES = { barracks = "Barracks", factory = "War Factory", bunker = "Bunker", atgun = "AT Gun", radar = "Radar", sam = "SAM Site", artybase = "Artillery Base", nightops = "Night Ops Tower" }
+local DEFENCE = { bunker = true, atgun = true, radar = true, sam = true, nightops = true }
 -- footprint radius in cells (production.footprint.facility and .defence = 1, so 3 x 3)
 local FOOT = 1
 
