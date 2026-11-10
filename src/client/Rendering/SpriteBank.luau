@@ -20,6 +20,7 @@
 	back as look.fx; a kind without them is drawn without rim and shadow.
 	SpriteBank.wreck(kind): the game's <kind>_wreck look (the wreck rows: colour only, no paint, as the game
 	draws them) from <module>Wreck, with its own rim and shadow modules (<module>WreckRim, ...).
+	SpriteBank.soot(kind): the paint rows of the same module, which the game lays over a damaged vehicle.
 ]]
 local AssetService = game:GetService("AssetService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -55,7 +56,7 @@ local FIGURES = {
 }
 
 -- tall: za.shadow.tall (rest 0.3 for kinds it does not list)
-local KINDS: { [string]: { module: string, body: string, turret: string?, empty: string?, cells: number, artW: number, artH: number, tall: number, wreck: string?, wreckTurret: string?, pivot: { number }?, radarTurns: number?, states: { string }? } } = {
+local KINDS: { [string]: { module: string, body: string, turret: string?, empty: string?, cells: number, artW: number, artH: number, tall: number, wreck: string?, wreckTurret: string?, soot: string?, pivot: { number }?, radarTurns: number?, states: { string }? } } = {
 	tank = { module = "OrigTank", body = "hull", turret = "turret", cells = 1, artW = 0.492, artH = 0.283, tall = 0.32, wreck = "wreck_hull", wreckTurret = "wreck_turret" },
 	truck = { module = "OrigTruck", body = "full", empty = "empty", cells = 0.8, artW = 0.4, artH = 0.167, tall = 0.36, wreck = "wreck" },
 	scout = { module = "OrigScout", body = "body", cells = 0.62, artW = 0.317, artH = 0.2, tall = 0.36, wreck = "wreck", states = { "mast1", "mast2" } },
@@ -64,7 +65,7 @@ local KINDS: { [string]: { module: string, body: string, turret: string?, empty:
 	ifv = { module = "OrigIfv", body = "hull", turret = "turret", cells = 0.95, artW = 0.467, artH = 0.267, tall = 0.34, wreck = "wreck_hull", wreckTurret = "wreck_turret" },
 	rocket = { module = "OrigRocket", body = "body", cells = 1.3, artW = 0.633, artH = 0.2, tall = 0.26, wreck = "wreck", states = { "up1", "up2", "up3" } },
 	engineer = { module = "OrigEngineer", body = "body", cells = 0.8, artW = 0.383, artH = 0.15, tall = 0.36, wreck = "wreck" },
-	demo = { module = "OrigDemo", body = "body", cells = 1.2, artW = 0.608, artH = 0.367, tall = 0.32 }, -- the game leaves no demo wreck
+	demo = { module = "OrigDemo", body = "body", cells = 1.2, artW = 0.608, artH = 0.367, tall = 0.32, soot = "wreck" }, -- the game leaves no demo wreck, but blackens it from demo_wreck
 	-- the HQ truck: its turret (the radar mast) sits off centre (fa pivot) and turns on its own (za.radarTurns)
 	command = { module = "OrigCommand", body = "hull", turret = "turret", cells = 1, artW = 0.517, artH = 0.217, tall = 0.34, wreck = "wreck", pivot = { -0.1278, 0 }, radarTurns = 0.07, states = { "set1", "set2", "set3", "set4" } },
 }
@@ -262,6 +263,38 @@ function SpriteBank.wreck(kind: string): Look?
 	}
 	wrecks[kind] = look
 	return look
+end
+
+export type Soot = { content: Content, frame: number, columns: number, body: number, turret: number? }
+local soots: { [string]: Soot | false } = {}
+
+-- the blackening the game lays over a damaged vehicle: the paint rows of its <kind>_wreck look (cg in
+-- the bundle), body over the body and turret over the turret, untinted
+function SpriteBank.soot(kind: string): Soot?
+	local cached = soots[kind]
+	if cached ~= nil then
+		return cached or nil
+	end
+	soots[kind] = false
+	local k = KINDS[kind]
+	local base = k and (k.wreck or k.soot)
+	if not base then
+		return nil
+	end
+	local p = page(k.module .. "Wreck")
+	if not p then
+		return nil
+	end
+	local body = p.meta.strips[base .. "_paint"]
+	if body == nil then
+		return nil -- packed before the paint rows were added
+	end
+	local s: Soot = {
+		content = p.content, frame = p.meta.frame, columns = p.meta.columns, body = body,
+		turret = if k.wreckTurret then p.meta.strips[k.wreckTurret .. "_paint"] else nil,
+	}
+	soots[kind] = s
+	return s
 end
 
 local states: { [string]: Look | false } = {}

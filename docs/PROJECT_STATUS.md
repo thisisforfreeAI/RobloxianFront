@@ -682,7 +682,7 @@ Bot: bridges (2026-11-10), traced from the game's _h / v7e / kUe / nat / Yst / X
 - Stopping a unit now also ends a sabotage job.
 
 ## Next
-1. You run Studio tests B18–B88 (defences, mortar, artillery, scout) and commit.
+1. You run Studio tests B18–B89 (defences, mortar, artillery, scout) and commit.
 2. Done since: engineers' repair, vehicle steering, the bot's HQ push, shared group routes,
    separation, the 100/250/500-unit performance check (`lune run tools/perf.luau 250`) and the
    convoy rules (spacing, town/bridge/off-road pace, held and stranded trucks), airfield drops and
@@ -843,6 +843,19 @@ turreted unit has 3 more rows for the turret; men sheet: 48 px, same 3 rows a po
   the scout's mast eases up over 1.5 s while on recon (client side, as the game), mast1 / mast2 at
   0.35 / 0.95. Art: Orig<kind>_<state> modules with their own rim and shadow, from
   docs/private/sprite_spec_states.json. Not yet: the empty rocket rack after a missile (rep_ only).
+
+## Soot on damaged vehicles (2026-11-10)
+
+The game blackens a hurt vehicle: soot = clamp((0.6 - hp/maxHp) / (0.6 - 0.15), 0, 1), drawn as the
+paint rows of the kind's wreck look (untinted) over the body at that alpha, and the wreck turret's paint
+row over the turret. The Orig*Wreck modules now carry those paint rows (OrigDemoWreck is new: the game
+leaves no demo wreck but still blackens a demo truck from it). UnitRenderer adds the soot layers the first
+time a vehicle drops under 60%, so healthy units never load wreck art. Re-pack the wreck modules with
+docs/private/sprite_spec_fx.json; with the old modules vehicles simply stay clean.
+
+Crews running from wrecks: the game's crew count table is empty, so only "hands" bolt from a wreck, and
+hands are the engineer truck's two dismounted workers. Those workers are not drawn yet, so nothing bolts
+here yet; it comes with the engineer's workers.
 
 ## Open questions
 1. Rights scope: answered for the art (see Original art above). Still open: audio and voice, and

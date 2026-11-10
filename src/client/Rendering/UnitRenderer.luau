@@ -39,7 +39,7 @@ local SIDE_COLOR = { [1] = Color3.fromRGB(70, 130, 230), [2] = Color3.fromRGB(22
 local GUI_YAW = -World.TOP_GUI_YAW -- a Top-face SurfaceGui needs this turn to line up with the map
 local SPRITE_Y = -0.05 -- sprite quads sit just under the unit's anchor height
 
-export type Sprite = { quad: Part, colour: ImageLabel, paint: ImageLabel, y0c: number, y0p: number, rise: number, facing: number, turret: boolean }
+export type Sprite = { quad: Part, colour: ImageLabel, paint: ImageLabel, y0c: number, y0p: number, rise: number, facing: number, turret: boolean, soot: ImageLabel?, y0s: number, sootSheet: SpriteBank.Soot? }
 
 -- a rim, shadow or turret-shadow quad (one image, no paint)
 export type Fx = { quad: Part, gui: SurfaceGui, image: ImageLabel, kind: string, layer: string, sheet: SpriteBank.FxSheet?, y0: number, facing: number }
@@ -85,6 +85,7 @@ export type View = {
 	stageWant: number, -- the server's stage (u[17])
 	stage: number,
 	mast: number, -- the scout's mast, 0 down to 1 up, eased here as the game does
+	sooted: boolean, -- soot labels made (or tried: no art)
 }
 
 local views: { [number]: View } = {}
@@ -132,7 +133,7 @@ local function spriteQuad(parent: Instance, look: SpriteBank.Look, layer: Sprite
 	local colour = label(1)
 	local paint = label(2)
 	paint.ImageColor3 = color -- multiply, as the game's paint pass
-	return { quad = quad, colour = colour, paint = paint, y0c = layer.colour, y0p = layer.paint, rise = rise, facing = -1, turret = false }
+	return { quad = quad, colour = colour, paint = paint, y0c = layer.colour, y0p = layer.paint, rise = rise, facing = -1, turret = false, soot = nil, y0s = 0, sootSheet = nil }
 end
 
 -- the game's za and its noon sun
@@ -365,7 +366,7 @@ local function create(id: number, kind: string, side: number): View
 		look = look, sprites = sprites, facing = -1,
 		squad = nil, men = men, hpFrac = 1, flags = 0, aimX = 0, aimY = 0, inTrench = false, statusCode = 0, sinceShot = 9, tube = tube, empty = false,
 		turretWant = 0, turretAt = nil, fx = fx, halo = halo, selected = false,
-		base = look, stageWant = 0, stage = 0, mast = 0,
+		base = look, stageWant = 0, stage = 0, mast = 0, sooted = false,
 	}
 end
 
@@ -510,6 +511,42 @@ local function updateStage(v: View, dt: number)
 	end
 end
 
+-- Soot, as the game's vehicle dress: s.soot = clamp((soot.from - hp/maxHp) / (soot.from - soot.full), 0, 1),
+-- drawn as the paint rows of the kind's wreck look over the body (and turret) at that alpha
+local SOOT = { from = 0.6, full = 0.15 } -- the game's vehicle soot settings
+
+local function sootOf(v: View): number
+	return math.clamp((SOOT.from - v.hpFrac) / (SOOT.from - SOOT.full), 0, 1)
+end
+
+-- made the first time the vehicle is hurt enough, so healthy units never load wreck art
+local function addSoot(v: View)
+	v.sooted = true
+	local sheet = SpriteBank.soot(v.kind)
+	if not sheet then
+		return
+	end
+	for _, sp in v.sprites do
+		local y0 = if sp.turret then sheet.turret else sheet.body
+		local gui = sp.quad:FindFirstChildOfClass("SurfaceGui")
+		if y0 == nil or not gui then
+			continue
+		end
+		local l = Instance.new("ImageLabel")
+		l.Name = "Soot"
+		l.BackgroundTransparency = 1
+		l.Size = UDim2.fromScale(1, 1)
+		l.ImageContent = sheet.content
+		l.ImageRectSize = Vector2.new(sheet.frame, sheet.frame)
+		l.ResampleMode = Enum.ResamplerMode.Pixelated
+		l.ZIndex = 3
+		l.Parent = gui
+		sp.soot, sp.y0s, sp.sootSheet = l, y0, sheet
+		sp.facing = -1
+	end
+	v.facing = -1
+end
+
 local TURRET_FOLLOW = 20 -- the game's za.turretFollowPerSec: the drawn turret eases after the sim's
 
 local function place(v: View, pos: Vector3, yaw: number, dt: number)
@@ -537,13 +574,25 @@ local function place(v: View, pos: Vector3, yaw: number, dt: number)
 		local hullH = yaw % (2 * math.pi)
 		local turretH = (tAt :: number) % (2 * math.pi)
 		local tpos = turretAt(look, pos, yaw)
+		local soot = sootOf(v)
+		if soot > 0 and not v.sooted then
+			addSoot(v)
+		end
 		for _, sp in v.sprites do
 			local h = if sp.turret then turretH else hullH
 			local d = Facing.index(h, 16)
+			local sl = sp.soot
 			if d ~= sp.facing or v.facing == -1 then
 				sp.facing = d
 				sp.colour.ImageRectOffset = SpriteBank.offset(look, sp.y0c, d)
 				sp.paint.ImageRectOffset = SpriteBank.offset(look, sp.y0p, d)
+				if sl then
+					sl.ImageRectOffset = SpriteBank.offset(sp.sootSheet :: SpriteBank.Soot, sp.y0s, d)
+				end
+			end
+			if sl then
+				sl.Visible = soot > 0
+				sl.ImageTransparency = 1 - soot
 			end
 			local residual = Facing.residual(h, d, 16)
 			sp.quad.CFrame = CFrame.new((if sp.turret then tpos else pos) + Vector3.new(0, SPRITE_Y + sp.rise, 0)) * CFrame.Angles(0, -(residual + GUI_YAW), 0)
