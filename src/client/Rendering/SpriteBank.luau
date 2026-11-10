@@ -55,18 +55,18 @@ local FIGURES = {
 }
 
 -- tall: za.shadow.tall (rest 0.3 for kinds it does not list)
-local KINDS: { [string]: { module: string, body: string, turret: string?, empty: string?, cells: number, artW: number, artH: number, tall: number, wreck: string?, wreckTurret: string?, pivot: { number }?, radarTurns: number? } } = {
+local KINDS: { [string]: { module: string, body: string, turret: string?, empty: string?, cells: number, artW: number, artH: number, tall: number, wreck: string?, wreckTurret: string?, pivot: { number }?, radarTurns: number?, states: { string }? } } = {
 	tank = { module = "OrigTank", body = "hull", turret = "turret", cells = 1, artW = 0.492, artH = 0.283, tall = 0.32, wreck = "wreck_hull", wreckTurret = "wreck_turret" },
 	truck = { module = "OrigTruck", body = "full", empty = "empty", cells = 0.8, artW = 0.4, artH = 0.167, tall = 0.36, wreck = "wreck" },
-	scout = { module = "OrigScout", body = "body", cells = 0.62, artW = 0.317, artH = 0.2, tall = 0.36, wreck = "wreck" },
-	artillery = { module = "OrigArtillery", body = "body", cells = 1.4, artW = 0.683, artH = 0.267, tall = 0.24, wreck = "wreck" },
+	scout = { module = "OrigScout", body = "body", cells = 0.62, artW = 0.317, artH = 0.2, tall = 0.36, wreck = "wreck", states = { "mast1", "mast2" } },
+	artillery = { module = "OrigArtillery", body = "body", cells = 1.4, artW = 0.683, artH = 0.267, tall = 0.24, wreck = "wreck", states = { "set1", "set2" } },
 	infantry = { module = "OrigInfantry", body = "body", cells = 0.78, artW = 0.5, artH = 0.5, tall = 0.5 },
 	ifv = { module = "OrigIfv", body = "hull", turret = "turret", cells = 0.95, artW = 0.467, artH = 0.267, tall = 0.34, wreck = "wreck_hull", wreckTurret = "wreck_turret" },
-	rocket = { module = "OrigRocket", body = "body", cells = 1.3, artW = 0.633, artH = 0.2, tall = 0.26, wreck = "wreck" },
+	rocket = { module = "OrigRocket", body = "body", cells = 1.3, artW = 0.633, artH = 0.2, tall = 0.26, wreck = "wreck", states = { "up1", "up2", "up3" } },
 	engineer = { module = "OrigEngineer", body = "body", cells = 0.8, artW = 0.383, artH = 0.15, tall = 0.36, wreck = "wreck" },
 	demo = { module = "OrigDemo", body = "body", cells = 1.2, artW = 0.608, artH = 0.367, tall = 0.32 }, -- the game leaves no demo wreck
 	-- the HQ truck: its turret (the radar mast) sits off centre (fa pivot) and turns on its own (za.radarTurns)
-	command = { module = "OrigCommand", body = "hull", turret = "turret", cells = 1, artW = 0.517, artH = 0.217, tall = 0.34, wreck = "wreck", pivot = { -0.1278, 0 }, radarTurns = 0.07 },
+	command = { module = "OrigCommand", body = "hull", turret = "turret", cells = 1, artW = 0.517, artH = 0.217, tall = 0.34, wreck = "wreck", pivot = { -0.1278, 0 }, radarTurns = 0.07, states = { "set1", "set2", "set3", "set4" } },
 }
 
 local pages: { [string]: any } = {} -- module name -> { content, meta } or false when unavailable
@@ -261,6 +261,54 @@ function SpriteBank.wreck(kind: string): Look?
 		fx = if rim then { rim = rim, rimHalf = sheet("RimHalf"), shade = sheet("Shade") } else nil,
 	}
 	wrecks[kind] = look
+	return look
+end
+
+local states: { [string]: Look | false } = {}
+
+-- the game's other looks of a kind (artillery_set1, rocket_up2, scout_mast1, command_3: its fa rows,
+-- "like" the base kind): state n of the kind's list, from <module>_<state> and its own rim and shadow
+-- modules. No turret (none of these looks has one). nil when the art is missing: keep the base look.
+function SpriteBank.state(kind: string, n: number): Look?
+	local k = KINDS[kind]
+	local name = k and k.states and k.states[n]
+	if not name then
+		return nil
+	end
+	local id = kind .. "_" .. name
+	local cached = states[id]
+	if cached ~= nil then
+		return cached or nil
+	end
+	states[id] = false
+	local mod = k.module .. "_" .. name
+	local p = page(mod)
+	if not p then
+		return nil
+	end
+	local c, q = p.meta.strips[name .. "_colour"], p.meta.strips[name .. "_paint"]
+	if c == nil or q == nil then
+		return nil
+	end
+	local function sheet(suffix: string): FxSheet?
+		local f = page(mod .. suffix)
+		if not f then
+			return nil
+		end
+		return { content = f.content, frame = f.meta.frame, columns = f.meta.columns, strips = f.meta.strips }
+	end
+	local rim = sheet("Rim")
+	local look: Look = {
+		frame = p.meta.frame,
+		columns = p.meta.columns,
+		cells = k.cells * UNIT_SCALE / k.artW,
+		body = { content = p.content, colour = c, paint = q, base = name },
+		size = k.cells * UNIT_SCALE,
+		artH = k.artH / k.artW,
+		tall = k.tall,
+		fx = if rim then { rim = rim, rimHalf = sheet("RimHalf"), shade = sheet("Shade") } else nil,
+	}
+	states[id] = look
 	return look
 end
 

@@ -81,6 +81,10 @@ export type View = {
 	fx: { Fx },
 	halo: Part?,
 	selected: boolean,
+	base: SpriteBank.Look?, -- the kind's plain look; look is the one shown (a deploy stage)
+	stageWant: number, -- the server's stage (u[17])
+	stage: number,
+	mast: number, -- the scout's mast, 0 down to 1 up, eased here as the game does
 }
 
 local views: { [number]: View } = {}
@@ -361,6 +365,7 @@ local function create(id: number, kind: string, side: number): View
 		look = look, sprites = sprites, facing = -1,
 		squad = nil, men = men, hpFrac = 1, flags = 0, aimX = 0, aimY = 0, inTrench = false, statusCode = 0, sinceShot = 9, tube = tube, empty = false,
 		turretWant = 0, turretAt = nil, fx = fx, halo = halo, selected = false,
+		base = look, stageWant = 0, stage = 0, mast = 0,
 	}
 end
 
@@ -403,6 +408,10 @@ local function placeFx(v: View, look: SpriteBank.Look, pos: Vector3, hull: numbe
 	local tpos = turretAt(look, pos, hull)
 	for _, f in v.fx do
 		local at = if f.layer == "turret" then tpos else pos
+		if f.layer == "turret" and not look.turret then
+			f.image.Visible = false -- a look without a turret (the HQ truck setting up)
+			continue
+		end
 		local h = (if f.layer == "turret" then turret else hull) % (2 * math.pi)
 		local d = Facing.index(h, 16)
 		local residual = Facing.residual(h, d, 16)
@@ -416,6 +425,7 @@ local function placeFx(v: View, look: SpriteBank.Look, pos: Vector3, hull: numbe
 			f.image.Visible = false
 			continue
 		end
+		f.image.Visible = true
 		if sheet ~= f.sheet then
 			f.sheet = sheet
 			f.image.ImageContent = sheet.content
@@ -447,6 +457,59 @@ local function placeFx(v: View, look: SpriteBank.Look, pos: Vector3, hull: numbe
 	end
 end
 
+local MAST = { sec = 1.5, stages = { 0.35, 0.95 } } -- Ai.mast.sec, Ai.stages.mast
+
+-- show another look of the kind (a deploy stage) or the plain one again
+local function setLook(v: View, look: SpriteBank.Look)
+	v.look = look
+	local body = v.sprites[1]
+	if body then
+		body.colour.ImageContent = look.body.content
+		body.paint.ImageContent = look.body.content
+		body.y0c, body.y0p = look.body.colour, look.body.paint
+		body.facing = -1
+	end
+	for _, sp in v.sprites do
+		if sp.turret then
+			local gui = sp.quad:FindFirstChildOfClass("SurfaceGui")
+			if gui then
+				gui.Enabled = look.turret ~= nil
+			end
+		end
+	end
+	v.facing = -1
+end
+
+local function stageOf(t: number, list: { number }): number
+	local o = 0
+	while o < #list and t >= list[o + 1] do
+		o += 1
+	end
+	return o
+end
+
+-- which look to show this frame: the server's stage, or for the scout its eased mast
+local function updateStage(v: View, dt: number)
+	local base = v.base
+	if not base then
+		return
+	end
+	local stage = v.stageWant
+	if v.kind == "scout" then
+		local want = if v.statusCode == 1 then 1 else 0
+		v.mast += math.clamp(want - v.mast, -dt / MAST.sec, dt / MAST.sec)
+		stage = stageOf(v.mast, MAST.stages)
+	end
+	if stage == v.stage then
+		return
+	end
+	v.stage = stage
+	local look = if stage > 0 then SpriteBank.state(v.kind, stage) or base else base
+	if look ~= v.look then
+		setLook(v, look)
+	end
+end
+
 local TURRET_FOLLOW = 20 -- the game's za.turretFollowPerSec: the drawn turret eases after the sim's
 
 local function place(v: View, pos: Vector3, yaw: number, dt: number)
@@ -456,6 +519,7 @@ local function place(v: View, pos: Vector3, yaw: number, dt: number)
 	local nose = v.model:FindFirstChild("Nose") :: Part
 	nose.CFrame = cf * CFrame.new(v.body.Size.X / 2, 0.05, 0)
 	v.ring.CFrame = CFrame.new(pos - Vector3.new(0, 0.25, 0)) * CFrame.Angles(0, 0, math.rad(90))
+	updateStage(v, dt)
 	local look = v.look
 	if look then
 		-- hull layers face the hull; the turret layer faces the turret (the sim turns it, the drawing eases after it)
@@ -844,6 +908,7 @@ function UnitRenderer.apply(tick: number, units: { any }, deaths: { any }?)
 		v.hpFrac, v.flags, v.aimX, v.aimY, v.inTrench = frac, u[12] or 0, u[13] or 0, u[14] or 0, u[9] == 13
 		v.statusCode, v.sinceShot = u[9] or 0, u[15] or 9
 		v.turretWant = u[16] or heading
+		v.stageWant = u[17] or 0
 		-- an oil truck driving out or carrying nothing shows its empty look (the game's truck_empty)
 		local empty = bit32.btest(v.flags, 8)
 		if empty ~= v.empty and v.look and v.look.empty and v.sprites[1] then

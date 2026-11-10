@@ -446,6 +446,62 @@ end
 
 -- 0 none, 1 scout deployed (recon), 2 gun packing up, 3 gun setting up, 4 inside a settlement,
 -- 5 repairing, 6 sabotage
+-- which of the game's looks a unit shows (its lgt): 0 the plain one; artillery set1 / set2 and rocket
+-- launchers up1 to up3 by how far they are raised (its tI and Ai.stages), the HQ truck's command_1 to
+-- _4 as it deploys. The scout's mast eases on the client from its RECON status.
+local STAGES = { artillery = { 0.4, 0.999 }, rocket = { 0.25, 0.6, 0.95 } }
+local function stageOf(t: number, list: { number }): number -- the game's vz
+	local o = 0
+	while o < #list and t >= list[o + 1] do
+		o += 1
+	end
+	return o
+end
+local function raisedOf(e: any): number? -- the game's tI, raised share only
+	local key = sim.unitKey(e)
+	if sim.rules:text(key .. ".nato") ~= "artillery" then
+		return nil
+	end
+	local moving = e.path ~= nil
+	local still = e.still or 0
+	if sim.rules:text(key .. ".weapon") == "salvo" then
+		if e.packAt and e.packAt >= 0 and sim.time < e.packAt then
+			local lower = sim.rules:number("artillery.lowerSec")
+			if e.packAt - sim.time > lower then
+				return 1
+			end
+			return (e.packAt - sim.time) / math.max(1e-6, lower)
+		end
+		local b = e.barrage
+		if b and not moving then
+			local d = math.sqrt((b.x - e.x) ^ 2 + (b.y - e.y) ^ 2)
+			if d <= sim.rules:number(key .. ".range") and d >= sim.minRangeOf(key) then
+				return math.min(1, still / math.max(1e-6, sim.rules:number("artillery.raiseSec")))
+			end
+		end
+		return 0
+	end
+	local mortar = sim.rules:text(key .. ".weapon") == "mortar"
+	if e.packAt and e.packAt >= 0 and sim.time < e.packAt then
+		local pack = sim.rules:number(if mortar then "mortar.packSec" else "artillery.packSec")
+		return (e.packAt - sim.time) / math.max(1e-6, pack)
+	end
+	if moving then
+		return 0
+	end
+	return math.min(1, still / math.max(1e-6, sim.rules:number(if mortar then "mortar.setupSec" else "artillery.setupSec")))
+end
+local function unitStage(e: any): number
+	if e.kind == "artillery" or e.kind == "rocket" then
+		local r = raisedOf(e)
+		return if r then stageOf(r, STAGES[e.kind]) else 0
+	elseif e.kind == "command" and e.deployAt then
+		local p = 1 - (e.deployAt - sim.time) / math.max(0.01, sim.rules:number("mobileHq.deploySec"))
+		return math.min(4, math.floor(math.clamp(p, 0, 1) * 5))
+	end
+	return 0
+end
+
 local function unitStatus(e: any): number
 	if e.inside then
 		return 4
@@ -526,7 +582,7 @@ local function viewFor(side: number): ({ any }, { any }, { number }?)
 		if e.cat == "unit" then
 			if not viewer or viewer.unitVisible(e) then
 				local flags, aimX, aimY, since = unitLook(e)
-				table.insert(units, { e.id, e.kind, e.side, e.x, e.y, e.heading, e.hp, e.maxHp, unitStatus(e), e.rank or 0, if e.cargo then #e.cargo else 0, flags, aimX, aimY, since, e.turret or e.heading })
+				table.insert(units, { e.id, e.kind, e.side, e.x, e.y, e.heading, e.hp, e.maxHp, unitStatus(e), e.rank or 0, if e.cargo then #e.cargo else 0, flags, aimX, aimY, since, e.turret or e.heading, unitStage(e) })
 			end
 		elseif e.kind == "rig" then
 			local seen = not viewer or e.side == side or viewer.visibleAt(e.x, e.y)

@@ -682,7 +682,7 @@ Bot: bridges (2026-11-10), traced from the game's _h / v7e / kUe / nat / Yst / X
 - Stopping a unit now also ends a sabotage job.
 
 ## Next
-1. You run Studio tests B18–B87 (defences, mortar, artillery, scout) and commit.
+1. You run Studio tests B18–B88 (defences, mortar, artillery, scout) and commit.
 2. Done since: engineers' repair, vehicle steering, the bot's HQ push, shared group routes,
    separation, the 100/250/500-unit performance check (`lune run tools/perf.luau 250`) and the
    convoy rules (spacing, town/bridge/off-road pace, held and stranded trucks), airfield drops and
@@ -836,8 +836,13 @@ turreted unit has 3 more rows for the turret; men sheet: 48 px, same 3 rows a po
 - SpriteBank draws them (cells, art and shadow reach from the game's tables). The HQ truck's mast turns
   about its pivot (-0.1278 frames along the hull) at 0.07 turns a second while it stands (za.radarTurns).
 - Vehicle looks now load when the first unit of a kind appears, to keep within the image budget.
-- Not yet: the HQ truck's setting-up frames, the rocket launcher's raised frames, the artillery's
-  set-up frames, the scout's mast.
+- Deploy looks (the game's lgt, tI and Ai.stages, traced): the unit row carries a stage (index 17).
+  Artillery shows set1 / set2 once raised 0.4 / 0.999 (setting up over setupSec, folding over
+  packSec); rocket launchers up1 to up3 at 0.25 / 0.6 / 0.95 (raising over raiseSec on a barrage in
+  range, lowering over lowerSec after it); the HQ truck command_1 to _4 by its deploy progress x 5;
+  the scout's mast eases up over 1.5 s while on recon (client side, as the game), mast1 / mast2 at
+  0.35 / 0.95. Art: Orig<kind>_<state> modules with their own rim and shadow, from
+  docs/private/sprite_spec_states.json. Not yet: the empty rocket rack after a missile (rep_ only).
 
 ## Open questions
 1. Rights scope: answered for the art (see Original art above). Still open: audio and voice, and
