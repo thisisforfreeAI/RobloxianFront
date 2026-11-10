@@ -3,7 +3,9 @@
 Roles: **ChatGPT** draws the artwork from a request. **Deterministic tools** (`tools/asset_pipeline/`)
 package it. **Claude** validates and integrates it. The developer carries files between the two chats.
 
-Open: REQ-0001 (scout car, pilot). Vehicles are requested as ONE east-facing top-down image; `rotate_frames.py`
+Approved: REQ-0001 (scout car, pilot). Requested 2026-11-10: REQ-0002 infantry squad, REQ-0003 oil
+truck, REQ-0004 tank (hull + turret as two layers), REQ-0005 artillery, then buildings REQ-0006 HQ,
+REQ-0007 refinery, REQ-0008 town buildings (set of 6). Each file ends with the text to paste into ChatGPT. Vehicles are requested as ONE east-facing top-down image; `rotate_frames.py`
 makes the 16 directions, the same way the original game turns mod art.
 
 ## Folders
