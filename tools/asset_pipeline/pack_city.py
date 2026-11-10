@@ -11,8 +11,9 @@ This writes, git-ignored (it embeds the art):
   src/client/DevAssets/City_<id>.luau            layout: cell px, chunk cells, the chunk list, trees
   src/client/DevAssets/City_<id>_<cx>_<cy>.luau  one chunk of the map as RGBA, raw DEFLATE, base64
 Chunks are chunkCells x chunkCells cells (64 x 14 px = 896 px, under the 1024 px EditableImage limit);
-chunks with nothing drawn are skipped. Town pixels are copied unchanged except alpha: any surface code
-> 0 becomes 255 (opaque). Roof shading from aux is not applied yet.
+chunks with nothing drawn are skipped. Town pixels keep their colour, made opaque, and get the ground
+shader's close-up town light baked in (see shade(): sky occlusion and roof shadows from the aux part,
+for one fixed sun, noon by default; --no-shade skips it).
 
 Trees (optional, --trees/--sheet/--map): every tree from tools/conversion/export_trees.cjs (the game's
 own placement) is drawn on top, from trees-top.png, as the game's forest layer does: a tree's sprite
@@ -108,6 +109,63 @@ class Trees:
         return self.cache[key]
 
 
+# the ground shader's town lighting (traced): us.city, Bv (TOWN_SHADOW), the sun (Hb), th, or
+CITY = {"shadow": 0.58, "shadowPx": 2.8, "shadowMaxPx": 4.6}
+TOWN = {"soft": 0.6, "widen": 0.06, "sky": 0.3}
+SUN = {"up": 0.62, "north": 0.75, "floor": 0.35}
+
+
+def sun_shadow(phase):
+    """The game's shadow vector for a time of day (0..1), as uCityShadow: tile px a roof level."""
+    o = phase % 1
+    i = o / SUN["up"] if o < SUN["up"] else (o - SUN["up"]) / (1 - SUN["up"])
+    l, c = np.sin(np.pi * i), np.cos(np.pi * i)
+    h = np.hypot(c, SUN["north"])
+    u = (c / h, -0.75 / h)
+    d = 1 / (SUN["floor"] + l)
+    f = (-u[0] * d, -u[1] * d)
+    n = np.hypot(*f) or 1
+    k = min(CITY["shadowMaxPx"], n * CITY["shadowPx"])
+    return f[0] / n * k, f[1] / n * k
+
+
+def shade(img, aux, intile, phase):
+    """Bake the shader's close-up town light into the town image: each tile pixel darkened by what the
+    buildings round it shut out of the sky (1 - aux.g x 0.3), and every pixel shaded by the roofs toward
+    the sun that stand high enough to reach it (the 'towns at real size' walk: a roof of height `high`
+    shades a pixel of height `stands` d px away by smoothstep(-soft, soft, (high - stands) x perLevel - d),
+    soft = 0.6 + 0.06 d), at strength 0.58. Ground pixels (transparent) get the darkness as black with alpha.
+    The sun stands where the game puts it at `phase`; the game turns it through the day, this bake does not."""
+    Hh, Ww = img.shape[:2]
+    code = img[:, :, 3].astype(np.int32)
+    roof = code >= 224
+    stands = np.where(roof, aux[:, :, 0].astype(np.float32) * 31.875 / 255, 0).astype(np.float32)
+    high = np.where(roof, stands, -1e9).astype(np.float32)
+    sx, sy = sun_shadow(phase)
+    per = float(np.hypot(sx, sy))
+    dx, dy = -sx / per, -sy / per
+    top = float(stands.max())
+    farthest = int(np.ceil((top * per + TOWN["soft"]) / (1 - TOWN["widen"])))
+    sh = np.zeros((Hh, Ww), np.float32)
+    for d in range(1, farthest + 1):
+        ox, oy = int(np.floor(0.5 + dx * d)), int(np.floor(0.5 + dy * d))
+        src = np.full((Hh, Ww), -1e9, np.float32)
+        ys, yd = (slice(oy, Hh), slice(0, Hh - oy)) if oy >= 0 else (slice(0, Hh + oy), slice(-oy, Hh))
+        xs, xd = (slice(ox, Ww), slice(0, Ww - ox)) if ox >= 0 else (slice(0, Ww + ox), slice(-ox, Ww))
+        src[yd, xd] = high[ys, xs]
+        soft = TOWN["soft"] + TOWN["widen"] * d
+        x = ((src - stands) * per - d + soft) / (2 * soft)
+        x = np.clip(x, 0, 1)
+        np.maximum(sh, x * x * (3 - 2 * x), out=sh)
+    keep = (1 - CITY["shadow"] * sh) * np.where(intile, 1 - aux[:, :, 1].astype(np.float32) / 255 * TOWN["sky"], 1)
+    out = np.zeros_like(img)
+    opaque = code > 0
+    for ch in range(3):
+        out[:, :, ch] = np.where(opaque, np.round(img[:, :, ch] * keep), 0).astype(np.uint8)
+    out[:, :, 3] = np.where(opaque, 255, np.round((1 - keep) * 255)).astype(np.uint8)
+    return out
+
+
 def over(canvas, img, x, y):
     """alpha_composite img onto canvas at (x, y), clipped to the canvas (PIL wants a non-negative spot)."""
     sx, sy = max(0, -x), max(0, -y)
@@ -122,6 +180,8 @@ def main():
     ap.add_argument("city")
     ap.add_argument("--chunk", type=int, default=64)
     ap.add_argument("--dump-town-trees")
+    ap.add_argument("--no-shade", action="store_true")
+    ap.add_argument("--phase", type=float, default=0.31, help="time of day for the baked shadows: 0.31 is noon (the game's match starts at 0.08, a low morning sun)")
     ap.add_argument("--trees")
     ap.add_argument("--sheet")
     ap.add_argument("--map")
@@ -136,14 +196,23 @@ def main():
     atlas = np.frombuffer(parts["atlas"], np.uint8).reshape(head["atlasH"], head["atlasW"], 4)
     idx = np.frombuffer(parts["index"], np.uint8).reshape(H, W, 4).astype(np.int64)
     tile = idx[:, :, 0] + (idx[:, :, 1] << 8) + (idx[:, :, 2] << 16)
+    auxAtlas = np.frombuffer(parts["aux"], np.uint8).reshape(head["atlasH"], head["atlasW"], 4) if "aux" in parts else None
     img = np.zeros((H * T, W * T, 4), np.uint8)
+    aux = np.zeros((H * T, W * T, 4), np.uint8)
+    intile = np.zeros((H * T, W * T), bool)
     for y, x in zip(*np.nonzero(tile)):
         t = tile[y, x] - 1
         ax, ay = (t % per) * T, (t // per) * T
         img[y * T:(y + 1) * T, x * T:(x + 1) * T] = atlas[ay:ay + T, ax:ax + T]
-    opaque = img[:, :, 3] > 0
-    img[:, :, 3] = np.where(opaque, 255, 0)
-    img[~opaque] = 0
+        if auxAtlas is not None:
+            aux[y * T:(y + 1) * T, x * T:(x + 1) * T] = auxAtlas[ay:ay + T, ax:ax + T]
+        intile[y * T:(y + 1) * T, x * T:(x + 1) * T] = True
+    if auxAtlas is not None and not a.no_shade:
+        img = shade(img, aux, intile, a.phase)
+    else:
+        opaque = img[:, :, 3] > 0
+        img[:, :, 3] = np.where(opaque, 255, 0)
+        img[~opaque] = 0
 
     os.makedirs(OUT, exist_ok=True)
     name = "City_" + mid

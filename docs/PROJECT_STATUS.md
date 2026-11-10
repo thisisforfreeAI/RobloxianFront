@@ -756,7 +756,14 @@ turreted unit has 3 more rows for the turret; men sheet: 48 px, same 3 rows a po
   `tools/asset_pipeline/pack_ground.py` stores it as Ground_<id>.luau (Saddle: 1152 x 720 px, 100 KB).
   MapRenderer draws it instead of the placeholder colours. Not reproduced: the shader's per-pixel work
   on top (forest floor darkening, animated water and foam, day/night light, fog, territory wash).
-- Next: roof shading from the height data, and the shader's forest-floor and water looks.
+- Town light: pack_city.py now bakes the ground shader's close-up town lighting (its "towns at real
+  size" pass, traced): each town pixel darkened by what the buildings round it shut out of the sky
+  (aux green x 0.3), and roof shadows: every roof toward the sun shades a pixel by
+  smoothstep(-soft, soft, (roof height - pixel height) x px a level - distance), soft 0.6 + 0.06 x
+  distance, strength 0.58; heights from aux red (/8 = storeys); px a level from the sun as the game
+  works it out (us.city shadowPx 2.8, at most 4.6). APPROX: one fixed sun, noon (shadows due south);
+  the game turns the sun through a 480 s day starting at a low morning sun, and darkens at night.
+- Next: the shader's forest-floor darkening and the water (shallows, foam, rivers).
 
 ## Open questions
 1. Rights scope: answered for the art (see Original art above). Still open: audio and voice, and
