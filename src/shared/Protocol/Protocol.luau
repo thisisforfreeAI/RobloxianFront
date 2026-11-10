@@ -13,7 +13,7 @@ Protocol.JOIN = "Join" -- RemoteFunction, client -> server, returns { map, side,
 Protocol.STATE = "State" -- RemoteEvent, server -> one client (2 Hz): own oil, HQ queue, match result
 
 -- Units the slice can train (the server checks which producer may train what) and buildings it can place.
-Protocol.PRODUCIBLE = { infantry = true, engineer = true, at = true, tank = true, ifv = true, mortar = true, artillery = true, scout = true, rocket = true }
+Protocol.PRODUCIBLE = { infantry = true, engineer = true, at = true, tank = true, ifv = true, mortar = true, artillery = true, scout = true, rocket = true, command = true }
 Protocol.BUILDABLE = { barracks = true, factory = true, bunker = true, atgun = true, radar = true, sam = true, artybase = true, nightops = true }
 
 Protocol.MAX_UNITS_PER_ORDER = 64
@@ -35,7 +35,12 @@ export type BarrageIntent = { kind: "barrage", unitIds: { number }, x: number, y
 export type DetonateIntent = { kind: "detonate", unitIds: { number } } -- blow up selected bomb trucks
 export type BoardIntent = { kind: "board", unitIds: { number }, carrierId: number } -- riders get into an IFV
 export type UnloadIntent = { kind: "unload", unitIds: { number } } -- IFVs set their riders down
-export type Intent = MoveIntent | StopIntent | AttackIntent | ProduceIntent | TruckIntent | BuildIntent | ReconIntent | GarrisonIntent | RepairIntent | ForwardIntent | RoadRepairIntent | SabotageIntent | PowerIntent | DetonateIntent | BarrageIntent | BoardIntent | UnloadIntent
+export type DropPickIntent = { kind: "dropPick", x: number, y: number } -- where to land in the opening drop
+export type DropReadyIntent = { kind: "dropReady" } -- done picking
+export type CancelQueueIntent = { kind: "cancelQueue", structureId: number?, index: number } -- call off a queued unit (index 0 = the last; no id = the HQ)
+export type DemolishIntent = { kind: "demolish", structureId: number } -- cancel a building going up, or pull a finished one down
+export type LayMinesIntent = { kind: "layMines", pts: { number } } -- a minefield along a stroke: x1, y1, x2, y2, ... in cells
+export type Intent = MoveIntent | StopIntent | AttackIntent | ProduceIntent | TruckIntent | BuildIntent | ReconIntent | GarrisonIntent | RepairIntent | ForwardIntent | RoadRepairIntent | SabotageIntent | PowerIntent | DetonateIntent | BarrageIntent | BoardIntent | UnloadIntent | DropPickIntent | DropReadyIntent | CancelQueueIntent | DemolishIntent | LayMinesIntent
 
 local function finite(n: any): boolean
 	return type(n) == "number" and n == n and n ~= math.huge and n ~= -math.huge
@@ -111,6 +116,45 @@ function Protocol.parse(raw: any, mapWidth: number, mapHeight: number): (Intent?
 			return nil, "target outside the map"
 		end
 		return { kind = "power", power = raw.power, x = raw.x, y = raw.y } :: any, nil
+	end
+	if raw.kind == "dropReady" then
+		return { kind = "dropReady" } :: any, nil
+	end
+	if raw.kind == "dropPick" then
+		if not finite(raw.x) or not finite(raw.y) or raw.x < 0 or raw.y < 0 or raw.x >= mapWidth or raw.y >= mapHeight then
+			return nil, "landing outside the map"
+		end
+		return { kind = "dropPick", x = raw.x, y = raw.y } :: any, nil
+	end
+	if raw.kind == "cancelQueue" then
+		if not finite(raw.index) or raw.index % 1 ~= 0 or raw.index < 0 then
+			return nil, "index must be a whole number"
+		end
+		if raw.structureId ~= nil and (not finite(raw.structureId) or raw.structureId % 1 ~= 0) then
+			return nil, "structureId must be an integer"
+		end
+		return { kind = "cancelQueue", structureId = raw.structureId, index = raw.index } :: any, nil
+	end
+	if raw.kind == "layMines" then
+		local pts = raw.pts
+		if type(pts) ~= "table" or #pts < 2 or #pts > 1200 or #pts % 2 ~= 0 then
+			return nil, "pts must be 1 to 600 x, y pairs"
+		end
+		local out = table.create(#pts)
+		for i = 1, #pts do
+			local v = pts[i]
+			if not finite(v) or v < 0 or v >= (if i % 2 == 1 then mapWidth else mapHeight) then
+				return nil, "stroke outside the map"
+			end
+			out[i] = v
+		end
+		return { kind = "layMines", pts = out } :: any, nil
+	end
+	if raw.kind == "demolish" then
+		if not finite(raw.structureId) or raw.structureId % 1 ~= 0 then
+			return nil, "structureId must be an integer"
+		end
+		return { kind = "demolish", structureId = raw.structureId } :: any, nil
 	end
 	if raw.kind == "truck" then
 		if not finite(raw.rigId) or raw.rigId % 1 ~= 0 then

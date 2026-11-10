@@ -138,7 +138,7 @@ function UnitRenderer.start()
 	end)
 end
 
-local STATUS = { [1] = "RECON", [2] = "PACKING", [3] = "SETTING UP", [4] = "INSIDE", [5] = "REPAIR", [6] = "SABOTAGE", [7] = "HELD", [8] = "CUT OFF" }
+local STATUS = { [1] = "RECON", [2] = "PACKING", [3] = "SETTING UP", [4] = "INSIDE", [5] = "REPAIR", [6] = "SABOTAGE", [7] = "HELD", [8] = "CUT OFF", [9] = "SETTING UP HQ" }
 
 -- units: { {id, kind, side, x, y, heading, hp, maxHp, status}, ... }
 function UnitRenderer.apply(tick: number, units: { any })

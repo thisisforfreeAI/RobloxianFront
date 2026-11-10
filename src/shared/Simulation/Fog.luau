@@ -86,7 +86,7 @@ function Fog.newViewer(sim: any, side: number)
 					if grid[e.cell + 1] == 2 then
 						self.rigSeen[e.id] = e.side
 					end
-				elseif e.side ~= side and grid[e.cell + 1] == 2 then
+				elseif e.side ~= side and grid[e.cell + 1] == 2 and not (sim.mineHidden and sim.mineHidden(e, side)) then
 					self.lastSeen[e.id] = { kind = e.kind, side = e.side, x = e.x, y = e.y, cell = e.cell }
 				end
 			end
@@ -104,6 +104,17 @@ function Fog.newViewer(sim: any, side: number)
 
 	-- "seen", "stale" or "hidden"
 	function self.structureState(e: any): string
+		if e.kind == "minefield" and e.side ~= side then
+			-- the game's structureVisibility: hidden until found, then seen while any of its cells is
+			if sim.mineHidden(e, side) then
+				return "hidden"
+			end
+			for _, c in e.mineCells or {} do
+				if self.grid[c + 1] == 2 then
+					return "seen"
+				end
+			end
+		end
 		if e.side == side or self.grid[e.cell + 1] == 2 or (e.kind == "hq" and e.alive) then
 			return "seen"
 		end

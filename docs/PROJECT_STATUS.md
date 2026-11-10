@@ -11,7 +11,7 @@ Last updated: 2026-11-09
 Phase 1. Milestone 1A done (Studio tests 1–7 pass). Pilot sprite REQ-0001 approved. Milestone 1B (gameplay loop) rewritten for WarFront parity and tested outside Studio; Studio tests B1–B9 pending.
 
 ## Verified outside Studio (actually run, Linux container)
-- Lune 0.11.1 `tests/run`: 108 passed, 0 failed (latest run) (including the 2 that read the GameData generated from your install).
+- Lune 0.11.1 `tests/run`: 118 passed, 0 failed (latest run) (including the 2 that read the GameData generated from your install).
 - Rojo 7.4.4 `rojo build` succeeds. All .luau files compile (syntax only).
 - Synthetic atlas: 16 × 120 px frames pack to 960×240 (8×2, no padding); validator passes on dimensions,
   rectangles, direction order, pixel identity, pivot, partial alpha, edge bleed, arrow orientation, manifest.
@@ -396,12 +396,68 @@ bot fills idle IFVs at home (within 48 cells of its HQ) with idle riders within 
 unloads them when an armed enemy is in the IFV's sight or the IFV stands idle away from home. Not
 ported: ships, heroes. Bot-vs-bot after this: about 15, 24 and 19 min; up to 14 riders aboard at once.
 
+Command truck (2026-11-10), traced from the game's Z7e / QY / rk / D9 / j7e / hqOnOrder / mayRehouse /
+checkHeadless / Fst: the factory builds a Command Truck (650, key 6 in its panel). Select it and press
+R: it stops and after 10 s becomes an HQ on a free cell within 12 cells, preferring one by a road that
+reaches the rigs, with the truck's share of hp. Moving cancels it. The new HQ is your HQ. A side with
+a command truck is never headless, and the grace clock waits while one is being built. The bot, once
+its HQ is gone, deploys its truck where it stands if a road there reaches the rigs, otherwise drives
+it back to the old HQ's site; with no truck it orders one at a working factory. APPROX: the game
+first trims a full queue to fit it; not ported. Bot-vs-bot after this: about 15, 24 and 19 min.
+
+Opening drop (2026-11-10), traced from the game's u9e / lk / cD / f9e / p9e / nq / vqe / G_ / bqe / hX /
+g9e: a match now starts with no HQs or squads. The war clock waits while each side picks where to
+land (68 s, or until both are ready): click the map, Enter when ready. A pick must be 18 cells off the
+edge, on open ground with room for an HQ within 12 cells and at least 36 cells from the enemy's
+start point; otherwise you land on your own start point. The ring is amber where no road there reaches
+the rigs (the truck would have to drive before it can set up). Then each side's plane flies in (14 s)
+and drops its command truck and three squads under chutes (5 s); once all are down the war starts
+and each truck sets up its HQ at once if a road there reaches the rigs. The bot picks with its
+persona's shares: near home, by one of the 3 rigs farthest from every start, or 45 cells in from
+the enemy's start; if its truck lands away from a road it drives home and sets up there. Not ported:
+the opening deck (the game's random arrival scenes and conditions). The server flag OPENING_DROP in
+MatchService turns it off. Tests still build the old start (HQs on the start points) unless they ask
+for the drop. Bot-vs-bot with the drop: about 13, 17 and 20 min.
+
+Cancel and demolish (2026-11-10), traced from the game's cancelQueued / cancelBuilding / ert / trt /
+Qbe / ort: Backspace calls off the last unit queued at the picked producer (the HQ if none) and gives
+back exactly what was paid for it; the one in training starts over. Click one of your buildings,
+then Delete: if it is still going up it is cancelled at once for the unfinished share of its price
+(and kill cost); if it is finished it comes down over 6 s, its queue refunded first, and gives back
+60% of its price and kill cost. It does nothing while it comes down. The HQ can't be pulled down.
+APPROX: the game shows the countdown on the building and a cancel button; here a notice says when it
+is down.
+
+Armies and minefields (2026-11-10), traced from the game's allows / N$ / armyUnits and Tk / Tet / Aet /
+Cve / kve / layMinefield / LA / Pet / Ret / vle / Yq / Lve / EI: each side fights as the coalition
+(the game's default) or the republic, set by ARMIES in MatchService. Only the coalition fields
+mortars (the bot trains infantry instead); only the republic lays minefields. Press - (or the HUD
+button, shown to the republic) and drag a line: every cell within 30 m (one cell either side) of the
+line, up to 400 m long, that is open buildable ground off a rig pad, clear of buildings and other
+minefields and away from enemy buildings takes mines (roads included). It costs 1 oil a metre and
+gets a charge every 10 m, counting only the metres that take mines, and is laid along the line at
+0.08 s a metre; it needs 40 m. Any unit but an engineer (yours too) stepping on a laid cell sets one
+off: 70 to soft targets, 150 to armour, 40% of that on everyone within 2.7 cells, then 0.7 s before
+the next; a truck on it is lost. The enemy doesn't see it until one goes off under them or one of
+their engineers comes within 4.5 cells; an engineer standing on it clears a charge every 4 s and
+never sets it off. It is spent when the charges run out, can be shot at once found (200 hp), never
+blocks the way and claims no ground. APPROX: placing a building over a minefield is refused (the
+game clears the mines under it); the bot doesn't lay mines (the game's bot doesn't either). Not
+ported: its sea units (no sea on Saddle).
+
+Republic missile launcher (2026-11-10), traced from the game's armyDef / ufe / lS / launchMissile: a
+republic side's artillery reads its stats from armyUnits.republic.artillery (the rest from the
+howitzer): range 144 cells, one heavy missile on a barrage order (like the rocket launcher: Period
+at the cursor), 100 damage over 4.5 cells, 40 s reload, nothing closer than 24 cells, flying at the
+game's missile speed. The bot fires it like the rocket launcher. APPROX: alerts and unit labels
+still call it artillery (the HUD's train button uses the republic name).
+
 ## Next
-1. You run Studio tests B18–B48 (defences, mortar, artillery, scout) and commit.
+1. You run Studio tests B18–B53 (defences, mortar, artillery, scout) and commit.
 2. Done since: engineers' repair, vehicle steering, the bot's HQ push, shared group routes,
    separation, the 100/250/500-unit performance check (`lune run tools/perf.luau 250`) and the
    convoy rules (spacing, town/bridge/off-road pace, held and stranded trucks), airfield drops and
-   the capital's paratroopers and bomb truck, the recon drone and SAM sites, rocket artillery, the artillery base, the night operations tower, veterancy, IFV transport.
+   the capital's paratroopers and bomb truck, the recon drone and SAM sites, rocket artillery, the artillery base, the night operations tower, veterancy, IFV transport, the command truck, the opening drop.
 3. Next: more of the game's land units and buildings that the slice still passes over.
 
 ## Open questions

@@ -21,16 +21,17 @@ local Hud = {}
 local TRAINS = {
 	hq = { "infantry", "engineer" },
 	barracks = { "infantry", "at", "mortar" },
-	factory = { "tank", "ifv", "artillery", "scout", "rocket" },
+	factory = { "tank", "ifv", "artillery", "scout", "rocket", "command" },
 	town = { "infantry", "at" }, -- cities.forward.trains (a held, secured town or city)
 }
 -- PROVISIONAL keys for a producer's 1st..4th unit (WarFront's bindings are not confirmed yet)
-local TRAIN_KEYS = { Enum.KeyCode.Q, Enum.KeyCode.E, Enum.KeyCode.Z, Enum.KeyCode.C, Enum.KeyCode.M }
+local TRAIN_KEYS = { Enum.KeyCode.Q, Enum.KeyCode.E, Enum.KeyCode.Z, Enum.KeyCode.C, Enum.KeyCode.M, Enum.KeyCode.Six }
 local PRODUCER_NAME = { hq = "HQ", barracks = "Barracks", factory = "War Factory", town = "Town" }
 
 local rules: any
 local oilLabel: TextLabel
 local powersLabel: TextLabel
+local dropLabel: TextLabel
 local queueLabel: TextLabel
 local trainButtons: { TextButton } = {}
 local notice: TextLabel
@@ -38,6 +39,8 @@ local banner: TextLabel
 local noticeUntil = 0
 local alertLines: { TextLabel } = {}
 local alertFeed: { { text: string, untilAt: number } } = {}
+local mineButton: TextButton? = nil
+local myArmy = "coalition"
 local selected: { id: number?, kind: string } = { id = nil, kind = "hq" }
 local lastProducers: { any } = {}
 local lastForwards: { any } = {}
@@ -68,6 +71,10 @@ local function button(parent: Instance, pos: UDim2, color: Color3): TextButton
 end
 
 local function unitName(item: string): string
+	local own = `armyUnits.{myArmy}.{item}.name`
+	if rules:has(own) then
+		return rules:text(own) -- the republic's missile launcher
+	end
 	return if rules:has(`units.{item}.name`) then rules:text(`units.{item}.name`) else item
 end
 
@@ -137,6 +144,11 @@ local NOTICE_TEXT: { [string]: string } = {
 	noHq = "Needs a finished HQ",
 	noLaunchers = "Select rocket artillery",
 	kills = "Not enough kills",
+	startTaken = "Too close to the enemy's landing",
+	notInMode = "Landing already chosen",
+	noTruck = "Select a command truck",
+	alreadyDeploying = "Already setting up",
+	noRoom = "No room for an HQ here",
 	notCarrier = "Pick an IFV",
 	noRiders = "Only infantry and AT can ride",
 	carrierFull = "That IFV is full",
@@ -145,6 +157,8 @@ local NOTICE_TEXT: { [string]: string } = {
 	noArtyBase = "You have no artillery base",
 	notOperational = "The artillery base isn't working",
 	notOwned = "Not yours",
+	nothingQueued = "Nothing queued there",
+	cannotDemolish = "That can't be pulled down (the HQ, or already coming down)",
 	tooClose = "Too close for rockets",
 	droneOut = "The drone is already out",
 	replaceCooldown = "No drone yet: wait for a new one",
@@ -152,6 +166,10 @@ local NOTICE_TEXT: { [string]: string } = {
 	outOfRange = "Out of range",
 	noDemo = "Select a bomb truck",
 	blocked = "Not possible now",
+	locked = "Your army doesn't have that",
+	mineShort = "Too short: drag a longer line (at least 40 m of open ground)",
+	mineGround = "Mines can't go there",
+	minefieldSpent = "A minefield is used up",
 }
 
 local function refreshButtons()
@@ -183,7 +201,7 @@ function Hud.start(info: { [string]: any }, acts: { produce: (string, number?) -
 	gui.ResetOnSpawn = false
 	local sideText = if info.side == 1 then "Side 1 (blue)" elseif info.side == 2 then "Side 2 (red)" else "Spectator"
 	local bar = label(gui, UDim2.new(1, 0, 0, 28), UDim2.new(), 14)
-	bar.Text = `RobloxianFront · {info.map} · {sideText} · WASD pan · wheel zoom · click/drag select · right-click move or attack · X stop · click a building to train there · Q/E/Z/C/M train · B/F/K/G build · R scouts recon · H garrison a town · right-click a damaged building with engineers to repair · PLACEHOLDER ART`
+	bar.Text = `RobloxianFront · {info.map} · {sideText} · WASD pan · wheel zoom · click/drag select · right-click move or attack · X stop · click a building to train there · Q/E/Z/C/M/6 train · B/F/K/G build · R scouts recon or command truck deploys HQ · H garrison a town · right-click a damaged building with engineers to repair · PLACEHOLDER ART`
 
 	oilLabel = label(gui, UDim2.fromOffset(230, 34), UDim2.fromOffset(10, 38), 18)
 	oilLabel.Text = "Oil —"
@@ -204,22 +222,30 @@ function Hud.start(info: { [string]: any }, acts: { produce: (string, number?) -
 			actions.build(kind)
 		end)
 	end
-	buildButton("barracks", "B", 284)
-	buildButton("factory", "F", 318)
-	buildButton("bunker", "K", 352)
-	buildButton("atgun", "G", 386)
-	buildButton("radar", "Y", 420)
-	buildButton("sam", "U", 454)
+	buildButton("barracks", "B", 318)
+	buildButton("factory", "F", 352)
+	buildButton("bunker", "K", 386)
+	buildButton("atgun", "G", 420)
+	buildButton("radar", "Y", 454)
+	buildButton("sam", "U", 488)
 	do
-		local b = button(gui, UDim2.fromOffset(10, 488), Color3.fromRGB(80, 70, 45))
+		local b = button(gui, UDim2.fromOffset(10, 522), Color3.fromRGB(80, 70, 45))
 		b.Text = `{rules:text("structures.artybase.name")} ({rules:number("structures.artybase.killCost")} kills) [;]`
 		b.Activated:Connect(function()
 			actions.build("artybase")
 		end)
 	end
-	buildButton("nightops", "'", 522)
-	powersLabel = label(gui, UDim2.fromOffset(300, 70), UDim2.fromOffset(10, 556), 12)
+	buildButton("nightops", "'", 556)
+	mineButton = button(gui, UDim2.fromOffset(10, 590), Color3.fromRGB(80, 70, 45))
+	mineButton.Text = `{rules:text("structures.minefield.name")} ({rules:number("minefield.oilPerMetre")} oil a metre, drag) [-]`
+	mineButton.Visible = false
+	mineButton.Activated:Connect(function()
+		actions.build("minefield")
+	end)
+	powersLabel = label(gui, UDim2.fromOffset(300, 70), UDim2.fromOffset(10, 624), 12)
 	powersLabel.Text = ""
+	dropLabel = label(gui, UDim2.fromOffset(520, 34), UDim2.new(0.5, -260, 0, 40), 16)
+	dropLabel.Visible = false
 	UserInputService.InputBegan:Connect(function(input, processed)
 		if processed then
 			return
@@ -252,8 +278,23 @@ end
 
 -- state from the server (2 Hz): { oil, trucksIdle, queue, queueLeft, producers, territory, lost, winner, notice, alerts }
 function Hud.update(state: { [string]: any }, mySide: number)
+	if state.army then
+		myArmy = state.army
+	end
+	if state.army and mineButton then
+		mineButton.Visible = state.army == "republic"
+	end
 	if state.oil then
 		oilLabel.Text = if state.trucksIdle then `Oil {state.oil} · trucks idle {state.trucksIdle}` else `Oil {state.oil}`
+	end
+	if state.oil then
+		local d = state.drop
+		dropLabel.Visible = d ~= nil
+		if d then
+			dropLabel.Text = if d.phase == "pick"
+				then `Pick where to land: click the map · Enter when ready · {d.left} s{if d.warn then " · no road to the rigs there" else ""}`
+				else `Planes inbound · down in {d.left} s`
+		end
 	end
 	if state.powers then
 		-- the capital's powers and own airfield towns (keys P / J / L; N blows up selected bomb trucks)

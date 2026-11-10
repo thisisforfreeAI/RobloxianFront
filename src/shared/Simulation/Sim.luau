@@ -145,6 +145,8 @@ export type Deps = {
 	rigs: { { x: number, y: number, name: string? } },
 	settlements: { { name: string?, x: number, y: number, kind: string } }?, -- map order
 	seed: number?,
+	drop: boolean?, -- start with the game's opening drop instead of HQs on the start points
+	armies: { string }?, -- per side: "coalition" (the default) or "republic"
 }
 
 export type Event = { type: string, [string]: any }
@@ -154,6 +156,7 @@ local BULLET_SPEED = 70 -- cells/s, the game's bullet flight speed
 -- cells/s, the game's shot speeds for the other weapons
 local SHOT_SPEED: { [string]: number } = {
 	cannon = 38, rocket = 22, missile = 18, shell = 13, salvo = 9.5, bomb = 11, mortar = 6.5, barrage = 11, flare = 12,
+	tbm = 15, -- the republic's heavy missile
 }
 
 function Sim.new(deps: Deps)
@@ -362,9 +365,50 @@ function Sim.new(deps: Deps)
 		return e
 	end
 
-	local function unitKey(e: Entity): string
-		return if e.kind == "hq" then "structures.hq" else `units.{e.kind}`
-	end
+	-- the game's armyDef: a republic unit with an armyUnits.republic.<kind> entry reads its stats from
+	-- there (the rest from units.<kind>, filled in once below)
+	local unitKey = (function()
+		local armyKinds: { [string]: { [string]: boolean } } = {}
+		local fill = {}
+		for k in r.data do
+			local army, kind = string.match(k, "^armyUnits%.([%w_]+)%.([%w_]+)%.")
+			if army and kind then
+				armyKinds[army] = armyKinds[army] or {}
+				if not armyKinds[army][kind] then
+					armyKinds[army][kind] = true
+					table.insert(fill, { army, kind })
+				end
+			end
+		end
+		for _, f in fill do
+			local base, over = `units.{f[2]}.`, `armyUnits.{f[1]}.{f[2]}.`
+			local add = {}
+			for k, v in r.data do
+				if string.sub(k, 1, #base) == base then
+					local rest = string.sub(k, #base + 1)
+					-- an overridden table (vs, missile) replaces the base one whole
+					local head = string.match(rest, "^([%w_]+)%.")
+					if r.data[over .. rest] == nil and not (head and r.data[over .. head .. ".soft"] ~= nil) then
+						add[over .. rest] = v
+					end
+				end
+			end
+			for k, v in add do
+				r.data[k] = v
+			end
+		end
+		return function(e: Entity): string
+			if e.kind == "hq" then
+				return "structures.hq"
+			end
+			local army = deps.armies and deps.armies[e.side]
+			if army and armyKinds[army] and armyKinds[army][e.kind] then
+				return `armyUnits.{army}.{e.kind}`
+			end
+			return `units.{e.kind}`
+		end
+	end)()
+	self.unitKey = unitKey
 
 	function self.spawnUnit(kind: string, side: number, x: number, y: number): Entity
 		local hp = num(`units.{kind}.hp`)
@@ -377,13 +421,13 @@ function Sim.new(deps: Deps)
 	-- Setup: HQ on each start, neutral rigs, start oil, idle trucks and start infantry.
 	for side, s in deps.starts do
 		local hpHq = num("structures.hq.hp")
-		local hq = add({
+		local hq = if deps.drop then nil else add({
 			kind = "hq", cat = "structure", class = "structure", side = side, x = s.x, y = s.y,
 			cell = cellAt(s.x, s.y), heading = 0, hp = hpHq, maxHp = hpHq, shotTimer = 0, alive = true,
 			queue = {}, queueProgress = 0, built = 1, lastHitAt = -99,
 		})
 		self.sides[side] = {
-			oil = num("match.startOil"), hqId = hq.id, lost = false, trucksIdle = num("trucks.startIdle"),
+			oil = num("match.startOil"), hqId = if hq then hq.id else -1, lost = false, trucksIdle = num("trucks.startIdle"),
 			oilMult = 1, oilEarned = 0, headlessSince = nil, kills = 0, killsSpent = 0,
 		}
 	end
@@ -440,7 +484,7 @@ function Sim.new(deps: Deps)
 	end
 	self.rallyPoint = rallyPoint
 	-- start infantry: evenly round the HQ at footprint + 1.4 x cellScale, starting at 0.6 rad (game)
-	for _, s in self.sides do
+	for _, s in if deps.drop then {} else self.sides do
 		local hq = self.entities[s.hqId]
 		local count = num("match.startInfantry")
 		for i = 0, count - 1 do
@@ -470,7 +514,7 @@ function Sim.new(deps: Deps)
 
 	-- The kinds the slice lets a nation place, and the units each producer may train in the slice.
 	local PLACEABLE = { barracks = true, factory = true, bunker = true, atgun = true, radar = true, sam = true, artybase = true, nightops = true }
-	local SLICE_UNITS = { infantry = true, engineer = true, at = true, tank = true, ifv = true, mortar = true, artillery = true, scout = true, rocket = true }
+	local SLICE_UNITS = { infantry = true, engineer = true, at = true, tank = true, ifv = true, mortar = true, artillery = true, scout = true, rocket = true, command = true }
 	self.PLACEABLE = PLACEABLE
 
 	local function footprintOf(kind: string): number
@@ -527,6 +571,9 @@ function Sim.new(deps: Deps)
 	-- Block or free a structure's footprint (the game's tUe / YB): units standing inside step out
 	-- (RY) and units whose route crosses it re-plan (HY).
 	local function setFootprint(st: Entity, on: boolean)
+		if st.kind == "minefield" then
+			return -- the game's tUe: mines never block the way
+		end
 		local cells = footprintCells(st.cell, footprintOf(st.kind))
 		local set = {}
 		for _, c in cells do
@@ -562,7 +609,10 @@ function Sim.new(deps: Deps)
 	end
 
 	for _, s in self.sides do
-		setFootprint(self.entities[s.hqId], true)
+		local hq0 = self.entities[s.hqId]
+		if hq0 then
+			setFootprint(hq0, true)
+		end
 	end
 
 	-- territory (where a nation may build), see Territory
@@ -579,7 +629,7 @@ function Sim.new(deps: Deps)
 		noise = deps.valueNoise.new(deps.rng.new(bit32.bxor(matchSeed, 20973))),
 	})
 	local function builtStructure(st: Entity): boolean
-		return st.alive and isStructure(st) and st.built >= 1
+		return st.alive and isStructure(st) and st.built >= 1 and st.kind ~= "minefield"
 	end
 	-- Settlements (the game's hme): neutral at the start, captured like rigs (see settlementsTick).
 	-- A held town, city or capital claims territory: its urban radius (the game's PV: the larger of
@@ -848,6 +898,9 @@ function Sim.new(deps: Deps)
 		if st.built < 1 then
 			return "building"
 		end
+		if st.demolishAt then
+			return "demolishing"
+		end
 		if text(`structures.{st.kind}.kind`) == "facility" and st.hp < st.maxHp * num("production.damagedBelow") then
 			return "damaged"
 		end
@@ -976,7 +1029,13 @@ function Sim.new(deps: Deps)
 			end
 		end
 		for _, st in self.list do
-			if st.alive and isStructure(st) then
+			if st.alive and isStructure(st) and st.kind == "minefield" then
+				for _, c in st.mineCells or {} do
+					if math.abs(c % W - rx) <= a and math.abs(c // W - iy) <= a then
+						return "spacing" -- APPROX: the game clears mines under a new building (guardsInWay)
+					end
+				end
+			elseif st.alive and isStructure(st) then
 				local l = a + footprintOf(st.kind) + num("production.spacing")
 				if math.abs(st.cell % W - rx) <= l and math.abs(st.cell // W - iy) <= l then
 					return "spacing"
@@ -1029,7 +1088,7 @@ function Sim.new(deps: Deps)
 		local x, y = cell % W + 0.5, cell // W + 0.5
 		local l = num("build.enemyGap") + a
 		for _, st in self.list do
-			if st.alive and isStructure(st) and st.side ~= side
+			if st.alive and isStructure(st) and st.side ~= side and st.kind ~= "minefield"
 				and (st.cell % W + 0.5 - x) ^ 2 + (st.cell // W + 0.5 - y) ^ 2 <= l * l then
 				return "nearEnemy"
 			end
@@ -1064,11 +1123,12 @@ function Sim.new(deps: Deps)
 		end
 		self.payKills(side, numOr(`structures.{kind}.killCost`, 0))
 		self.sides[side].oil -= num(`structures.{kind}.cost`)
+		local paid = num(`structures.{kind}.cost`)
 		local hp = num(`structures.{kind}.hp`)
 		local st = add({
 			kind = kind, cat = "structure", class = "structure", side = side, x = cell % W + 0.5,
 			y = cell // W + 0.5, cell = cell, heading = 0, hp = hp, maxHp = hp, shotTimer = 0, alive = true,
-			queue = {}, queueProgress = 0, built = 0, lastHitAt = -99,
+			queue = {}, queueProgress = 0, built = 0, lastHitAt = -99, paid = paid,
 		})
 		setFootprint(st, true)
 		event({ type = "buildPlaced", id = st.id, kind = kind, side = side })
@@ -2224,6 +2284,9 @@ function Sim.new(deps: Deps)
 		if not SLICE_UNITS[item] or not from or not table.find(from, st.kind) then
 			return "blocked"
 		end
+		if not self.armyAllows(st.side, item) then
+			return "locked"
+		end
 		if self.inactiveReason(st) then
 			return "notOperational"
 		end
@@ -2257,8 +2320,11 @@ function Sim.new(deps: Deps)
 		if why then
 			return false, why
 		end
-		s.oil -= unitCost(side, item)
+		local cost = unitCost(side, item)
+		s.oil -= cost
 		table.insert(st.queue, item)
+		st.queuePaid = st.queuePaid or {}
+		table.insert(st.queuePaid, cost)
 		return true, nil
 	end
 
@@ -2453,7 +2519,7 @@ function Sim.new(deps: Deps)
 		end
 		if st.kind == "hq" then
 			-- an active factory lets the nation rehouse within hqLoss.graceSec, else it is out
-			if hasBuilding(st.side, "factory", true) then
+			if hasBuilding(st.side, "factory", true) or self.truckOf(st.side) then
 				event({ type = "hqLostRebuild", side = st.side, sec = num("hqLoss.graceSec") })
 			else
 				eliminate(st.side, by)
@@ -2916,7 +2982,7 @@ function Sim.new(deps: Deps)
 		local best, bestW = nil, math.huge
 		local lo = (minR or 0) ^ 2
 		for _, o in self.list do
-			if o.alive and o.cat == "structure" and o.kind ~= "rig" and canAttack(side, o.side) then
+			if o.alive and o.cat == "structure" and o.kind ~= "rig" and canAttack(side, o.side) and not self.mineHidden(o, side) then
 				local d = d2(x, y, o.x, o.y)
 				if d <= range * range and d >= lo and (not ok or ok(o)) then
 					local wgt = d * (if numOr(`structures.{o.kind}.dps`, 0) > 0 then 0.25 else 1)
@@ -3163,6 +3229,24 @@ function Sim.new(deps: Deps)
 			end
 			return list[#list].at
 		end
+		-- the game's lS: the launcher's own minimum range (the missile's), else artillery.rocketMinRange
+		function self.minRangeOf(key: string): number
+			return numOr(key .. ".missile.minRange", num("artillery.rocketMinRange"))
+		end
+		-- the game's launchMissile: one heavy missile on the point (flight at the tbm speed), its whole
+		-- damage over missile.splash; it leaves at once
+		function R.missile(e: Entity, key: string, tx: number, ty: number, total: number): number
+			local cell = cellAt(tx, ty)
+			local bid = if cell >= 0 then roads.buildingAt(cell) else -1
+			local aimed = if bid >= 0 then self.entities[bid] else nil
+			if aimed and not (aimed.alive and canAttack(e.side, aimed.side)) then
+				aimed = nil
+			end
+			table.insert(self.strikes, { kind = "rocket", at = self.time + math.sqrt(d2(e.x, e.y, tx, ty)) / SHOT_SPEED.tbm,
+				x = tx, y = ty, damage = total, key = key, by = e.side, target = if aimed then aimed.id else -1,
+				splash = num(key .. ".missile.splash"), shooter = e.id })
+			return 0
+		end
 		function salvoTick(e: Entity, key: string, dt: number)
 			e.shotTimer -= dt
 			local b = e.barrage
@@ -3176,7 +3260,7 @@ function Sim.new(deps: Deps)
 				if (e.id + self.ticks) % 20 == 0 then
 					walkNear(e, b.x, b.y, range * 0.9)
 				end
-			elseif p < num("artillery.rocketMinRange") then
+			elseif p < self.minRangeOf(key) then
 				e.barrage = nil
 			else
 				e.firing, e.aimX, e.aimY = true, b.x, b.y
@@ -3186,7 +3270,8 @@ function Sim.new(deps: Deps)
 					e.shotTimer = reload * self.vetReload(e) * (1 - j + rand() * 2 * j)
 					e.firedAt = self.time
 					e.revealedUntil = self.time + num("artillery.revealSec")
-					local last = R.salvo(e, key, b.x, b.y, num(key .. ".dps") * reload * self.vetDamage(e))
+					local total = num(key .. ".dps") * reload * self.vetDamage(e)
+					local last = if r:has(key .. ".missile.splash") then R.missile(e, key, b.x, b.y, total) else R.salvo(e, key, b.x, b.y, total)
 					e.packAt = self.time + last + num("artillery.lowerSec")
 					e.barrage = nil
 					event({ type = "barrageFired", id = e.id, side = e.side, x = b.x, y = b.y })
@@ -3395,7 +3480,7 @@ function Sim.new(deps: Deps)
 		end
 		local n = 0
 		for _, e in launchers do
-			if math.sqrt((e.x - x) ^ 2 + (e.y - y) ^ 2) >= num("artillery.rocketMinRange") then
+			if math.sqrt((e.x - x) ^ 2 + (e.y - y) ^ 2) >= self.minRangeOf(unitKey(e)) then
 				e.target, e.attackId, e.path, e.chasing = nil, nil, nil, nil
 				clearRecon(e)
 				e.barrage = { x = x, y = y }
@@ -4412,6 +4497,7 @@ function Sim.new(deps: Deps)
 			end
 			return { side = side, fromX = fromX, fromY = fromY, heading = heading, speed = speed, startT = self.time, overT = overT, goneT = goneT, loads = out }
 		end
+		self.planeFor = A.planeFor
 		function A.launchDrop(side: number, x: number, y: number, loads: { string }, airfield: number?): number
 			local plane = A.planeFor(side, x, y, loads, num("capital.paraFlySec"), num("capital.paraStickGap"))
 			local id = nextDropId
@@ -4957,7 +5043,7 @@ function Sim.new(deps: Deps)
 		for _, st in self.list do
 			if st.alive and isStructure(st) then
 				if st.built < 1 then
-					st.built = math.min(1, st.built + dt / math.max(0.01, num(`structures.{st.kind}.buildSec`)))
+					st.built = math.min(1, st.built + dt / math.max(0.01, st.buildSec or num(`structures.{st.kind}.buildSec`)))
 					if st.built >= 1 then
 						event({ type = "built", id = st.id, kind = st.kind, side = st.side })
 					end
@@ -4972,6 +5058,7 @@ function Sim.new(deps: Deps)
 						if st.queueProgress >= 1 then
 							st.queueProgress = 0
 							table.remove(st.queue, 1)
+							table.remove(st.queuePaid or {}, 1)
 							local x, y = rallyPoint(st, self.nextId)
 							if not roads.passable(cellAt(x, y)) then
 								x, y = freePointNear(x, y)
@@ -5116,13 +5203,18 @@ function Sim.new(deps: Deps)
 	-- the game's checkHeadless: a nation without an HQ that may rehouse (an active factory) has
 	-- hqLoss.graceSec; without one it is out at once. (The command truck that rebuilds an HQ is not in
 	-- the slice, so a headless nation is out when the grace runs out.)
+	-- the game's checkHeadless: a side with no HQ and no command truck is out at once unless it has a
+	-- working factory (mayRehouse); with one, it has hqLoss.graceSec, not counted while a command truck
+	-- is on order
 	local function checkHeadless()
 		for side, s in self.sides do
 			if not s.lost then
-				if hqOf(side) then
+				if hqOf(side) or self.truckOf(side) then
 					s.headlessSince = nil
 				elseif not hasBuilding(side, "factory", true) then
 					eliminateRef(side, -1)
+				elseif self.hqOnOrder(side) then
+					-- waiting on the truck
 				else
 					s.headlessSince = s.headlessSince or self.time
 					if self.time - s.headlessSince > num("hqLoss.graceSec") then
@@ -5593,8 +5685,763 @@ function Sim.new(deps: Deps)
 		end
 	end
 
+	-- Command truck / mobile HQ (the game's Z7e / QY / rk / D9 / j7e / hqOnOrder): the factory builds a
+	-- command truck. Ordered to deploy, it stops and after mobileHq.deploySec becomes an HQ on a free cell
+	-- within deployReach (preferring one near a road that reaches the rigs), with the truck's share of
+	-- hp; moving cancels it. The new HQ is the side's HQ.
+	function self.truckOf(side: number): Entity?
+		for _, e in self.list do
+			if e.alive and e.side == side and e.cat == "unit" and e.kind == "command" then
+				return e
+			end
+		end
+		return nil
+	end
+	function self.hqOnOrder(side: number): boolean
+		for _, st in self.list do
+			if st.alive and st.side == side and isStructure(st) and st.queue and table.find(st.queue, "command") then
+				return true
+			end
+		end
+		return false
+	end
+	do
+		local M: any = {}
+		-- the game's D9: a road piece near the cell that also reaches a rig (any piece when no rig has one)
+		function M.roadOk(cell: number): boolean
+			local cx, cy = centre(cell)
+			local here = roads.piecesNear(cx, cy, offReach + hqFoot)
+			if next(here) == nil then
+				return false
+			end
+			local rigPieces = {}
+			for _, rig in rigList do
+				for p in roads.piecesNear(rig.x, rig.y, offReach) do
+					rigPieces[p] = true
+				end
+			end
+			if next(rigPieces) == nil then
+				return true
+			end
+			for p in here do
+				if rigPieces[p] then
+					return true
+				end
+			end
+			return false
+		end
+		-- the game's freeCellNear: the closest cell within n where an HQ fits (and pred holds)
+		function M.freeCellNear(cell: number, n: number, pred: ((number) -> boolean)?): number
+			local x0, y0 = cell % W, cell // W
+			local best, bd = -1, math.huge
+			for dy = -n, n do
+				for dx = -n, n do
+					local x, y = x0 + dx, y0 + dy
+					local d = dx * dx + dy * dy
+					if x >= 0 and y >= 0 and x < W and y < H and d <= n * n and d < bd then
+						local c = y * W + x
+						if not placeProblem(c, "hq") and (not pred or pred(c)) then
+							best, bd = c, d
+						end
+					end
+				end
+			end
+			return best
+		end
+		-- the game's rk
+		function M.deployCell(e: Entity): number
+			local c = cellAt(e.x, e.y)
+			if c < 0 then
+				return -1
+			end
+			local n = math.max(1, math.floor(num("mobileHq.deployReach") + 0.5))
+			local best = M.freeCellNear(c, n, M.roadOk)
+			return if best >= 0 then best else M.freeCellNear(c, n, nil)
+		end
+		self.hqDeployCell = M.deployCell
+		self.hqRoadOk = M.roadOk
+		function self.deployHq(side: number, id: number): (boolean, string?)
+			local e = self.entities[id]
+			if not e or not e.alive or e.side ~= side or e.kind ~= "command" or e.carrier then
+				return false, "noTruck"
+			end
+			if e.deployAt then
+				return false, "alreadyDeploying"
+			end
+			local c = M.deployCell(e)
+			if c < 0 then
+				return false, "noRoom"
+			end
+			self.orderStop(side, { e.id })
+			e.deployAt, e.deployCell = self.time + num("mobileHq.deploySec"), c
+			event({ type = "hqDeploying", id = e.id, side = side, sec = num("mobileHq.deploySec") })
+			return true, nil
+		end
+		-- the game's j7e
+		function self.deployTick()
+			for _, e in self.list do
+				if e.alive and e.kind == "command" and e.deployAt then
+					if e.path and e.target then
+						e.deployAt, e.deployCell = nil, nil
+					elseif self.time >= e.deployAt then
+						local c = e.deployCell or -1
+						if c < 0 or placeProblem(c, "hq") then
+							c = M.deployCell(e)
+						end
+						e.deployAt, e.deployCell = nil, nil
+						if c < 0 then
+							event({ type = "blocked", side = e.side, reason = "noRoom" })
+						else
+							local had = hqOf(e.side) ~= nil
+							local hpHq = num("structures.hq.hp")
+							local hq = add({
+								kind = "hq", cat = "structure", class = "structure", side = e.side, x = c % W + 0.5,
+								y = c // W + 0.5, cell = c, heading = 0, hp = math.max(1, hpHq * (e.hp / num("units.command.hp"))),
+								maxHp = hpHq, shotTimer = 0, alive = true, queue = {}, queueProgress = 0, built = 1, lastHitAt = -99,
+							})
+							setFootprint(hq, true)
+							self.sides[e.side].hqId = hq.id
+							self.sides[e.side].headlessSince = nil
+							e.alive = false
+							updateConnections()
+							event({ type = if had then "hqDeployed" else "hqSetUp", id = hq.id, side = e.side })
+						end
+					end
+				end
+			end
+		end
+	end
+
+	-- The opening drop (the game's u9e / lk / cD / f9e / p9e / nq / vqe / G_ / bqe, started with deps.drop):
+	-- the war waits while each side picks where to land (drop.pickSec, or until every side is ready).
+	-- A pick must keep edgeCells off the map's edge, be open ground with room for an HQ within
+	-- deployReach and be at least drop.apart from the other sides' start points; otherwise the side's
+	-- start point is used. A plane per side then flies in (flySec) and drops drop.loads (the command
+	-- truck and three squads) under chutes (chuteSec). Once all are down the war starts and each command
+	-- truck sets up its HQ at once if a road there reaches the rigs. Not ported: the opening deck (the
+	-- game's random arrival scene and conditions).
+	do
+		local O: any = {}
+		function O.init()
+			local homes, picks, ready = {}, {}, {}
+			for side, st in deps.starts do
+				homes[side] = { x = math.floor(st.x) + 0.5, y = math.floor(st.y) + 0.5 }
+				picks[side] = { x = homes[side].x, y = homes[side].y }
+				ready[side] = false
+			end
+			self.drop = { phase = "pick", t = 0, pickEnds = num("drop.pickSec"), homes = homes, picks = picks, ready = ready,
+				planes = {}, landT = -1 }
+		end
+		if deps.drop then
+			O.init()
+		end
+		function O.apartFrom(x: number, y: number, list: { any }, apart: number): boolean
+			for _, p in list do
+				if math.sqrt((p.x - x) ^ 2 + (p.y - y) ^ 2) < apart then
+					return false
+				end
+			end
+			return true
+		end
+		function O.otherHomes(side: number): { any }
+			local out = {}
+			for s, h in self.drop.homes do
+				if s ~= side and alive(s) then
+					table.insert(out, h)
+				end
+			end
+			return out
+		end
+		-- the game's lk
+		function self.landingProblem(x: number, y: number, side: number): string?
+			local d = self.drop
+			if d and side > 0 and not O.apartFrom(x, y, O.otherHomes(side), num("drop.apart")) then
+				return "startTaken"
+			end
+			local e = num("drop.edgeCells")
+			if x < e or y < e or x > W - e or y > H - e then
+				return "terrain"
+			end
+			local c = cellAt(x, y)
+			if c < 0 or not roads.passable(c) then
+				return "terrain"
+			end
+			local t = roads.terrain(c)
+			if t == "deep" or t == "shallow" then
+				return "terrain"
+			end
+			if self.hqDeployCell({ x = x, y = y } :: any) < 0 then
+				return "noRoom"
+			end
+			return nil
+		end
+		-- the game's cD: a warning, not a refusal
+		function self.dropWarning(x: number, y: number): string?
+			local c = cellAt(x, y)
+			if c < 0 then
+				return nil
+			end
+			local e = { x = x, y = y } :: any
+			local cell = self.hqDeployCell(e)
+			return if cell >= 0 and self.hqRoadOk(cell) then nil else "noRoad"
+		end
+		function self.setDropPick(side: number, x: number, y: number): (boolean, string?)
+			local d = self.drop
+			if not d or d.phase ~= "pick" or not alive(side) then
+				return false, "notInMode"
+			end
+			local why = self.landingProblem(x, y, side)
+			if why then
+				return false, why
+			end
+			d.picks[side] = { x = x, y = y }
+			return true, nil
+		end
+		function self.setDropReady(side: number): (boolean, string?)
+			local d = self.drop
+			if not d or d.phase ~= "pick" then
+				return false, "notInMode"
+			end
+			d.ready[side] = true
+			return true, nil
+		end
+		function self.dropLeft(): number
+			local d = self.drop
+			if not d or d.phase == "done" then
+				return 0
+			end
+			if d.phase == "pick" then
+				return math.max(0, d.pickEnds - d.t) + num("drop.flySec") + num("drop.chuteSec")
+			end
+			return math.max(0, d.landT - d.t)
+		end
+		-- the game's vqe: picks are checked again (and kept apart), then the planes go
+		function O.launch()
+			local d = self.drop
+			d.phase = "flight"
+			d.pickEnds = math.min(d.pickEnds, d.t)
+			local taken = {}
+			local sides = {}
+			for side in self.sides do
+				if alive(side) then
+					table.insert(sides, side)
+				end
+			end
+			table.sort(sides)
+			for _, side in sides do
+				local p = d.picks[side]
+				if self.landingProblem(p.x, p.y, side) or not O.apartFrom(p.x, p.y, taken, num("drop.apart")) then
+					p = d.homes[side]
+				end
+				d.picks[side] = { x = p.x, y = p.y }
+				table.insert(taken, d.picks[side])
+			end
+			local landT = d.t
+			-- the plane maths runs on the war clock; shift its times onto the drop clock
+			for _, side in sides do
+				local p = d.picks[side]
+				local pl = self.planeFor(side, p.x, p.y, (r.data["drop.loads"] :: { string }) or {}, num("drop.flySec"), num("drop.stickGap"))
+				local k = d.t - self.time
+				pl.startT += k
+				pl.overT += k
+				pl.goneT += k
+				for _, l in pl.loads do
+					l.outT += k
+					l.landT += k
+					landT = math.max(landT, l.landT)
+				end
+				table.insert(d.planes, pl)
+				event({ type = "dropAway", side = side, sec = math.ceil(num("drop.flySec")), x = p.x, y = p.y })
+			end
+			d.landT = landT
+		end
+		-- the game's bqe: everyone down, the war starts
+		function O.land()
+			local d = self.drop
+			d.phase = "done"
+			for _, pl in d.planes do
+				if alive(pl.side) then
+					local truck = nil
+					for _, l in pl.loads do
+						local x, y = self.freeSpotAt(l.x, l.y)
+						local u = self.spawnUnit(l.kind, pl.side, x, y)
+						if l.kind == "command" and not truck then
+							truck = u
+						end
+					end
+					local first = pl.loads[1] or { x = pl.fromX, y = pl.fromY }
+					event({ type = "dropLanded", side = pl.side, x = first.x, y = first.y })
+					if truck and r:flag("drop.autoDeploy") then
+						local c = self.hqDeployCell(truck)
+						if c >= 0 and self.hqRoadOk(c) then
+							self.deployHq(pl.side, truck.id)
+						else
+							event({ type = "dropNoRoad", side = pl.side, x = first.x, y = first.y })
+						end
+					end
+				end
+			end
+		end
+		-- the game's nq
+		function self.dropTick(dt: number)
+			local d = self.drop
+			d.t += dt
+			if d.phase == "pick" then
+				local all = true
+				for side, rd in d.ready do
+					if not rd and alive(side) then
+						all = false
+					end
+				end
+				if d.t >= d.pickEnds or all then
+					O.launch()
+				end
+			elseif d.phase == "flight" and d.t >= d.landT then
+				O.land()
+			end
+		end
+	end
+
+	-- Cancel and demolish (the game's cancelQueued / cancelBuilding / ert / trt / Qbe / ort): a queued unit
+	-- can be called off for what was paid; a building still going up for the unfinished share of its
+	-- price (and kill cost); a finished one (not the HQ) is pulled down over demolish.sec, its queue
+	-- refunded first, giving back demolish.refundShare of its price and kill cost. While it comes down
+	-- it does nothing.
+	function self.cancelQueued(side: number, id: number, index: number): (boolean, string?)
+		local st = self.entities[id]
+		if not st or not st.alive or st.side ~= side or not st.queue or index < 1 or index > #st.queue then
+			return false, "blocked"
+		end
+		table.remove(st.queue, index)
+		local paid = table.remove(st.queuePaid or {}, index)
+		if index == 1 then
+			st.queueProgress = 0
+		end
+		self.sides[side].oil += paid or 0
+		return true, nil
+	end
+	function self.priceOf(st: Entity): number
+		return st.paid or numOr(`structures.{st.kind}.cost`, 0)
+	end
+	function self.removeStructure(st: Entity)
+		st.alive, st.hp = false, 0
+		st.queue = {}
+		setFootprint(st, false)
+		gridTick = -1
+	end
+	function self.cancelBuilding(side: number, id: number): (boolean, string?)
+		local st = self.entities[id]
+		if not st or not st.alive or st.side ~= side or not isStructure(st) or st.built >= 1 then
+			return false, "blocked"
+		end
+		self.sides[side].oil += math.floor(self.priceOf(st) * (1 - st.built) + 0.5)
+		local kc = numOr(`structures.{st.kind}.killCost`, 0)
+		if kc > 0 then
+			self.sides[side].killsSpent = math.max(0, (self.sides[side].killsSpent or 0) - math.floor(kc * (1 - st.built) + 0.5))
+		end
+		self.removeStructure(st)
+		event({ type = "buildCancelled", id = st.id, side = side, kind = st.kind })
+		return true, nil
+	end
+	function self.demolishProblem(side: number, st: Entity?): string?
+		if not st or not st.alive or not isStructure(st) then
+			return "blocked"
+		end
+		if st.side ~= side then
+			return "notOwned"
+		end
+		if st.built < 1 or st.demolishAt or st.kind == "hq" then
+			return "blocked"
+		end
+		return nil
+	end
+	function self.demolish(side: number, id: number): (boolean, string?)
+		local st = self.entities[id]
+		local why = self.demolishProblem(side, st)
+		if why then
+			return false, why
+		end
+		local s = st :: Entity
+		for i = #(s.queue or {}), 1, -1 do
+			self.cancelQueued(side, s.id, i)
+		end
+		s.demolishFrom, s.demolishAt = self.time, self.time + num("demolish.sec")
+		return true, nil
+	end
+	function self.demolishTick()
+		for _, st in self.list do
+			if st.alive and st.demolishAt and self.time >= st.demolishAt then
+				local share = num("demolish.refundShare")
+				local oil = math.floor(self.priceOf(st) * share + 0.5)
+				local kills = math.floor(numOr(`structures.{st.kind}.killCost`, 0) * share + 0.5)
+				local sd = self.sides[st.side]
+				if sd then
+					sd.oil += oil
+					sd.killsSpent = math.max(0, (sd.killsSpent or 0) - kills)
+				end
+				self.removeStructure(st)
+				event({ type = "demolished", id = st.id, side = st.side, kind = st.kind, oil = oil })
+			end
+		end
+	end
+
+	-- Armies (the game's nations[].army, allows, N$ and armyUnits): each side fights as the coalition
+	-- (the default) or the republic. Only the coalition fields mortars; only the republic lays
+	-- minefields (and has the sea units, not in the slice).
+	function self.armyOf(side: number): string
+		return (deps.armies and deps.armies[side]) or "coalition"
+	end
+	function self.armyAllows(side: number, item: string): boolean
+		if item == "mortar" then
+			return self.armyOf(side) == "coalition"
+		end
+		if item == "minefield" then
+			return self.armyOf(side) == "republic"
+		end
+		return true
+	end
+
+	-- Minefields (the game's Tk / Tet / Aet / Cve / kve / layMinefield / yle / LA / Pet / Ret / vle / Yq /
+	-- Lve / EI): drawn as a stroke, clipped at maxMetres; every cell within half of widthMetres of it
+	-- that is open, buildable, off a rig pad, clear of other buildings and minefields and enemyGap from
+	-- enemy buildings takes mines. Price oilPerMetre, one charge per metresPerMine and secPerMetre to lay,
+	-- all on the metres that take mines. Cells are laid in order along the stroke. A non-engineer
+	-- (either side's) on a laid cell sets one off: damage by armour, splashShare of it on everyone within
+	-- splashCells, then gapSec before the next; a truck on it is lost. Enemy engineers on or next to it
+	-- find it and, standing on it, clear a charge every clearSec. Hidden from the enemy until found.
+	do
+		local M: any = {}
+		local function mpc(): number
+			return math.max(1e-6, num("minefield.metresPerCell"))
+		end
+		-- the game's Tet: snap to cell centres, drop repeats, clip at maxCells
+		function M.snap(pts: { { x: number, y: number } }, maxCells: number)
+			local n = {}
+			for _, a in pts do
+				local x = math.min(W - 1, math.max(0, math.floor(a.x))) + 0.5
+				local y = math.min(H - 1, math.max(0, math.floor(a.y))) + 0.5
+				local l = n[#n]
+				if not l or l.x ~= x or l.y ~= y then
+					table.insert(n, { x = x, y = y })
+				end
+			end
+			local sum = 0
+			for i = 2, #n do
+				local a, b = n[i - 1], n[i]
+				local l = math.sqrt((b.x - a.x) ^ 2 + (b.y - a.y) ^ 2)
+				if sum + l > maxCells + 1e-6 then
+					local c = (maxCells - sum) / l
+					local h = { x = math.floor(a.x + (b.x - a.x) * c) + 0.5, y = math.floor(a.y + (b.y - a.y) * c) + 0.5 }
+					local u = table.move(n, 1, i - 1, 1, {})
+					local d = math.sqrt((h.x - a.x) ^ 2 + (h.y - a.y) ^ 2)
+					if (h.x ~= a.x or h.y ~= a.y) and sum + d <= maxCells + 1e-6 then
+						table.insert(u, h)
+						sum += d
+					end
+					return u, sum, true
+				end
+				sum += l
+			end
+			return n, sum, false
+		end
+		-- the game's Cve: cells taken by buildings and minefields
+		function M.taken(): { [number]: boolean }
+			local set = {}
+			for _, st in self.list do
+				if st.alive and isStructure(st) then
+					for _, c in (if st.kind == "minefield" then st.mineCells or {} else footprintCells(st.cell, footprintOf(st.kind))) do
+						set[c] = true
+					end
+				end
+			end
+			return set
+		end
+		-- the game's Aet
+		function M.cellProblem(side: number, c: number, taken: { [number]: boolean }): string?
+			if c < 0 or c >= W * H then
+				return "blocked"
+			end
+			local key = `terrain.{roads.terrain(c)}.buildable`
+			if not (r:has(key) and r:flag(key)) or not roads.passable(c) then
+				return "mineGround"
+			end
+			if taken[c] then
+				return "spacing"
+			end
+			local x, y = c % W + 0.5, c // W + 0.5
+			local pad = num("rigs.padCells") + 0.5
+			for _, rig in rigList do
+				if math.abs(rig.x - x) <= pad and math.abs(rig.y - y) <= pad then
+					return "onRig"
+				end
+			end
+			local gap = num("build.enemyGap")
+			for _, st in self.list do
+				if st.alive and isStructure(st) and st.side ~= side and st.kind ~= "minefield" then
+					local l = gap + footprintOf(st.kind)
+					if (st.cell % W + 0.5 - x) ^ 2 + (st.cell // W + 0.5 - y) ^ 2 <= l * l then
+						return "nearEnemy"
+					end
+				end
+			end
+			return nil
+		end
+		-- the game's Tk: the layout of a stroke, its price and what is wrong with it
+		function self.mineLayout(side: number, pts: { { x: number, y: number } }, free: boolean?): { [string]: any }
+			local a = mpc()
+			local line, cellsLong, clipped = M.snap(pts, num("minefield.maxMetres") / a)
+			local width = math.max(1, 2 * math.floor((num("minefield.widthMetres") / a - 1) / 2 + 0.5) + 1)
+			local l = (width - 1) / 2
+			local found = {}
+			if #line > 0 then
+				local x0, y0, x1, y1 = math.huge, math.huge, -math.huge, -math.huge
+				for _, p in line do
+					x0, y0, x1, y1 = math.min(x0, p.x), math.min(y0, p.y), math.max(x1, p.x), math.max(y1, p.y)
+				end
+				local along = { 0 }
+				for i = 2, #line do
+					along[i] = along[i - 1] + math.sqrt((line[i].x - line[i - 1].x) ^ 2 + (line[i].y - line[i - 1].y) ^ 2)
+				end
+				local reach = l + 0.01
+				for y = math.max(0, math.floor(y0 - l - 1)), math.min(H - 1, math.floor(y1 + l + 1)) do
+					for x = math.max(0, math.floor(x0 - l - 1)), math.min(W - 1, math.floor(x1 + l + 1)) do
+						local px, py = x + 0.5, y + 0.5
+						local best, at = math.huge, 0
+						if #line == 1 then
+							best = math.sqrt((px - line[1].x) ^ 2 + (py - line[1].y) ^ 2)
+						else
+							for i = 2, #line do
+								local p0, p1 = line[i - 1], line[i]
+								local bx, by = p1.x - p0.x, p1.y - p0.y
+								local u = bx * bx + by * by
+								local t = if u > 0 then math.clamp(((px - p0.x) * bx + (py - p0.y) * by) / u, 0, 1) else 0
+								local z = math.sqrt((px - (p0.x + bx * t)) ^ 2 + (py - (p0.y + by * t)) ^ 2)
+								if z < best - 1e-9 then
+									best, at = z, along[i - 1] + math.sqrt(u) * t
+								end
+							end
+						end
+						if best <= reach then
+							table.insert(found, { c = y * W + x, along = at, d = best })
+						end
+					end
+				end
+			end
+			table.sort(found, function(p, q)
+				if p.along ~= q.along then
+					return p.along < q.along
+				end
+				if p.d ~= q.d then
+					return p.d < q.d
+				end
+				return p.c < q.c
+			end)
+			local taken = M.taken()
+			local cells, why, good = {}, {}, {}
+			for i, f in found do
+				cells[i] = f.c
+				why[i] = M.cellProblem(side, f.c, taken) or false
+				if not why[i] then
+					table.insert(good, f.c)
+				end
+			end
+			local metres = cellsLong * a
+			local laid = if #cells > 0 then metres * #good / #cells else 0
+			local cost = math.floor(laid * num("minefield.oilPerMetre") + 0.5)
+			local mines = math.max(1, math.floor(laid / math.max(1e-6, num("minefield.metresPerMine")) + 0.5))
+			local sec = math.max(0.5, laid * num("minefield.secPerMetre"))
+			local problem: string? = nil
+			if not free and not self.armyAllows(side, "minefield") then
+				problem = "locked"
+			elseif not free and not alive(side) then
+				problem = "blocked"
+			elseif #good == 0 and #cells > 0 and metres >= num("minefield.minMetres") then
+				for _, w in why do
+					if w then
+						problem = w
+						break
+					end
+				end
+				problem = problem or "mineGround"
+			elseif laid < num("minefield.minMetres") - 1e-6 then
+				problem = "mineShort"
+			elseif not free and self.sides[side].oil < cost then
+				problem = "oil"
+			end
+			return {
+				pts = line, cells = cells, why = why, good = good, metres = metres, laidMetres = laid,
+				cost = cost, mines = mines, sec = sec, clipped = clipped, problem = problem,
+			}
+		end
+		-- the game's layMinefield + yle
+		function self.layMinefield(side: number, pts: { { x: number, y: number } }): (number?, string?)
+			if self.winner then
+				return nil, "blocked"
+			end
+			local lay = self.mineLayout(side, pts)
+			if lay.problem then
+				return nil, lay.problem
+			end
+			self.sides[side].oil -= lay.cost
+			local cell = lay.good[#lay.good // 2 + 1] or -1
+			local hp = num("structures.minefield.hp")
+			local st = add({
+				kind = "minefield", cat = "structure", class = "structure", side = side, x = cell % W + 0.5,
+				y = cell // W + 0.5, cell = cell, heading = 0, hp = hp, maxHp = hp, shotTimer = 0, alive = true,
+				queue = {}, queueProgress = 0, built = 0, lastHitAt = -99, paid = lay.cost,
+				mineCells = table.clone(lay.good), mineMetres = math.floor(lay.laidMetres + 0.5),
+				buildSec = lay.sec, mines = lay.mines, mineSeen = {},
+			})
+			event({ type = "buildPlaced", id = st.id, kind = "minefield", side = side })
+			return st.id, nil
+		end
+		-- the game's LA / xve: the cells laid so far (in order along the stroke)
+		function self.laidMines(st: Entity): ({ number }, { [number]: boolean })
+			local cells = st.mineCells or {}
+			local n = if st.built >= 1 then #cells else math.floor(#cells * math.max(0, st.built))
+			if st.laidCache and st.laidCache.n == n then
+				return st.laidCache.list, st.laidCache.set
+			end
+			local list, set = table.move(cells, 1, n, 1, {}), {}
+			for _, c in list do
+				set[c] = true
+			end
+			st.laidCache = { n = n, list = list, set = set }
+			return list, set
+		end
+		-- the game's EI / Mve: hidden from this side (a minefield the side has not found)
+		function self.mineHidden(st: Entity, side: number): boolean
+			return st.kind == "minefield" and side > 0 and st.side ~= side and not (st.mineSeen and st.mineSeen[side])
+		end
+		function M.spend(st: Entity)
+			st.mines = (st.mines or num("minefield.charges")) - 1
+			if st.mines <= 0 then
+				self.removeStructure(st)
+				event({ type = "minefieldSpent", id = st.id, side = st.side, x = st.x, y = st.y })
+			end
+		end
+		function M.eligible(u: Entity): boolean
+			return u.alive and u.cat == "unit" and u.hp > 0 and not u.inside and not u.carrier
+				and text(`units.{u.kind}.armour`) ~= "air"
+		end
+		-- the game's vle: a mine goes off under a unit or a truck
+		function M.blast(st: Entity, u: Entity)
+			local cfgDamage = function(e: Entity): number
+				return numOr(`minefield.damage.{text(`units.{e.kind}.armour`)}`, 0)
+			end
+			st.mineAt = self.time
+			st.mineSeen = st.mineSeen or {}
+			st.mineSeen[u.side] = true
+			local x, y = u.x, u.y
+			local victims = {}
+			if u.kind == TRUCK then
+				u.hp = 0
+				hitTruck(u, 0, "", 0, st.side)
+			else
+				local dmg = cfgDamage(u)
+				if dmg > 0 then
+					u.hp -= dmg
+					u.lastHitAt = self.time
+					table.insert(victims, u)
+				end
+			end
+			local sc = num("minefield.splashCells")
+			for _, o in unitsNear(x, y, sc) do
+				if o ~= u and o.kind ~= TRUCK and M.eligible(o) and (o.x - x) ^ 2 + (o.y - y) ^ 2 <= sc * sc then
+					local dmg = cfgDamage(o) * num("minefield.splashShare")
+					if dmg > 0 then
+						o.hp -= dmg
+						o.lastHitAt = self.time
+						table.insert(victims, o)
+					end
+				end
+			end
+			for _, o in victims do
+				killIfDead(o, st.side)
+			end
+			event({ type = "mineBlast", id = st.id, side = u.side, owner = st.side, kind = u.kind, x = x, y = y })
+			M.spend(st)
+		end
+		-- the game's Met: within s cells of any of its cells
+		function M.near(st: Entity, x: number, y: number, s: number): boolean
+			for _, c in st.mineCells or {} do
+				local dx = math.max(0, math.abs(x - (c % W + 0.5)) - 0.5)
+				local dy = math.max(0, math.abs(y - (c // W + 0.5)) - 0.5)
+				if dx * dx + dy * dy <= s * s then
+					return true
+				end
+			end
+			return false
+		end
+		-- the game's Pet / Ret, every tick
+		function self.minesTick(dt: number)
+			local spot = num("minefield.spotCells")
+			for _, st in self.list do
+				if st.alive and st.kind == "minefield" and st.built > 0 then
+					local list, set = self.laidMines(st)
+					if not st.box then
+						local x0, y0, x1, y1 = math.huge, math.huge, -math.huge, -math.huge
+						for _, c in st.mineCells do
+							x0, y0 = math.min(x0, c % W), math.min(y0, c // W)
+							x1, y1 = math.max(x1, c % W + 1), math.max(y1, c // W + 1)
+						end
+						st.box = { x0, y0, x1, y1 }
+					end
+					local b = st.box
+					local clearing, first, truck = false, nil, nil
+					if #list > 0 then
+						for _, u in self.list do
+							if M.eligible(u) and u.x >= b[1] - spot and u.x <= b[3] + spot and u.y >= b[2] - spot and u.y <= b[4] + spot then
+								local on = set[cellAt(u.x, u.y)] == true
+								local ab = r.data[`units.{u.kind}.abilities`] :: { string }?
+								if u.kind == TRUCK then
+									if on and not truck then
+										truck = u
+									end
+								elseif ab and table.find(ab, "engineer") then
+									if canAttack(st.side, u.side) then
+										if on or M.near(st, u.x, u.y, spot) then
+											st.mineSeen[u.side] = true
+										end
+										if on then
+											clearing = true
+										end
+									end
+								elseif on and not first then
+									first = u
+								end
+							end
+						end
+					end
+					local stop = false
+					if clearing then
+						st.mineClear = (st.mineClear or 0) + dt
+						if st.mineClear >= num("minefield.clearSec") then
+							st.mineClear = 0
+							M.spend(st)
+							stop = not st.alive
+						end
+					end
+					if not stop and self.time - (st.mineAt or -99) >= num("minefield.gapSec") then
+						if first then
+							M.blast(st, first)
+						elseif truck then
+							M.blast(st, truck)
+						end
+					end
+				end
+			end
+		end
+	end
+
 	function self.step(dt: number)
 		if self.winner then
+			return
+		end
+		if self.drop and self.drop.phase ~= "done" then
+			-- the game freezes the war while the sides pick and the planes fly in
+			self.ticks += 1
+			self.dropTick(dt)
 			return
 		end
 		self.time += dt
@@ -5604,6 +6451,9 @@ function Sim.new(deps: Deps)
 		end
 		production(dt)
 		reconTick(dt)
+		self.deployTick()
+		self.demolishTick()
+		self.minesTick(dt)
 		checkHeadless()
 		landStrikes()
 		structuresFire(dt)

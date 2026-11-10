@@ -6,6 +6,9 @@
 	territory (from the server's state); red: it is not. Left click asks the server to build there
 	(Shift keeps placing); right click or Esc cancels. The server runs the game's full placement check
 	(roads, rigs, spacing, territory, enemy gap, requirements, oil) and answers with a notice if refused.
+	Minefield (Republic only, - key or the HUD): hold the left button and drag a line across the map
+	(the game's drawMineStroke: a point every cell, at most 600); letting go asks the server to lay it.
+	The server works out which cells take mines and the price. Right click or Esc cancels.
 	PLACEHOLDER visuals (TEMP-003).
 ]]
 
@@ -19,7 +22,10 @@ local BuildController = {}
 
 local S = World.STUDS_PER_CELL
 local FOOT = 1 -- production.footprint.facility and .defence
-local KEYS = { [Enum.KeyCode.B] = "barracks", [Enum.KeyCode.F] = "factory", [Enum.KeyCode.K] = "bunker", [Enum.KeyCode.G] = "atgun", [Enum.KeyCode.Y] = "radar", [Enum.KeyCode.U] = "sam", [Enum.KeyCode.Semicolon] = "artybase", [Enum.KeyCode.Quote] = "nightops" }
+local KEYS = { [Enum.KeyCode.B] = "barracks", [Enum.KeyCode.F] = "factory", [Enum.KeyCode.K] = "bunker", [Enum.KeyCode.G] = "atgun", [Enum.KeyCode.Y] = "radar", [Enum.KeyCode.U] = "sam", [Enum.KeyCode.Semicolon] = "artybase", [Enum.KeyCode.Quote] = "nightops", [Enum.KeyCode.Minus] = "minefield" }
+local stroke: { { x: number, y: number } } = {}
+local drawing = false
+local strokeParts: { Part } = {}
 local placing: string? = nil
 local lastPlaced = -1
 local ghost: Part
@@ -73,6 +79,35 @@ function BuildController.start(mapWidth: number, send: (any) -> ())
 	ghost.Parent = workspace
 
 	RunService.RenderStepped:Connect(function()
+		if placing == "minefield" then
+			ghost.Transparency = 1
+			if drawing then
+				local hit = groundPoint(UserInputService:GetMouseLocation())
+				if hit then
+					local x, y = World.toCell(hit)
+					local last = stroke[#stroke]
+					if (not last or (x - last.x) ^ 2 + (y - last.y) ^ 2 >= 1) and #stroke < 600 then
+						table.insert(stroke, { x = x, y = y })
+						local p = strokeParts[#stroke]
+						if not p then
+							p = Instance.new("Part")
+							p.Anchored, p.CanCollide, p.CanQuery, p.CanTouch, p.CastShadow = true, false, false, false, false
+							p.Size = Vector3.new(S * 0.6, 0.4, S * 0.6)
+							p.Material = Enum.Material.Neon
+							p.Color = Color3.fromRGB(235, 200, 90)
+							p.Parent = workspace
+							strokeParts[#stroke] = p
+						end
+						p.Transparency = 0.3
+						p.CFrame = CFrame.new(World.toWorld(x, y, 0.5))
+					end
+				end
+			end
+			return
+		end
+		for _, p in strokeParts do
+			p.Transparency = 1
+		end
 		if not placing then
 			ghost.Transparency = 1
 			return
@@ -94,6 +129,11 @@ function BuildController.start(mapWidth: number, send: (any) -> ())
 			end
 			return
 		end
+		if placing == "minefield" and input.UserInputType == Enum.UserInputType.MouseButton1 and not processed then
+			table.clear(stroke)
+			drawing = true
+			return
+		end
 		if input.UserInputType == Enum.UserInputType.MouseButton1 and not processed then
 			local cx, cy = cursorCell()
 			if cx and cy then
@@ -106,7 +146,27 @@ function BuildController.start(mapWidth: number, send: (any) -> ())
 			end
 		elseif input.UserInputType == Enum.UserInputType.MouseButton2 or input.KeyCode == Enum.KeyCode.Escape then
 			placing = nil
+			drawing = false
 			lastPlaced = os.clock()
+		end
+	end)
+
+	UserInputService.InputEnded:Connect(function(input)
+		if placing == "minefield" and drawing and input.UserInputType == Enum.UserInputType.MouseButton1 then
+			drawing = false
+			local pts = {}
+			for _, p in stroke do
+				table.insert(pts, math.floor(p.x * 10 + 0.5) / 10)
+				table.insert(pts, math.floor(p.y * 10 + 0.5) / 10)
+			end
+			if #pts > 0 then
+				sendIntent({ kind = "layMines", pts = pts })
+			end
+			lastPlaced = os.clock()
+			local shift = UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) or UserInputService:IsKeyDown(Enum.KeyCode.RightShift)
+			if not shift then
+				placing = nil
+			end
 		end
 	end)
 end

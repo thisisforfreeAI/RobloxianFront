@@ -462,6 +462,48 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 
 	---------------------------------------------------------------- trucks ($st)
 
+	-- the game's Fst: with no HQ, deploy the command truck where it stands if a road there reaches the
+	-- rigs, else drive it back to the old HQ's site and set up there; with no truck, queue one at a
+	-- working factory (APPROX: a full queue is not trimmed first). True while rehousing.
+	local function rehouse(): boolean
+		if sim.hqOf(side) then
+			return false
+		end
+		local tr = sim.truckOf(side)
+		if tr then
+			if tr.deployAt then
+				return true
+			end
+			local c = sim.hqDeployCell(tr)
+			if c >= 0 and sim.hqRoadOk(c) and sim.deployHq(side, tr.id) then
+				return true
+			end
+			local old: any = sim.entities[sim.sides[side].hqId]
+			if not old and sim.drop then
+				old = sim.drop.homes[side] -- the game's g9e: after the drop, drive to the start point
+			end
+			local idleNow = not tr.path
+			if old and idleNow then
+				if hypot(tr.x - old.x, tr.y - old.y) > scaled(2) then
+					sim.orderMove(side, { tr.id }, old.x, old.y)
+				elseif c >= 0 then
+					sim.deployHq(side, tr.id)
+				end
+			end
+			return true
+		end
+		if sim.hqOnOrder(side) then
+			return true
+		end
+		for _, st in sim.list do
+			if st.alive and st.side == side and st.kind == "factory" and not sim.inactiveReason(st) then
+				sim.orderProduce(side, "command", st.id)
+				return true
+			end
+		end
+		return false
+	end
+
 	local function trucks(): boolean
 		local s = sim.sides[side]
 		local rigs = {}
@@ -924,6 +966,9 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 				elseif footShort then
 					local mortarShare = num("bots.mortarShare") * (0.5 + persona.defence)
 					item = if k < 0.3 then "at" elseif k < 0.3 + mortarShare then "mortar" else "infantry"
+				end
+				if item == "mortar" and not sim.armyAllows(side, "mortar") then
+					item = "infantry" -- the republic has no mortars
 				end
 			elseif st.kind == "factory" then
 				-- a scout once the army is bots.scoutArmy, up to round(army x scoutShare) (max intel.scoutMax),
@@ -1889,11 +1934,11 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 	-- (rigStrikes, if worth more)
 	local function barrages()
 		local strikes = rigStrikes()
-		local minR = num("artillery.rocketMinRange")
 		for _, e in sim.list do
-			if e.alive and e.side == side and e.cat == "unit" and not e.inside and text(`units.{e.kind}.weapon`) == "salvo"
+			if e.alive and e.side == side and e.cat == "unit" and not e.inside and text(sim.unitKey(e) .. ".weapon") == "salvo"
 				and not e.barrage and (e.shotTimer or 0) <= 0 and not e.attackId and not e.garrisonCity then
-				local range = num(`units.{e.kind}.range`)
+				local range = num(sim.unitKey(e) .. ".range")
+				local minR = sim.minRangeOf(sim.unitKey(e)) -- the game's lS (the republic's missile reaches less close)
 				local best, bestV, rigId = nil, 0, nil
 				for _, st in intel.structures do
 					if canAttack(side, st.owner) then
@@ -2087,9 +2132,10 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 		end
 		updateIntel()
 		self.inf = buildInfluence()
-		local p = plan()
-		local saving = trucks()
-		if not saving then
+		local housing = rehouse()
+		local p = if housing then nil else plan()
+		local saving = not housing and trucks()
+		if not housing and not saving then
 			placeBuilding(p)
 			training(p)
 		end
@@ -2109,7 +2155,97 @@ function Bot.new(sim: any, side: number, personaId: string?, level: string?)
 	end
 	self.think = think
 
+	-- the game's hX: where to land. By the persona's drop.bots shares: near home (its start point), by
+	-- one of the drop.middleRigs rigs farthest from every start, or drop.rivalStandOff in from a rival's
+	-- start towards the middle; each tried up to 12 times with drop.jitter (twice that after 6 tries)
+	-- for a spot the drop accepts, with room by a road, apart from other bots' picks
+	local function dropPick(): { x: number, y: number }
+		local d = sim.drop
+		local share = function(k: string): number
+			local key = `drop.bots.{persona.id}.{k}`
+			return if sim.rules:has(key) then num(key) else num(`drop.bots.balanced.{k}`)
+		end
+		local home, middle = share("home"), share("middle")
+		local others = {}
+		for s2, p in d.picks do
+			if s2 ~= side and d.ready[s2] then
+				table.insert(others, p)
+			end
+		end
+		local apart = num("drop.apart")
+		local function try(c: any, r: number): any
+			for f = 0, 11 do
+				local a = rand() * math.pi * 2
+				local g = r * math.sqrt(rand()) * (if f < 6 then 1 else 2)
+				local x, y = c.x + math.cos(a) * g, c.y + math.sin(a) * g
+				local ok = not sim.landingProblem(x, y, side) and not sim.dropWarning(x, y)
+				if ok then
+					for _, o in others do
+						if hypot(o.x - x, o.y - y) < apart then
+							ok = false
+						end
+					end
+				end
+				if ok then
+					return { x = x, y = y }
+				end
+			end
+			return nil
+		end
+		local jitter = num("drop.jitter")
+		local c = rand()
+		local h = nil
+		if c >= home and c < home + middle then
+			local rigs = {}
+			for _, rg in sim.rigs do
+				local near = math.huge
+				for _, hm in d.homes do
+					near = math.min(near, hypot(rg.x - hm.x, rg.y - hm.y))
+				end
+				table.insert(rigs, { x = rg.x, y = rg.y, near = near })
+			end
+			table.sort(rigs, function(a, b)
+				return a.near > b.near
+			end)
+			for i = 1, math.max(1, num("drop.middleRigs")) do
+				local rg = rigs[i]
+				if rg then
+					local a = rand() * math.pi * 2
+					local so = num("drop.rigStandOff")
+					h = try({ x = rg.x + math.cos(a) * so, y = rg.y + math.sin(a) * so }, jitter)
+					if h then
+						break
+					end
+				end
+			end
+		elseif c >= home + middle then
+			local rivals = {}
+			for s2, hm in d.homes do
+				if s2 ~= side and canAttack(side, s2) then
+					table.insert(rivals, hm)
+				end
+			end
+			local rv = rivals[math.floor(rand() * #rivals) + 1]
+			if rv then
+				local fx, fy = sim.roads.width / 2 - rv.x, sim.roads.height / 2 - rv.y
+				local g = math.max(1e-9, hypot(fx, fy))
+				local so = num("drop.rivalStandOff")
+				h = try({ x = rv.x + fx / g * so, y = rv.y + fy / g * so }, jitter)
+			end
+		end
+		h = h or try(d.homes[side], jitter)
+		return h or { x = d.homes[side].x, y = d.homes[side].y }
+	end
+
 	function self.step(_dt: number)
+		if sim.drop and sim.drop.phase ~= "done" then
+			if sim.drop.phase == "pick" and not sim.drop.ready[side] then
+				local p = dropPick()
+				sim.setDropPick(side, p.x, p.y)
+				sim.setDropReady(side)
+			end
+			return
+		end
 		if sim.time < self.nextThink then
 			return
 		end

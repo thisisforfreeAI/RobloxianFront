@@ -152,4 +152,23 @@ function AirOverlay.apply(list: { any }, time: number)
 	serverTime, receivedAt = time, os.clock()
 end
 
+local minePool: { Part } = {}
+-- minefields you can see: { id, side, charges, laid cells }; a flat tile on each laid cell (yours
+-- amber, a found enemy field red). PLACEHOLDER visuals.
+function AirOverlay.applyMines(list: { any }, mapWidth: number)
+	local n = 0
+	for _, m in list do
+		local color = if m[2] == mySide then Color3.fromRGB(200, 160, 60) else Color3.fromRGB(220, 70, 60)
+		for _, c in m[4] do
+			n += 1
+			local p = pooled(minePool, n, color, Vector3.new(0.7 * S, 0.1, 0.7 * S))
+			p.Transparency = 0.35
+			p.CFrame = CFrame.new(World.toWorld(c % mapWidth + 0.5, c // mapWidth + 0.5, 0.15))
+		end
+	end
+	for i = n + 1, #minePool do
+		minePool[i].Transparency = 1
+	end
+end
+
 return AirOverlay

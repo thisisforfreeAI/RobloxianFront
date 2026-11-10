@@ -218,16 +218,7 @@ function MapRenderer.build(map: MapCodec.DecodedMap): Folder
 		label(disc, s.name, if s.kind == "capital" then 16 else 12)
 	end
 
-	-- HQ placeholders at each start: the HQ sprite in WarFront is 5 cells wide.
-	for i, s in map.data.starts do
-		local hq = newPart({
-			Size = Vector3.new(5 * S, 2, 5 * S),
-			Position = World.toWorld(s.x + 0.5, s.y + 0.5, 1),
-			Color = if i == 1 then Color3.fromRGB(60, 110, 200) else Color3.fromRGB(200, 70, 60),
-			Parent = folder,
-		})
-		label(hq, `HQ · {s.city}`, 14)
-	end
+	-- (HQs are drawn from the server's structures: with the opening drop they go up where each truck lands.)
 
 	folder.Parent = workspace
 	return folder

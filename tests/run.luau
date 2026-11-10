@@ -72,6 +72,13 @@ test("accepts a valid move", function()
 	local intent = Protocol.parse({ kind = "move", unitIds = { 1, 2, 2 }, x = 10, y = 20 }, 384, 240)
 	assert(intent and intent.kind == "move" and #intent.unitIds == 2, "should dedupe ids")
 end)
+test("intents without unit ids parse (drop pick, ready, cancel, demolish, mines)", function()
+	for _, raw in { { kind = "dropPick", x = 10, y = 10 }, { kind = "dropReady" }, { kind = "cancelQueue", index = 0 },
+		{ kind = "demolish", structureId = 3 }, { kind = "layMines", pts = { 1, 2, 3, 4 } } } do
+		local i, err = Protocol.parse(raw, 100, 100)
+		assert(i and i.kind == raw.kind, `{raw.kind}: {err}`)
+	end
+end)
 test("parses attack and produce, rejects bad ones", function()
 	local a = Protocol.parse({ kind = "attack", unitIds = { 1, 2 }, targetId = 7 }, 10, 10)
 	assert(a and a.kind == "attack" and (a :: any).targetId == 7)
@@ -237,6 +244,8 @@ if fs.isFile(matchPath) then
 			starts = { { x = 10.5, y = 30.5 }, { x = 170.5, y = 30.5 } },
 			rigs = o.rigs or { { x = 50, y = 30 }, { x = 130, y = 30 } },
 			settlements = o.settlements,
+			drop = o.drop,
+			armies = o.armies,
 		})
 	end
 	local function run(sim, seconds, bots: any?)
@@ -1542,6 +1551,57 @@ if fs.isFile(matchPath) then
 		eq((sim.orderBarrage(1, { far.id }, 150.5, 40.5)), 1)
 		assert(far.path ~= nil, "drives closer")
 	end)
+	test("republic artillery: a missile launcher, one heavy missile on order (min range 24, 40 s reload, tbm speed 15)", function()
+		local sim = newSim({ armies = { "republic", "coalition" } })
+		clearUnits(sim, {})
+		local tbm = sim.spawnUnit("artillery", 1, 30.5, 40.5)
+		local gun = sim.spawnUnit("artillery", 2, 150.5, 20.5)
+		eq(sim.unitKey(tbm), "armyUnits.republic.artillery")
+		eq(sim.unitKey(gun), "units.artillery", "the coalition keeps the howitzer")
+		eq(sim.num(sim.unitKey(tbm) .. ".hp"), sim.num("units.artillery.hp"), "the rest from the base unit")
+		eq(sim.minRangeOf(sim.unitKey(tbm)), 24)
+		local foes = {}
+		for i = 0, 2 do
+			table.insert(foes, sim.spawnUnit("infantry", 2, 70.5 + i, 40.5))
+		end
+		run(sim, 5)
+		eq(tbm.firedAt, nil, "no fire without an order")
+		eq(select(2, sim.orderBarrage(1, { tbm.id }, 50.5, 40.5)), "tooClose", "inside 24 cells")
+		eq((sim.orderBarrage(1, { tbm.id }, 71.5, 40.5)), 1)
+		tbm.shotTimer, tbm.still = 0, 0
+		local hp0 = 0
+		for _, f in foes do
+			hp0 += f.hp
+		end
+		local fired, rockets = nil, 0
+		for i = 1, 20 * 4 do
+			sim.step(0.05)
+			for _, ev in sim.takeEvents() do
+				if ev.type == "barrageFired" then
+					fired = i * 0.05
+					for _, st in sim.strikes do
+						if st.kind == "rocket" and st.shooter == tbm.id then
+							rockets += 1
+							assert(math.abs(st.at - sim.time - 41 / 15) < 0.1, `tbm flight: {st.at - sim.time}`)
+						end
+					end
+				end
+			end
+		end
+		assert(fired, "fired")
+		eq(rockets, 1, "one missile")
+		local hp1 = 0
+		for _, f in foes do
+			hp1 += math.max(0, f.hp)
+		end
+		run(sim, 3)
+		hp1 = 0
+		for _, f in foes do
+			hp1 += math.max(0, f.hp)
+		end
+		assert(hp0 - hp1 > 100, `the missile hurt all three: {hp0 - hp1}`)
+		assert(tbm.shotTimer > 25, `reloading 40 s: {tbm.shotTimer}`)
+	end)
 	test("bot: an idle reloaded rocket launcher fires at the best enemy building in reach", function()
 		local sim = newSim()
 		clearUnits(sim, {})
@@ -1831,6 +1891,260 @@ if fs.isFile(matchPath) then
 		sim.step(0.05)
 		bot.think()
 		eq(#(ifv.cargo or {}), 0, "unloaded under threat")
+	end)
+	test("command truck: deploys into an HQ after 10 s still (moving cancels), with its share of hp", function()
+		local sim = newSim()
+		clearUnits(sim, {})
+		local hq0 = sim.hqOf(1)
+		local tr = sim.spawnUnit("command", 1, hq0.x + 30, hq0.y)
+		eq(select(2, sim.deployHq(2, tr.id)), "noTruck", "not theirs")
+		assert(sim.deployHq(1, tr.id))
+		eq(select(2, sim.deployHq(1, tr.id)), "alreadyDeploying")
+		run(sim, 3)
+		sim.orderMove(1, { tr.id }, tr.x + 6, tr.y)
+		run(sim, 0.2)
+		eq(tr.deployAt, nil, "moving cancels it")
+		run(sim, 10)
+		tr.path, tr.target = nil, nil
+		tr.hp = tr.maxHp * 0.5
+		assert(sim.deployHq(1, tr.id))
+		local up = nil
+		for i = 1, 20 * 11 do
+			sim.step(0.05)
+			for _, ev in sim.takeEvents() do
+				if ev.type == "hqDeployed" then
+					up = i * 0.05
+				end
+			end
+		end
+		assert(up and up >= 9.9 and up <= 10.1, `HQ up after 10 s: {up}`)
+		eq(tr.alive, false, "the truck is gone")
+		local hq = sim.hqOf(1)
+		assert(hq ~= hq0, "the new HQ is the side's HQ")
+		assert(math.abs(hq.hp - hq.maxHp * 0.5) < 1, `half hp: {hq.hp}`)
+		assert(math.abs(hq.x - tr.x) <= 12.5 and math.abs(hq.y - tr.y) <= 12.5, "within deployReach")
+	end)
+	test("cancel and demolish: queued units refund what was paid; a building going up refunds the unfinished share; a demolish takes 6 s and gives back 60%", function()
+		local sim = newSim()
+		clearUnits(sim, {})
+		local sd = sim.sides[1]
+		sd.oil = 5000
+		local hq = sim.hqOf(1)
+		local before = sd.oil
+		assert(sim.orderProduce(1, "infantry"))
+		assert(sim.orderProduce(1, "infantry"))
+		local cost = before - sd.oil
+		run(sim, 1)
+		before = sd.oil
+		assert(sim.cancelQueued(1, hq.id, 2))
+		eq(#hq.queue, 1)
+		assert(sim.cancelQueued(1, hq.id, 1))
+		eq(hq.queueProgress, 0, "the one in training resets")
+		eq(sd.oil - before, cost, "all of it back")
+		eq(sim.cancelQueued(1, hq.id, 1), false, "nothing left")
+		-- a building going up
+		local o0 = sd.oil
+		local id, why = sim.placeStructure(1, "barracks", cellOf(20, 46))
+		assert(id, `placed: {why}`)
+		local b = sim.entities[id :: number]
+		local price = o0 - sd.oil
+		b.built = 0.25
+		eq(select(2, sim.demolish(1, b.id)), "blocked", "not finished: cancel it instead")
+		assert(sim.cancelBuilding(1, b.id))
+		eq(b.alive, false)
+		eq(sd.oil, o0 - price + math.floor(price * 0.75 + 0.5), "75% back")
+		-- a finished one
+		local id2 = sim.placeStructure(1, "barracks", cellOf(20, 46))
+		assert(id2, "the cell is free again")
+		local b2 = sim.entities[id2 :: number]
+		b2.built = 1
+		local o1 = sd.oil
+		assert(sim.orderProduce(1, "infantry", b2.id) or true)
+		eq(select(2, sim.demolish(2, b2.id)), "notOwned")
+		eq(select(2, sim.demolish(1, hq.id)), "blocked", "never the HQ")
+		assert(sim.demolish(1, b2.id))
+		eq(sd.oil, o1, "its queue refunded")
+		eq(select(2, sim.demolish(1, b2.id)), "blocked", "already coming down")
+		eq(sim.inactiveReason(b2), "demolishing")
+		local gone, back = nil, nil
+		for i = 1, 20 * 7 do
+			sim.step(0.05)
+			for _, ev in sim.takeEvents() do
+				if ev.type == "demolished" then
+					gone, back = i * 0.05, ev.oil
+				end
+			end
+		end
+		assert(gone and gone >= 5.9 and gone <= 6.1, `down after 6 s: {gone}`)
+		eq(b2.alive, false)
+		eq(back, math.floor(price * 0.6 + 0.5), "60% back")
+	end)
+	test("armies: only the coalition fields mortars, only the republic lays minefields", function()
+		local sim = newSim({ armies = { "republic", "coalition" } })
+		clearUnits(sim, {})
+		eq(sim.armyOf(1), "republic")
+		eq(sim.armyOf(2), "coalition")
+		eq(sim.armyAllows(1, "mortar"), false)
+		eq(sim.armyAllows(2, "mortar"), true)
+		eq(sim.mineLayout(2, { { x = 140, y = 45 }, { x = 150, y = 45 } }).problem, "locked", "the coalition has no mines")
+		eq(sim.mineLayout(1, { { x = 60, y = 45 } }).problem, "mineShort", "one cell is too short")
+	end)
+	test("minefield: a stroke is priced by the metres that take mines, laid along it, hidden until found", function()
+		local sim = newSim({ armies = { "republic", "coalition" } })
+		clearUnits(sim, {})
+		local sd = sim.sides[1]
+		sd.oil = 1000
+		local lay = sim.mineLayout(1, { { x = 60.2, y = 45.7 }, { x = 70.9, y = 45.1 } })
+		eq(lay.problem, nil)
+		eq(lay.metres, 200, "10 cells of 20 m")
+		eq(#lay.cells, 35, "3 cells wide (60 m), round ends")
+		eq(#lay.good, 35)
+		eq(lay.cost, 200)
+		eq(lay.mines, 20, "one per 10 m")
+		assert(math.abs(lay.sec - 16) < 1e-6, "0.08 s a metre")
+		eq(lay.cells[1], cellOf(60, 45), "laid from the start of the stroke, nearest the line first")
+		local o0 = sd.oil
+		local id = sim.layMinefield(1, { { x = 60.2, y = 45.7 }, { x = 70.9, y = 45.1 } })
+		assert(id, "laid")
+		eq(o0 - sd.oil, 200)
+		local mf = sim.entities[id :: number]
+		eq(sim.mineHidden(mf, 2), true, "the enemy can't see it")
+		eq(sim.mineHidden(mf, 1), false)
+		-- half laid after 8 s; a building may not go over it
+		run(sim, 8)
+		local list = sim.laidMines(mf)
+		assert(#list >= 15 and #list <= 17, `about half laid: {#list}`)
+		eq(sim.mineLayout(1, { { x = 62, y = 45 }, { x = 72, y = 45 } }).good[1] ~= nil, true, "the far end is still open")
+		run(sim, 9)
+		eq(mf.built, 1)
+		eq(#sim.laidMines(mf), 35)
+	end)
+	test("minefield: a unit on it sets off a mine (splash, gap, found by the victim); engineers find and clear it; trucks are lost", function()
+		local sim = newSim({ armies = { "republic", "coalition" } })
+		clearUnits(sim, {})
+		sim.sides[1].oil = 1000
+		local id = sim.layMinefield(1, { { x = 60.5, y = 45.5 }, { x = 70.5, y = 45.5 } })
+		local mf = sim.entities[id :: number]
+		mf.built = 1
+		local tank = sim.spawnUnit("tank", 2, 65.5, 45.5)
+		local inf = sim.spawnUnit("infantry", 2, 66.5, 45.5)
+		local t0, i0 = tank.hp, inf.hp
+		local n0 = mf.mines
+		sim.step(0.05)
+		eq(t0 - tank.hp, 150, "armour takes 150")
+		eq(mf.mines, n0 - 1, "one charge spent")
+		eq(mf.mineSeen[2], true, "the victim's side found it")
+		eq(sim.mineHidden(mf, 2), false)
+		eq(i0 - inf.hp, 28, "splash: 40% of 70 on the infantry next to it")
+		local n1 = mf.mines
+		run(sim, 0.5)
+		eq(mf.mines, n1, "gapSec 0.7 between blasts")
+		clearUnits(sim, {})
+		run(sim, 1)
+		-- an engineer clears without setting it off
+		local n2 = mf.mines
+		local eng = sim.spawnUnit("engineer", 2, 62.5, 45.5)
+		local e0 = eng.hp
+		run(sim, 4.1)
+		eq(eng.hp, e0, "engineers never set mines off")
+		eq(mf.mines, n2 - 1, "one charge cleared in 4 s")
+		eng.alive = false
+		-- a convoy truck rolling onto it is lost
+		local truck = nil
+		for _, e in sim.list do
+			if e.kind == "truck" and e.alive then
+				truck = e
+				break
+			end
+		end
+		if truck then
+			truck.x, truck.y = 68.5, 45.5
+			run(sim, 0.05)
+			eq(truck.alive, false, "the truck is lost")
+		end
+		-- spend the rest: the field is gone
+		mf.mines = 1
+		sim.spawnUnit("infantry", 2, 64.5, 45.5)
+		run(sim, 1)
+		eq(mf.alive, false, "spent")
+	end)
+	test("command truck: a side with a truck is not headless; the bot queues and deploys one after losing its HQ", function()
+		local sim = newSim()
+		clearUnits(sim, {})
+		sim.sides[1].oil = 5000
+		local b = sim.placeStructure(1, "barracks", cellOf(20, 42)) :: number
+		sim.entities[b].built = 1
+		local f = sim.placeStructure(1, "factory", cellOf(26, 42)) :: number
+		sim.entities[f].built = 1
+		local hq = sim.hqOf(1)
+		hq.hp = 0
+		hq.alive = false
+		local bot = Bot.new(sim, 1, "balanced")
+		bot.think()
+		assert(sim.hqOnOrder(1), "command truck queued")
+		local deployed = false
+		for _ = 1, 120 do
+			run(sim, 1)
+			bot.think()
+			if sim.hqOf(1) then
+				deployed = true
+				break
+			end
+		end
+		assert(deployed, "the bot set up a new HQ")
+		eq(sim.sides[1].lost, false)
+	end)
+	test("opening drop: the war waits for picks, planes drop a truck and 3 squads, the truck sets up the HQ", function()
+		local sim = newSim({ drop = true })
+		eq(sim.hqOf(1), nil, "no HQ before the drop")
+		local units = 0
+		for _, e in sim.list do
+			if e.cat == "unit" then
+				units += 1
+			end
+		end
+		eq(units, 0, "no start squads")
+		eq(select(2, sim.setDropPick(1, 3.5, 30.5)), "terrain", "too near the edge")
+		eq(select(2, sim.setDropPick(1, 160.5, 36.5)), "startTaken", "on the enemy's start")
+		assert(sim.setDropPick(1, 40.5, 36.5))
+		run(sim, 10)
+		eq(sim.time, 0, "the war waits while sides pick")
+		eq(sim.drop.phase, "pick")
+		sim.setDropReady(1)
+		sim.setDropReady(2)
+		run(sim, 0.1)
+		eq(sim.drop.phase, "flight")
+		local landed = nil
+		for i = 1, 20 * 25 do
+			sim.step(0.05)
+			for _, ev in sim.takeEvents() do
+				if ev.type == "dropLanded" and ev.side == 1 then
+					landed = i * 0.05
+				end
+			end
+		end
+		assert(landed and landed >= 19 and landed <= 24, `down after flySec + chuteSec and the last stick: {landed}`)
+		run(sim, 11)
+		local kinds = {}
+		for _, e in sim.list do
+			if e.cat == "unit" and e.side == 1 then
+				kinds[e.kind] = (kinds[e.kind] or 0) + 1
+			end
+		end
+		eq(kinds.command, nil, "the truck already became the HQ")
+		eq(kinds.infantry, 3)
+		local hq = sim.hqOf(1)
+		assert(hq, "HQ set up")
+		assert(math.abs(hq.x - 40.5) < 16 and math.abs(hq.y - 36.5) < 16, `near the pick: {hq.x},{hq.y}`)
+		assert(sim.hqOf(2), "the other side's HQ near its start point")
+	end)
+	test("bot: picks a landing in the opening drop and is ready at once", function()
+		local sim = newSim({ drop = true })
+		local bot = Bot.new(sim, 2, "warlord")
+		bot.step(0.05)
+		eq(sim.drop.ready[2], true)
+		local p = sim.drop.picks[2]
+		eq(sim.landingProblem(p.x, p.y, 2) == nil or (p.x == sim.drop.homes[2].x and p.y == sim.drop.homes[2].y), true)
 	end)
 	test("alerts: a road cut names the sides whose supply route ran through it", function()
 		local sim = newSim()

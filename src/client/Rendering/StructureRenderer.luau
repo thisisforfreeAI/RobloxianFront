@@ -15,7 +15,7 @@ local StructureRenderer = {}
 
 export type View = { id: number, kind: string, side: number, x: number, y: number, anchor: Part, ring: Part?, block: Part?, bar: Frame, barBack: Frame, text: TextLabel, seen: number, built: number, hp: number?, maxHp: number? }
 
-local NAMES = { barracks = "Barracks", factory = "War Factory", bunker = "Bunker", atgun = "AT Gun", radar = "Radar", sam = "SAM Site", artybase = "Artillery Base", nightops = "Night Ops Tower" }
+local NAMES = { hq = "HQ", barracks = "Barracks", factory = "War Factory", bunker = "Bunker", atgun = "AT Gun", radar = "Radar", sam = "SAM Site", artybase = "Artillery Base", nightops = "Night Ops Tower" }
 local DEFENCE = { bunker = true, atgun = true, radar = true, sam = true, nightops = true }
 -- footprint radius in cells (production.footprint.facility and .defence = 1, so 3 x 3)
 local FOOT = 1
@@ -41,7 +41,7 @@ local function create(id: number, kind: string, x: number, y: number): View
 	local ring: Part? = nil
 	local block: Part? = nil
 	if NAMES[kind] then
-		local size = (FOOT * 2 + 1) * S - 0.4
+		local size = (if kind == "hq" then 5 else FOOT * 2 + 1) * S - 0.4
 		local tall = if DEFENCE[kind] then 1.2 else 2.2
 		block = part(Vector3.new(size, tall, size), CFrame.new(World.toWorld(x, y, tall / 2)), Color3.new(0.7, 0.7, 0.7), 0)
 		if DEFENCE[kind] then

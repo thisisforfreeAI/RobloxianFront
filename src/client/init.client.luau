@@ -18,6 +18,7 @@ local AirOverlay = require(script.Rendering.AirOverlay)
 local CameraController = require(script.Camera.CameraController)
 local SelectionController = require(script.Input.SelectionController)
 local BuildController = require(script.Input.BuildController)
+local DropController = require(script.Input.DropController)
 local Hud = require(script.UI.Hud)
 local DevFlags = require(script.Dev.DevFlags)
 
@@ -47,6 +48,7 @@ do
 		intent:FireServer(payload)
 	end
 	BuildController.start(map.width, send)
+	DropController.start(send)
 	Hud.start(info, {
 		produce = function(item: string, structureId: number?)
 			send({ kind = "produce", item = item, structureId = structureId })
@@ -58,6 +60,9 @@ do
 	})
 	stateEvent.OnClientEvent:Connect(function(state)
 		Hud.update(state, info.side)
+		if state.oil then
+			DropController.apply(state.drop)
+		end
 		if state.territory then
 			BuildController.setTerritory(state.territory)
 		end
@@ -84,6 +89,9 @@ do
 			if state.flares and state.time then
 				AirOverlay.applyFlares(state.flares, state.time)
 			end
+		end
+		if state.mines then
+			AirOverlay.applyMines(state.mines, map.width)
 		end
 		if state.worn then
 			RoadOverlay.applyWorn(state.worn)

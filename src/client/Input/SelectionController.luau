@@ -77,6 +77,8 @@ local function send(sendIntent: (any) -> (), kind: string, extra: { [string]: an
 end
 
 local PRODUCERS = { hq = true, barracks = true, factory = true }
+local picked: number? = nil -- the last own building clicked (Delete cancels or demolishes it)
+local producerId: number? = nil -- the last own producer clicked (Backspace cancels its last queued unit)
 
 local function structureUnder(mouse: Vector2, accept: (StructureRenderer.View) -> boolean): StructureRenderer.View?
 	local best, bestDist = nil, 40
@@ -139,10 +141,15 @@ function SelectionController.start(mySide: number, sendIntent: (any) -> (), opts
 			if best then
 				selected[best] = if additive then not selected[best] or nil else true
 			else
+				local own = structureUnder(b, function(v)
+					return v.side == mySide
+				end)
+				picked = if own then own.id else nil
 				local st = structureUnder(b, function(v)
 					return v.side == mySide and PRODUCERS[v.kind] == true
 				end)
 				if st then
+					producerId = st.id
 					opts.onProducer(st.id, st.kind)
 				else
 					-- one of your towns: train there (forward training)
@@ -284,11 +291,11 @@ function SelectionController.start(mySide: number, sendIntent: (any) -> (), opts
 				send(sendIntent, "garrison", { x = x, y = y })
 			end
 		elseif input.KeyCode == Enum.KeyCode.R and next(selected) then
-			-- R: selected scout cars deploy for recon (PROVISIONAL key; the server checks cooldowns)
+			-- R: selected scout cars deploy for recon, command trucks set up an HQ (PROVISIONAL key)
 			local ids = {}
 			for id in selected do
 				local v = UnitRenderer.each()[id]
-				if v and v.kind == "scout" then
+				if v and (v.kind == "scout" or v.kind == "command") then
 					table.insert(ids, id)
 				end
 			end
@@ -356,11 +363,18 @@ function SelectionController.start(mySide: number, sendIntent: (any) -> (), opts
 			if #ids > 0 then
 				sendIntent({ kind = "detonate", unitIds = ids })
 			end
+		elseif input.KeyCode == Enum.KeyCode.Delete and picked then
+			-- cancel the picked building if it is still going up, else pull it down
+			sendIntent({ kind = "demolish", structureId = picked })
+		elseif input.KeyCode == Enum.KeyCode.Backspace then
+			-- call off the last unit queued at the picked producer (the HQ when none)
+			sendIntent({ kind = "cancelQueue", structureId = producerId, index = 0 })
 		elseif input.KeyCode == Enum.KeyCode.X and next(selected) then
 			send(sendIntent, "stop")
 		elseif input.KeyCode == Enum.KeyCode.Escape then
 			table.clear(selected)
 			refresh()
+			picked, producerId = nil, nil
 			opts.onProducer(nil, nil)
 		end
 	end)

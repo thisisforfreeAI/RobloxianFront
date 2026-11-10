@@ -46,6 +46,11 @@ local sideOf: { [Player]: number } = {}
 local bots: { [number]: any } = {}
 local tick = 0
 
+local OPENING_DROP = true -- the game's opening drop: pick a landing spot, the truck sets up the HQ
+-- each side's army (the game's skirmish setting; its default is the coalition). The republic has no
+-- mortars and lays minefields.
+local ARMIES = { "coalition", "coalition" }
+
 local function updateBots()
 	local taken = {}
 	for _, s in sideOf do
@@ -206,6 +211,41 @@ local function onIntent(player: Player, raw: any)
 		if n == 0 then
 			Net.sendState(player, { notice = why })
 		end
+	elseif i.kind == "dropPick" then
+		local ok, why = sim.setDropPick(side, i.x, i.y)
+		if not ok then
+			Net.sendState(player, { notice = why })
+		end
+	elseif i.kind == "dropReady" then
+		sim.setDropReady(side)
+	elseif i.kind == "cancelQueue" then
+		local id = i.structureId or sim.sides[side].hqId
+		local st = sim.entities[id]
+		local index = if i.index == 0 and st and st.queue then #st.queue else i.index
+		local ok = sim.cancelQueued(side, id, index)
+		if not ok then
+			Net.sendState(player, { notice = "nothingQueued" })
+		end
+	elseif i.kind == "layMines" then
+		local pts = {}
+		for k = 1, #i.pts, 2 do
+			table.insert(pts, { x = i.pts[k], y = i.pts[k + 1] })
+		end
+		local id, why = sim.layMinefield(side, pts)
+		if not id then
+			Net.sendState(player, { notice = why })
+		end
+	elseif i.kind == "demolish" then
+		local st = sim.entities[i.structureId]
+		local ok, why
+		if st and st.alive and st.built and st.built < 1 then
+			ok, why = sim.cancelBuilding(side, i.structureId)
+		else
+			ok, why = sim.demolish(side, i.structureId)
+		end
+		if not ok then
+			Net.sendState(player, { notice = if why == "notOwned" then "notOwned" else "cannotDemolish" })
+		end
 	elseif i.kind == "board" then
 		local n, why = sim.orderBoard(side, i.carrierId, i.unitIds)
 		if n == 0 then
@@ -222,8 +262,25 @@ local function onIntent(player: Player, raw: any)
 			Net.sendState(player, { notice = why })
 		end
 	elseif i.kind == "recon" then
-		local n, why = sim.deployRecon(side, i.unitIds)
-		if n == 0 then
+		-- command trucks among them set up an HQ; the rest are scouts
+		local scouts, why = {}, nil
+		local deployed = false
+		for _, id in i.unitIds do
+			local e = sim.entities[id]
+			if e and e.kind == "command" then
+				local ok, w = sim.deployHq(side, id)
+				deployed = deployed or ok
+				why = why or w
+			else
+				table.insert(scouts, id)
+			end
+		end
+		if #scouts > 0 then
+			local n, w = sim.deployRecon(side, scouts)
+			if n == 0 and not deployed then
+				Net.sendState(player, { notice = w })
+			end
+		elseif not deployed and why then
 			Net.sendState(player, { notice = why })
 		end
 	elseif i.kind == "truck" then
@@ -271,6 +328,9 @@ end
 local function unitStatus(e: any): number
 	if e.inside then
 		return 4
+	end
+	if e.deployAt then
+		return 9
 	end
 	if e.repairId or e.roadJob then
 		return 5
@@ -442,6 +502,21 @@ local function alertsFor(ev: any)
 		alertSide(ev.side, "Recon drone shot down")
 	elseif t == "unitPromoted" then
 		alertSide(ev.side, `{rules:text(`units.{ev.kind}.name`)} promoted: {ev.rank}`)
+	elseif t == "hqDeploying" then
+		alertSide(ev.side, `Command truck setting up the HQ: {ev.sec} s, keep it still`)
+	elseif t == "hqDeployed" or t == "hqSetUp" then
+		alertSide(ev.side, "The new HQ is up")
+	elseif t == "mineBlast" then
+		alertSide(ev.side, `{rules:text(`units.{ev.kind}.name`)} hit a mine`)
+		if ev.owner ~= ev.side then
+			alertSide(ev.owner, `A mine took out part of an enemy {rules:text(`units.{ev.kind}.name`)}`)
+		end
+	elseif t == "minefieldSpent" then
+		alertSide(ev.side, "A minefield is used up")
+	elseif t == "demolished" then
+		alertSide(ev.side, `{rules:text(`structures.{ev.kind}.name`)} pulled down: {ev.oil} oil back`)
+	elseif t == "buildCancelled" then
+		alertSide(ev.side, `{rules:text(`structures.{ev.kind}.name`)} cancelled`)
 	elseif t == "nightOpsLost" then
 		alertSide(ev.side, `Night operations tower destroyed: a new one can go up in {ev.sec} s`)
 	elseif t == "barrageIntercepted" then
@@ -610,7 +685,36 @@ local function privateState()
 				end
 			end
 			payload.flares = flares
+			-- minefields this side can see: id, side, charges left (own only), laid cells
+			payload.army = sim.armyOf(side)
+			local mines = {}
+			local viewer = viewers[side]
+			for _, e in sim.list do
+				if e.alive and e.kind == "minefield" and (e.side == side or (viewer and viewer.structureState(e) == "seen")) then
+					table.insert(mines, { e.id, e.side, if e.side == side then e.mines else 0, (sim.laidMines(e)) })
+				end
+			end
+			payload.mines = mines
 			payload.time = sim.time
+			-- the opening drop: phase, seconds left, own pick (and whether a road there reaches the rigs);
+			-- while it runs the planes fly on the drop clock
+			local d = sim.drop
+			if d and d.phase ~= "done" then
+				local p = d.picks[side]
+				payload.drop = { phase = d.phase, left = math.ceil(sim.dropLeft()), x = p.x, y = p.y,
+					warn = sim.dropWarning(p.x, p.y) ~= nil }
+				payload.time = d.t
+				local fl = {}
+				for k, pl in d.planes do
+					local sticks = {}
+					for _, l in pl.loads do
+						table.insert(sticks, { l.x, l.y, l.outT, l.landT })
+					end
+					table.insert(fl, { id = -k, side = pl.side, fromX = pl.fromX, fromY = pl.fromY, heading = pl.heading,
+						speed = pl.speed, startT = pl.startT, goneT = pl.goneT, sticks = sticks })
+				end
+				payload.flights = fl
+			end
 			-- road cuts (APPROX: everyone sees every cut) and worn road cells, banded, when they change
 			local cuts = {}
 			for _, cut in sim.roadCuts do
@@ -706,6 +810,8 @@ function MatchService.start(mapModule: string)
 	end
 	local w = map.width
 	sim = Sim.new({
+		drop = OPENING_DROP,
+		armies = ARMIES,
 		rules = rules :: any,
 		movement = Movement,
 		roadsLib = Roads,
