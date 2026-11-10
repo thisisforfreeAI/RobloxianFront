@@ -4254,6 +4254,8 @@ require("./unit_stages")(test, eq)
 
 require("./image_budget")(test, eq)
 
+require("./daylight")(test, eq)
+
 print(`\n{passed} passed, {failed} failed`)
 if failed > 0 then
 	error("tests failed")

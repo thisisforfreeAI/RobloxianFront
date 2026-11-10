@@ -1120,3 +1120,70 @@ Verification actually run on Windows:
 - Real-device memory pressure, live-Content retention, visual quality and camera responsiveness still
   require the owner's fresh Studio/client pass: **B103-B105 not run**. No screenshot issue is marked
   Studio-verified from unit tests alone.
+
+## Source daylight model and moving sprite shadows (2026-11-10)
+
+Shared.Presentation.Daylight now ports the source's clear-skirmish palette interpolation (Sqt),
+sun/moon geometry (xH), night transition (Oh), sprite shadow fade (H0), and clock mapping (CW/Lqt).
+The local exporter tools/conversion/export_daylight.cjs reads app.asar without changing the install,
+loads the current daylight tables including active dusk/night key overrides and the before-dawn
+override, and runs the original numerical functions for 21 reference phases. Output settings and
+reference vectors are src/shared/GameData/Daylight.luau and DaylightVectors.luau (git-ignored).
+No original functions or extracted tables are written into tracked files.
+
+The shared client Rendering.DaylightController receives the existing server day phase through
+Atmosphere.apply. Source direction and elevation determine the current shadow vector; UnitRenderer
+uses it for vehicle bodies, turrets and wrecks (including tossed-turret shadow throw), and passes it
+to ManEffects for infantry/crews, mortar tube, engineer workers and fleeing workers. All sprite
+ground shadows fade by the source factor 1 - nightFade x night, multiplying their existing opacity
+and any wreck/worker lifetime fade. Turret-on-hull shading retains its separate source behavior.
+Shadow stretch now follows the current sun axis with the residual facing rotation inside it rather
+than retaining the fixed-noon stretch axis. The sun/moon path resets at the source day/night boundary;
+that geometric transition is intentional, not client clock extrapolation.
+
+Atmosphere now refreshes when phase changes during daytime too, replacing its guessed fixed NIGHT
+brightness/contrast/saturation/tint constants with a source-palette-derived ColorCorrectionEffect
+adapter. The pure sample contains the source RGB multipliers and additive vector. The Roblox adapter
+uses a common gain/offset fit plus multiplicative tint; it does not claim pixel-identical shader
+output. Existing weather haze, streaks, lightning and estimated weather grading remain intact.
+Roblox post-effect capability reference:
+https://create.roblox.com/docs/reference/engine/classes/ColorCorrectionEffect
+
+The admin clock had mapped 24 hours uniformly across the phase, while the source maps 06:00-18:00
+onto its 62% daylight segment and 18:00-06:00 onto the remaining 38%. The panel now uses that source
+mapping for display, Noon/Morning/Evening/Midnight presets and +/-1-hour controls. Dawn/Dusk are
+admin UX choices derived from the middle of the source fade-out/fade-in windows, so both select
+half-night transitions rather than a misleading fixed uniform hour. Server permissions, Oil,
+weather handling, freeze behavior, sim time, night sight rules and unit reload timers are unchanged.
+The existing day payload now retains its numeric precision instead of truncating phase/night to
+three/two decimals. The sim still floors its own day clock as before, so labels can land within a
+few game minutes of a preset when one real second spans several game minutes.
+
+Generation (already run for this batch, Node only):
+
+~~~powershell
+node tools/conversion/export_daylight.cjs "A:\SteamLibrary\steamapps\common\WarFront Demo"
+~~~
+
+This is a separate local-generation step; generate_all.py does not invoke it. Missing private
+settings warn once and retain a static noon fallback. The feature creates no EditableImages,
+generates no new pixel assets, and preserves the shared image-memory admission/reclamation fix.
+
+APPROX / next: baked town roofs, ground relief and tree cast shadows still contain the existing
+fixed-noon lighting. Their pixels receive global colour grading but their baked shadow direction
+does not move/fade independently. Roblox ColorCorrectionEffect has a common brightness/contrast
+and RGB multiplication, unlike the original per-channel additive shader and rendering passes, so
+its transfer/tonemapping, per-pixel night contrast/posterization/dither, emissive lamps/reflections,
+night-vision rendering and special visual themes are not ported here. Those remain needed for full
+visual parity. Palette and sprite-shadow numerical calculations are confirmed for the active
+clear-skirmish source settings; weather graphics still carry their existing estimates.
+
+Verification actually run on Windows:
+- Full lune run tests/run: **188 passed, 0 failed**, including 7 new numerical/clock/preset/adapter
+  checks. Palette, sun, moon and night samples match the original functions at 21 reference phases
+  within the tests' numerical tolerance, including phase wrap and transition points.
+- Rojo build succeeded; @lune/luau compiled the changed modules and tests (syntax only).
+- The local exporter generated both private modules successfully. No pixel allocation was added.
+- Studio visuals, colour-transfer parity and Script Analysis are **not run**. New Studio checks
+  **B106-B108** remain unrun. The owner's "looking good" on the memory batch is informal feedback;
+  individual earlier memory test rows were not marked passed without their results.

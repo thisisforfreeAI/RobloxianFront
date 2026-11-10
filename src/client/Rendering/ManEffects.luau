@@ -100,11 +100,11 @@ function ManEffects.attach(quad: Part, gui: SurfaceGui, body: ImageLabel, paint:
 	turn.Parent = sg
 	local shade = label(turn, atlas.content, true)
 	local handle = { kind = kind, atlas = atlas, rim = rim, shadow = shadow, gui = sg, turn = turn, shade = shade,
-		body = body, ready = false, pose = "", facing = -1, half = false }
+		body = body, ready = false, pose = "", facing = -1, half = false, shadowFade = 1 }
 	local function alpha()
 		local a = 1 - body.ImageTransparency
 		rim.ImageTransparency = 1 - a * config.rim.alpha
-		shade.ImageTransparency = 1 - a * config.shadow.alpha
+		shade.ImageTransparency = 1 - a * config.shadow.alpha * handle.shadowFade
 	end
 	alpha()
 	body:GetPropertyChangedSignal("ImageTransparency"):Connect(alpha)
@@ -112,8 +112,10 @@ function ManEffects.attach(quad: Part, gui: SurfaceGui, body: ImageLabel, paint:
 	return handle
 end
 
-function ManEffects.place(handle: any, pose: string, heading: number, facing: number, x: number, y: number, height: number, size: number, frameCells: number, sunX: number, sunY: number)
+function ManEffects.place(handle: any, pose: string, heading: number, facing: number, x: number, y: number, height: number, size: number, frameCells: number, sunX: number, sunY: number, shadowFade: number?)
 	if not handle then return end
+	handle.shadowFade = shadowFade or 1
+	handle.shade.ImageTransparency = 1 - (1 - handle.body.ImageTransparency) * config.shadow.alpha * handle.shadowFade
 	local poses = handle.atlas.meta.poses[pose]
 	if not poses then
 		handle.rim.Visible, handle.gui.Enabled, handle.ready = false, false, false

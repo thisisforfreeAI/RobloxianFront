@@ -13,9 +13,8 @@
 	shape row at 1/3 size, alpha 0.34, the turret's x 0.55, pushed and stretched away from the sun by
 	its Of), the dark rim (alpha 0.78; the 6 px one when the unit is drawn under 0.6 x the 120 px frame),
 	the body, the turret's shadow on the hull (alpha 0.42, 0.035 sizes toward the shade), the turret.
-	APPROX: one fixed noon sun, as the town bake (the game turns it through its day and fades shadows
-	at night); the shadow's stretch is applied after the facing's small leftover turn rather than
-	between two turns (within 11 degrees, a hair of shear).
+	Sun and sprite shadow fade follow the source clock through DaylightController. Shadow stretch
+	runs along the current sun direction. APPROX: the separate town/tree bake still has noon shadows.
 ]]
 local ImageMemory = require(script.Parent.ImageMemory)
 
@@ -30,6 +29,7 @@ local FogOverlay = require(script.Parent.FogOverlay)
 local Hash = require(Shared.Utilities.Hash)
 local SquadMen = require(script.Parent.SquadMen)
 local ManEffects = require(script.Parent.ManEffects)
+local DaylightController = require(script.Parent.DaylightController)
 local DeathRenderer = require(script.Parent.DeathRenderer)
 
 local UnitRenderer = {}
@@ -44,7 +44,7 @@ local SPRITE_Y = -0.05 -- sprite quads sit just under the unit's anchor height
 export type Sprite = { quad: Part, colour: ImageLabel, paint: ImageLabel, y0c: number, y0p: number, rise: number, facing: number, turret: boolean, soot: ImageLabel?, y0s: number, sootSheet: SpriteBank.Soot? }
 
 -- a rim, shadow or turret-shadow quad (one image, no paint)
-export type Fx = { quad: Part, gui: SurfaceGui, image: ImageLabel, kind: string, layer: string, sheet: SpriteBank.FxSheet?, y0: number, facing: number }
+export type Fx = { quad: Part, gui: SurfaceGui, image: ImageLabel, kind: string, layer: string, sheet: SpriteBank.FxSheet?, y0: number, facing: number, alpha: number }
 
 export type ManSprite = { quad: Part, gui: SurfaceGui, colour: ImageLabel, paint: ImageLabel, fig: SpriteBank.Figure, pose: string, facing: number, effects: any? }
 
@@ -143,8 +143,9 @@ local function spriteQuad(parent: Instance, look: SpriteBank.Look, layer: Sprite
 	return { quad = quad, colour = colour, paint = paint, y0c = layer.colour, y0p = layer.paint, rise = rise, facing = -1, turret = false, soot = nil, y0s = 0, sootSheet = nil }
 end
 
--- the game's za and its noon sun
-local SUN = Vector2.new(0, 1 / (0.35 + 1)) -- Hb at phase 0.31: toward (0, -1), shadow = -toward / (shadowFloor + elevation 1)
+-- Current source sun/moon shadow vector, read once per render frame.
+local SUN = Vector2.new(0, 1 / (0.35 + 1))
+local SHADOW_FADE = 1
 local SHADOW = { alpha = 0.34, gun = 0.55, maxReach = 2 } -- za.shadow, t2.maxReach
 local RIM_ALPHA = 0.78 -- za.rim.alpha
 local HALF_BELOW = 0.6 * 120 -- za.halfBelow x fa.frame: drawn smaller than this (px), the half rim
@@ -172,7 +173,7 @@ local function fxQuad(parent: Instance, sheet: SpriteBank.FxSheet, kind: string,
 	image.ResampleMode = if smooth then Enum.ResamplerMode.Default else Enum.ResamplerMode.Pixelated
 	image.ImageTransparency = 1 - alpha
 	image.Parent = gui
-	return { quad = quad, gui = gui, image = image, kind = kind, layer = layer, sheet = nil, y0 = -1, facing = -1 }
+	return { quad = quad, gui = gui, image = image, kind = kind, layer = layer, sheet = nil, y0 = -1, facing = -1, alpha = alpha }
 end
 
 -- the game's xke: the side colour out to 0.55 of the radius, fading to nothing at the edge, times a
@@ -454,12 +455,12 @@ local function placeFx(v: View, look: SpriteBank.Look, pos: Vector3, hull: numbe
 			f.image.ImageRectOffset = SpriteBank.offset(sheet, y0, d)
 		end
 		if f.kind == "shadow" then
-			-- squared to the ground, stretched along the sun's line (local X runs north-south), the
-			-- facing's leftover turn done inside the canvas
-			f.quad.Size = Vector3.new(W * stretch, 0.05, W)
-			f.image.Rotation = math.deg(residual)
+			local axis = math.atan2(SUN.Y, SUN.X)
+			f.quad.Size = Vector3.new(W, 0.05, W * stretch)
+			f.image.Rotation = math.deg(residual - axis)
+			f.image.ImageTransparency = 1 - f.alpha * SHADOW_FADE
 			local rise = if f.layer == "turret" then -0.025 else -0.03
-			f.quad.CFrame = CFrame.new(at + Vector3.new(sx * S, SPRITE_Y + rise, sy * S)) * CFrame.Angles(0, -GUI_YAW, 0)
+			f.quad.CFrame = CFrame.new(at + Vector3.new(sx * S, SPRITE_Y + rise, sy * S)) * CFrame.Angles(0, -GUI_YAW - axis, 0)
 		else
 			f.quad.Size = Vector3.new(W, 0.05, W)
 			local off = Vector3.zero
@@ -641,7 +642,7 @@ local function setFigure(ms: ManSprite, pose: string, heading: number, x: number
 		ms.paint.ImageRectOffset = SpriteBank.offset(ms.fig, p.paint, d)
 	end
 	ms.quad.CFrame = CFrame.new(World.toWorld(x, y, height)) * CFrame.Angles(0, -(Facing.residual(h, d, 16) + GUI_YAW), 0)
-	ManEffects.place(ms.effects, pose, h, d, x, y, height, SquadMen.MAN_CELLS, SquadMen.FRAME_CELLS, SUN.X, SUN.Y)
+	ManEffects.place(ms.effects, pose, h, d, x, y, height, SquadMen.MAN_CELLS, SquadMen.FRAME_CELLS, SUN.X, SUN.Y, SHADOW_FADE)
 end
 
 local function placeMen(v: View, pos: Vector3, dt: number)
@@ -879,7 +880,7 @@ local function placeWreck(w: Wreck, now: number): boolean
 			f.facing, f.y0 = d, y0
 			f.image.ImageRectOffset = SpriteBank.offset(sheet, y0, d)
 		end
-		f.image.ImageTransparency = 1 - alpha * (f.image:GetAttribute("alpha") or 1)
+		f.image.ImageTransparency = 1 - alpha * (f.image:GetAttribute("alpha") or 1) * (if f.kind == "shadow" then SHADOW_FADE else 1)
 		local at = if turretLayer then tpos else pos
 		local rise = RISE[f.kind] + (if turretLayer then 0.005 else 0)
 		if turretLayer and tossing then
@@ -892,9 +893,10 @@ local function placeWreck(w: Wreck, now: number): boolean
 			f.image.Rotation = -d * 22.5
 			f.quad.CFrame = CFrame.new(at + throw + Vector3.new(0, SPRITE_Y + rise + 0.05, 0)) * CFrame.Angles(0, -(ang + GUI_YAW), 0)
 		elseif f.kind == "shadow" then
-			f.quad.Size = Vector3.new(W * stretch, 0.05, W)
-			f.image.Rotation = math.deg(residual)
-			f.quad.CFrame = CFrame.new(at + Vector3.new(sx * S, SPRITE_Y + rise, sy * S)) * CFrame.Angles(0, -GUI_YAW, 0)
+			local axis = math.atan2(SUN.Y, SUN.X)
+			f.quad.Size = Vector3.new(W, 0.05, W * stretch)
+			f.image.Rotation = math.deg(residual - axis)
+			f.quad.CFrame = CFrame.new(at + Vector3.new(sx * S, SPRITE_Y + rise, sy * S)) * CFrame.Angles(0, -GUI_YAW - axis, 0)
 		else
 			local off = if f.kind == "plain" then Vector3.new(SUN.X, 0, SUN.Y) * look.size * TURRET_SHADOW.reach * S else Vector3.zero
 			f.quad.Size = Vector3.new(W, 0.05, W)
@@ -1128,6 +1130,9 @@ function UnitRenderer.start()
 	ImageMemory.setGuard(activeImageContent)
 	SpriteBank.preload()
 	RunService.RenderStepped:Connect(function(dt)
+		local light = DaylightController.get()
+		SUN = Vector2.new(light.shadow[1], light.shadow[2])
+		SHADOW_FADE = light.shadowAlpha
 		DeathRenderer.step(dt)
 		for _, v in views do
 			v.t = math.min(1, v.t + dt / SNAPSHOT_SEC)

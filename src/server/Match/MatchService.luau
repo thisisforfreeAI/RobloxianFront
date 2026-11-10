@@ -912,7 +912,7 @@ local function privateState()
 		local payload: { [string]: any } = { winner = sim.winner }
 		payload.alerts = pendingAlerts[side]
 		-- time of day and weather, for the client's lighting; admin: show the test panel
-		payload.day = { math.floor(Admin.phaseOf(sim) * 1000) / 1000, math.floor(sim.nightAmount() * 100) / 100 }
+		payload.day = { Admin.phaseOf(sim), sim.nightAmount() } -- preserve clock precision for sun/colour changes
 		payload.weather = Admin.weather()
 		payload.admin = Admin.isAdmin(player)
 		if s then

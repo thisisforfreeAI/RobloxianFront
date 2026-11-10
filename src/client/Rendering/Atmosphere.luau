@@ -3,8 +3,8 @@
 	Atmosphere: night and weather drawn over the battlefield.
 
 	Night: the server sends the sim's night amount (0 day .. 1 full night, the game's 480 s day); a
-	ColorCorrectionEffect in Lighting darkens and cools the 3D view by it. APPROX: the game dims its
-	own canvas by its nightDim settings; these strengths are picked by eye, not traced.
+	ColorCorrectionEffect uses the source daylight palette through DaylightController. APPROX: Roblox
+	post-processing replaces the original per-channel additive shader, tonemapping and ground effects.
 	Weather: the server's weather ("clear", "fog", "downpour", "storm", "sandstorm") adds a haze and,
 	for rain or sand, moving streaks on a ScreenGui under the HUD; storms flash now and then. Visual
 	only: the port has no weather rules yet.
@@ -13,9 +13,9 @@ local Lighting = game:GetService("Lighting")
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 
+local DaylightController = require(script.Parent.DaylightController)
 local Atmosphere = {}
 
-local NIGHT = { brightness = -0.22, contrast = 0.08, saturation = -0.4, tint = Color3.fromRGB(150, 168, 225) }
 type Look = { haze: Color3, hazeAlpha: number, streaks: number, streakColor: Color3, fall: Vector2, saturation: number, brightness: number, flash: boolean }
 local WEATHER: { [string]: Look } = {
 	clear = { haze = Color3.new(1, 1, 1), hazeAlpha = 0, streaks = 0, streakColor = Color3.new(1, 1, 1), fall = Vector2.zero, saturation = 0, brightness = 0, flash = false },
@@ -32,6 +32,7 @@ local streakHolder: Frame
 local streaks: { { frame: Frame, x: number, y: number } } = {}
 local look: Look = WEATHER.clear
 local night = 0
+local phase = -1
 local nextFlash = 0
 
 local function setStreaks(n: number)
@@ -48,10 +49,11 @@ local function setStreaks(n: number)
 end
 
 local function refresh()
-	cc.Brightness = NIGHT.brightness * night + look.brightness
-	cc.Contrast = NIGHT.contrast * night
-	cc.Saturation = NIGHT.saturation * night + look.saturation
-	cc.TintColor = Color3.new(1, 1, 1):Lerp(NIGHT.tint, night)
+	local palette = DaylightController.postEffect()
+	cc.Brightness = math.clamp(palette.brightness + look.brightness, -1, 1)
+	cc.Contrast = palette.contrast
+	cc.Saturation = look.saturation -- existing visual weather controls remain
+	cc.TintColor = Color3.new(palette.tint[1], palette.tint[2], palette.tint[3])
 	haze.BackgroundColor3 = look.haze
 	haze.BackgroundTransparency = 1 - look.hazeAlpha * (1 - 0.4 * night)
 	setStreaks(look.streaks)
@@ -119,15 +121,17 @@ end
 
 -- day: { phase, night } from the server; weather: its weather name
 function Atmosphere.apply(day: { number }?, weather: string?)
+	DaylightController.apply(day)
 	if not cc then
 		return
 	end
-	local n = if day then day[2] or 0 else night
+	local state = DaylightController.get()
+	local n = state.night
 	local l = if weather and WEATHER[weather] then WEATHER[weather] else look
-	if math.abs(n - night) < 0.005 and l == look then
+	if state.phase == phase and n == night and l == look then
 		return
 	end
-	night, look = n, l
+	phase, night, look = state.phase, n, l
 	refresh()
 end
 

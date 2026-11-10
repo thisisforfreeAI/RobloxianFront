@@ -5,13 +5,13 @@
 	place's owner); the server checks every command again (server/Match/Admin.luau).
 
 	Open and close it with the Admin button on the right or the F2 key.
-	Clock: the game's 480 s day shown on a 24 h clock with 06:00 at phase 0 (the end of dawn), so night
-	falls from about 20:50, is full from about 22:50, and dawn breaks from about 04:50. The clock face is
-	this port's choice; the phases are the game's.
+	Clock: the game's own mapping, 06:00 to 18:00 over its 62% daylight segment, then 18:00 to
+	06:00 over the remaining night. Presets and hour steps use the same mapping as the source sun.
 ]]
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 
+local DaylightController = require(script.Parent.Parent.Rendering.DaylightController)
 local AdminPanel = {}
 
 local PRESETS = { { "Dawn", 5 }, { "Morning", 8 }, { "Noon", 12 }, { "Evening", 18 }, { "Dusk", 21 }, { "Midnight", 0 } }
@@ -30,11 +30,11 @@ local phase = 0.25
 local frozen = false
 
 local function phaseOfHour(h: number): number
-	return ((h - 6) / 24) % 1
+	return DaylightController.hourToPhase(h)
 end
 
 local function hourOfPhase(p: number): number
-	return (6 + p * 24) % 24
+	return DaylightController.phaseToHour(p)
 end
 
 local function button(parent: Instance, text: string, x: number, y: number, w: number, onClick: () -> ()): TextButton
@@ -124,14 +124,14 @@ function AdminPanel.start(sendIntent: (any) -> ())
 	for i, p in PRESETS do
 		local col, row = (i - 1) % 3, (i - 1) // 3
 		button(panel, p[1], 8 + col * 96, 48 + row * 26, 90, function()
-			setTime(phaseOfHour(p[2]))
+			setTime(DaylightController.preset(p[1], p[2]))
 		end)
 	end
 	button(panel, "-1 h", 8, 102, 60, function()
-		setTime(phase - 1 / 24)
+		setTime(phaseOfHour(hourOfPhase(phase) - 1))
 	end)
 	button(panel, "+1 h", 72, 102, 60, function()
-		setTime(phase + 1 / 24)
+		setTime(phaseOfHour(hourOfPhase(phase) + 1))
 	end)
 	freezeButton = button(panel, "Freeze time: off", 136, 102, 156, function()
 		frozen = not frozen
