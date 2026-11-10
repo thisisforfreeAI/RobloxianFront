@@ -163,7 +163,7 @@ function AirOverlay.applyMines(list: { any }, mapWidth: number)
 			n += 1
 			local p = pooled(minePool, n, color, Vector3.new(0.7 * S, 0.1, 0.7 * S))
 			p.Transparency = 0.35
-			p.CFrame = CFrame.new(World.toWorld(c % mapWidth + 0.5, c // mapWidth + 0.5, 0.15))
+			p.CFrame = CFrame.new(World.toWorld(c % mapWidth + 0.5, c // mapWidth + 0.5, 0.38))
 		end
 	end
 	for i = n + 1, #minePool do
@@ -183,7 +183,7 @@ function AirOverlay.applyTrenches(list: { any }, mapWidth: number)
 			local color = if st == 1 then Color3.fromRGB(70, 52, 34) elseif st == 5 then Color3.fromRGB(150, 150, 150) else Color3.fromRGB(230, 210, 120)
 			local p = pooled(trenchPool, n, color, Vector3.new(0.95 * S, 0.12, 0.95 * S))
 			p.Transparency = if st == 0 then 0.7 else 0.1
-			p.CFrame = CFrame.new(World.toWorld(c % mapWidth + 0.5, c // mapWidth + 0.5, 0.12))
+			p.CFrame = CFrame.new(World.toWorld(c % mapWidth + 0.5, c // mapWidth + 0.5, 0.4)) -- above the ground tiles (top 0.2) and roads
 		end
 	end
 	for i = n + 1, #trenchPool do

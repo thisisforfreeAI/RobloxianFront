@@ -294,7 +294,11 @@ function Hud.update(state: { [string]: any }, mySide: number)
 	end
 	if state.oil then
 		local d = state.drop
-		dropLabel.Visible = d ~= nil
+		dropLabel.Visible = d ~= nil or state.needHq ~= nil
+		if not d and state.needHq then
+			dropLabel.Text = if state.needHq == "deploying" then "Setting up the HQ: keep the truck still"
+				else "No HQ yet: select your command truck and press R to set it up"
+		end
 		if d then
 			dropLabel.Text = if d.phase == "pick"
 				then `Pick where to land: click the map · Enter when ready · {d.left} s{if d.warn then " · no road to the rigs there" else ""}{if d.arrival then ` · arriving at {d.arrival}` else ""}`

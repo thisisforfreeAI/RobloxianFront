@@ -358,6 +358,9 @@ local function unitStatus(e: any): number
 	if e.deployAt then
 		return 9
 	end
+	if e.trenchJob then
+		return if e.trenchJob.kind == "dig" then 10 else 11
+	end
 	if e.repairId or e.roadJob then
 		return 5
 	end
@@ -537,6 +540,8 @@ local function alertsFor(ev: any)
 		if ev.owner ~= ev.side then
 			alertSide(ev.owner, `A mine took out part of an enemy {rules:text(`units.{ev.kind}.name`)}`)
 		end
+	elseif t == "dropNoRoad" then
+		alertSide(ev.side, "Your command truck landed away from the roads: select it and press R to set up the HQ")
 	elseif t == "trenchDug" then
 		alertSide(ev.side, `Trench dug: {ev.n} cells`)
 	elseif t == "trenchStalled" then
@@ -738,6 +743,15 @@ local function privateState()
 				end
 			end
 			payload.mines = mines
+			-- no HQ yet but a command truck: the HUD reminds you how to set it up
+			if not sim.hqOf(side) then
+				for _, e in sim.list do
+					if e.alive and e.kind == "command" and e.side == side then
+						payload.needHq = if e.deployAt then "deploying" else "truck"
+						break
+					end
+				end
+			end
 			-- trenches this side can see: owner, then cell, state pairs (dug / wire / planned, own planned only)
 			local trenches = {}
 			for _, t in sim.trenches do
