@@ -4240,6 +4240,8 @@ end)
 
 require("./death_effects")(test, eq)
 
+require("./men_shadows")(test, eq)
+
 print(`\n{passed} passed, {failed} failed`)
 if failed > 0 then
 	error("tests failed")

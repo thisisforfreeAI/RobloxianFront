@@ -931,3 +931,56 @@ chunk leaves the view, its pixels are copied back out of the image and kept (up 
 image is kept for reuse (up to 2) instead of being handed back to the budget. Shown chunks stay until 1.6x
 the view distance, idle checks pre-inflate the next chunk just outside the view, and a budget refusal
 retries after 1.5 s. Studio test B95.
+
+## Soldier shadows and rims (2026-11-10)
+
+Soldier figures now draw their original shape-row shadows and near-black rims through the new
+Rendering.ManEffects component. Shared.Presentation.MenShadows holds the pure projection math.
+Traced from the installed bundle's soldier style table, jht/XF/Kht mask construction, iV pose-height
+selector, T8 drawing and F7 shadow projection. Standing/walking/digging figures use the up height;
+kneeling/planting and the set/kick mortar tube use the kneel height; prone/fallen/base use the low
+height. Pose-specific lengths and the source art aspect ratio control shadow stretch.
+
+The normal rim is 1.5 source pixels at alpha 0.78; below a drawn frame width of 0.6 x 48 pixels it
+switches to the source's 3-pixel rim baked at half size. Shadows use alpha 0.34, the full shape near
+the camera and a half-size shape farther away. They use the same current fixed noon sun vector as
+the vehicle renderer. The shadow's stretch is applied along the sun direction before the remaining
+heading rotation, using a full-frame UI container so trimmed images rotate about their original pivot.
+
+Infantry, paratroopers, AT/mortar crews and tube, engineer/sapper workers and fleeing workers all
+use the same component. The rim sits below body and paint. Shadow parts belong to the existing
+figure Part, so casualty/removal/worker destruction also removes their shadows. The owning GUI's
+visibility and body alpha drive shadow visibility and both effect alphas; fleeing-worker fades do
+not leave opaque silhouettes behind. Missing private mask modules retain existing body/paint drawing;
+a refused image allocation logs one warning per figure and retains its body.
+
+tools/asset_pipeline/pack_men_fx.py reads the style/length tables from the read-only game install
+at runtime and reads the existing local shape strips selected by the private sprite spec. It writes
+MenFx.luau under src/shared/GameData and OrigMen*Fx.luau under src/client/DevAssets, all covered by
+existing git-ignore rules. Every facing/mask is cropped with its pivot retained, packed with a clear
+gutter into one atlas per figure. All 11 figure atlases total 8.52 MiB raw; rifleman and leader together
+use about 1.97 MiB. Only the first drawn instance of a figure loads its one atlas; instances reuse it.
+No vehicle preload, SpriteBank, map loading or town streaming code was changed in this batch.
+Claude's concurrent faster town streaming changes and Studio test B95 were preserved.
+
+Generation (already run for this batch; Python needs Pillow/numpy and Node on PATH):
+
+~~~powershell
+python tools/asset_pipeline/pack_men_fx.py "A:\SteamLibrary\steamapps\common\WarFront Demo" docs/private/sprite_spec.json
+~~~
+
+APPROX: the existing fixed noon sun does not turn or fade at night. Like the unit asset pipeline,
+fractional mask offsets use Pillow bilinear sampling and half-size masks use BOX sampling; edge
+alpha may differ slightly from the game's Canvas sampling. Body half-resolution swaps, airborne
+men and their lifted shadows, blast flinches and persistent fallen bodies remain outside this batch.
+
+Verification actually run on Windows:
+- lune run tests/run: **166 passed, 0 failed**, including 6 new pose/projection/atlas checks.
+- Python tests/test_men_fx.py: **2 passed**, using synthetic pixels to check rim expansion and exact
+  full/half shape reconstruction across all 16 facings, including empty frames and edge pixels.
+- Rojo build succeeded with the current project, including Claude's town-streaming edits. Output
+  was written to this chat's staging folder; no Git operation or original-install modification ran.
+- @lune/luau compiled ManEffects, MenShadows, UnitRenderer and the new Luau tests (syntax only).
+- Studio visuals, Script Analysis and device image-budget/performance checks are **not run**.
+  New manual tests: B96-B98. The owner's earlier "looking good" was informal feedback on the death
+  effects; no individual Studio result row was marked passed on that basis.

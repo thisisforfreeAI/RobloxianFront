@@ -29,6 +29,7 @@ local SpriteBank = require(script.Parent.SpriteBank)
 local FogOverlay = require(script.Parent.FogOverlay)
 local Hash = require(Shared.Utilities.Hash)
 local SquadMen = require(script.Parent.SquadMen)
+local ManEffects = require(script.Parent.ManEffects)
 local DeathRenderer = require(script.Parent.DeathRenderer)
 
 local UnitRenderer = {}
@@ -45,7 +46,7 @@ export type Sprite = { quad: Part, colour: ImageLabel, paint: ImageLabel, y0c: n
 -- a rim, shadow or turret-shadow quad (one image, no paint)
 export type Fx = { quad: Part, gui: SurfaceGui, image: ImageLabel, kind: string, layer: string, sheet: SpriteBank.FxSheet?, y0: number, facing: number }
 
-export type ManSprite = { quad: Part, gui: SurfaceGui, colour: ImageLabel, paint: ImageLabel, fig: SpriteBank.Figure, pose: string, facing: number }
+export type ManSprite = { quad: Part, gui: SurfaceGui, colour: ImageLabel, paint: ImageLabel, fig: SpriteBank.Figure, pose: string, facing: number, effects: any? }
 
 export type View = {
 	id: number,
@@ -228,7 +229,7 @@ local function haloQuad(parent: Instance, look: SpriteBank.Look, color: Color3):
 	return quad
 end
 
-local function manQuad(parent: Instance, fig: SpriteBank.Figure, color: Color3): ManSprite
+local function manQuad(parent: Instance, fig: SpriteBank.Figure, color: Color3, kind: string): ManSprite
 	local quad = Instance.new("Part")
 	quad.Name = "Man"
 	quad.Anchored, quad.CanCollide, quad.CanQuery, quad.CanTouch, quad.CastShadow = true, false, false, false, false
@@ -255,7 +256,8 @@ local function manQuad(parent: Instance, fig: SpriteBank.Figure, color: Color3):
 	local colour = label(1)
 	local paint = label(2)
 	paint.ImageColor3 = color
-	return { quad = quad, gui = gui, colour = colour, paint = paint, fig = fig, pose = "", facing = -1 }
+	return { quad = quad, gui = gui, colour = colour, paint = paint, fig = fig, pose = "", facing = -1,
+		effects = ManEffects.attach(quad, gui, colour, paint, kind) }
 end
 
 local function create(id: number, kind: string, side: number): View
@@ -319,14 +321,14 @@ local function create(id: number, kind: string, side: number): View
 				table.clear(men)
 				break
 			end
-			table.insert(men, manQuad(model, fig, color))
+			table.insert(men, manQuad(model, fig, color, name))
 		end
 	end
 	local tube: ManSprite? = nil
 	if #men > 0 and kind == "mortar" then
 		local fig = SpriteBank.figure("tube")
 		if fig then
-			tube = manQuad(model, fig, color)
+			tube = manQuad(model, fig, color, "tube")
 		end
 	end
 	local look = if #men > 0 then nil else SpriteBank.look(kind)
@@ -627,6 +629,7 @@ local function setFigure(ms: ManSprite, pose: string, heading: number, x: number
 		ms.paint.ImageRectOffset = SpriteBank.offset(ms.fig, p.paint, d)
 	end
 	ms.quad.CFrame = CFrame.new(World.toWorld(x, y, height)) * CFrame.Angles(0, -(Facing.residual(h, d, 16) + GUI_YAW), 0)
+	ManEffects.place(ms.effects, pose, h, d, x, y, height, SquadMen.MAN_CELLS, SquadMen.FRAME_CELLS, SUN.X, SUN.Y)
 end
 
 local function placeMen(v: View, pos: Vector3, dt: number)
@@ -918,7 +921,7 @@ local function newHand(parent: Instance, kind: string, color: Color3, x: number,
 	if not fig then
 		return nil
 	end
-	return { kind = kind, x = x, y = y, heading = heading, walked = walked, tx = x, ty = y, at = os.clock(), there = false, ms = manQuad(parent, fig, color) }
+	return { kind = kind, x = x, y = y, heading = heading, walked = walked, tx = x, ty = y, at = os.clock(), there = false, ms = manQuad(parent, fig, color, kind) }
 end
 
 local function dropHands(v: View)
