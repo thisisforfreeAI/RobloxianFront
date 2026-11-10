@@ -6,6 +6,8 @@
 	of the heading turning the quad. Other kinds, or a clone without the art, keep the PLACEHOLDER shapes
 	(TEMP-003): a flat body in the side colour plus a nose showing heading. Sizes follow WarFront's
 	sprite footprints in cells (units-top atlas "cells" values).
+	Infantry squads draw each soldier on his own (the leader and two riflemen from the men sheet),
+	placed and posed by SquadMen as the game does.
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -15,6 +17,7 @@ local Shared = ReplicatedStorage:WaitForChild("Shared")
 local World = require(Shared.Config.World)
 local Facing = require(Shared.Assets.Facing)
 local SpriteBank = require(script.Parent.SpriteBank)
+local SquadMen = require(script.Parent.SquadMen)
 
 local UnitRenderer = {}
 
@@ -26,6 +29,8 @@ local GUI_YAW = -World.TOP_GUI_YAW -- a Top-face SurfaceGui needs this turn to l
 local SPRITE_Y = -0.05 -- sprite quads sit just under the unit's anchor height
 
 export type Sprite = { quad: Part, colour: ImageLabel, paint: ImageLabel, y0c: number, y0p: number, rise: number }
+
+export type ManSprite = { quad: Part, gui: SurfaceGui, colour: ImageLabel, paint: ImageLabel, fig: SpriteBank.Figure, pose: string, facing: number }
 
 export type View = {
 	id: number,
@@ -46,6 +51,13 @@ export type View = {
 	look: SpriteBank.Look?,
 	sprites: { Sprite },
 	facing: number,
+	squad: SquadMen.Squad?,
+	men: { ManSprite },
+	hpFrac: number,
+	flags: number,
+	aimX: number,
+	aimY: number,
+	inTrench: boolean,
 }
 
 local views: { [number]: View } = {}
@@ -94,6 +106,36 @@ local function spriteQuad(parent: Instance, look: SpriteBank.Look, layer: Sprite
 	local paint = label(2)
 	paint.ImageColor3 = color -- multiply, as the game's paint pass
 	return { quad = quad, colour = colour, paint = paint, y0c = layer.colour, y0p = layer.paint, rise = rise }
+end
+
+local function manQuad(parent: Instance, fig: SpriteBank.Figure, color: Color3): ManSprite
+	local quad = Instance.new("Part")
+	quad.Name = "Man"
+	quad.Anchored, quad.CanCollide, quad.CanQuery, quad.CanTouch, quad.CastShadow = true, false, false, false, false
+	quad.Transparency = 1
+	quad.Size = Vector3.new(SquadMen.FRAME_CELLS * S, 0.05, SquadMen.FRAME_CELLS * S)
+	quad.Parent = parent
+	local gui = Instance.new("SurfaceGui")
+	gui.Face = Enum.NormalId.Top
+	gui.SizingMode = Enum.SurfaceGuiSizingMode.FixedSize
+	gui.CanvasSize = Vector2.new(fig.frame, fig.frame)
+	gui.LightInfluence = 0
+	gui.Parent = quad
+	local function label(z: number): ImageLabel
+		local l = Instance.new("ImageLabel")
+		l.BackgroundTransparency = 1
+		l.Size = UDim2.fromScale(1, 1)
+		l.ImageContent = fig.content
+		l.ImageRectSize = Vector2.new(fig.frame, fig.frame)
+		l.ResampleMode = Enum.ResamplerMode.Pixelated
+		l.ZIndex = z
+		l.Parent = gui
+		return l
+	end
+	local colour = label(1)
+	local paint = label(2)
+	paint.ImageColor3 = color
+	return { quad = quad, gui = gui, colour = colour, paint = paint, fig = fig, pose = "", facing = -1 }
 end
 
 local function create(id: number, kind: string, side: number): View
@@ -147,9 +189,25 @@ local function create(id: number, kind: string, side: number): View
 	status.Text = ""
 	status.Parent = tagGui
 	tagGui.Parent = body
-	local look = SpriteBank.look(kind)
+	-- a squad drawn man by man when the men sheet is present, else its icon sprite, else the block
+	local men: { ManSprite } = {}
+	local roster = SquadMen.ROSTER[kind]
+	if roster then
+		for _, name in roster do
+			local fig = SpriteBank.figure(name)
+			if not fig then
+				table.clear(men)
+				break
+			end
+			table.insert(men, manQuad(model, fig, color))
+		end
+	end
+	local look = if #men > 0 then nil else SpriteBank.look(kind)
 	local sprites: { Sprite } = {}
-	if look then
+	if #men > 0 then
+		body.Transparency = 1
+		nose.Transparency = 1
+	elseif look then
 		body.Transparency = 1
 		nose.Transparency = 1
 		table.insert(sprites, spriteQuad(model, look, look.body, color, 0))
@@ -163,6 +221,7 @@ local function create(id: number, kind: string, side: number): View
 		id = id, kind = kind, side = side, model = model, body = body, ring = ring, bar = bar, barGui = barGui, status = status,
 		from = Vector3.zero, to = Vector3.zero, fromYaw = 0, toYaw = 0, t = 1, seen = 0,
 		look = look, sprites = sprites, facing = -1,
+		squad = nil, men = men, hpFrac = 1, flags = 0, aimX = 0, aimY = 0, inTrench = false,
 	}
 end
 
@@ -192,6 +251,42 @@ local function place(v: View, pos: Vector3, yaw: number)
 	end
 end
 
+local function placeMen(v: View, pos: Vector3, dt: number)
+	local vel = (v.to - v.from) / (SNAPSHOT_SEC * S)
+	local inp: SquadMen.Input = {
+		x = pos.X / S, y = pos.Z / S, vx = vel.X, vy = vel.Z,
+		hpFrac = v.hpFrac, firing = bit32.btest(v.flags, 1), aimX = v.aimX, aimY = v.aimY,
+		road = bit32.btest(v.flags, 2), contact = bit32.btest(v.flags, 4), cover = v.inTrench,
+	}
+	local sq = v.squad
+	if not sq then
+		sq = SquadMen.new(v.id, v.kind, inp)
+		v.squad = sq
+	end
+	SquadMen.step(sq :: SquadMen.Squad, inp, dt)
+	for i, m in (sq :: SquadMen.Squad).men do
+		local ms = v.men[i]
+		if not ms then
+			continue
+		end
+		ms.gui.Enabled = m.up
+		if not m.up then
+			continue
+		end
+		local h = m.heading % (2 * math.pi)
+		local d = Facing.index(h, 16)
+		local pose = if ms.fig.poses[m.pose] then m.pose else "stand"
+		if d ~= ms.facing or pose ~= ms.pose then
+			ms.facing, ms.pose = d, pose
+			local p = ms.fig.poses[pose]
+			ms.colour.ImageRectOffset = SpriteBank.offset(ms.fig, p.colour, d)
+			ms.paint.ImageRectOffset = SpriteBank.offset(ms.fig, p.paint, d)
+		end
+		ms.quad.CFrame = CFrame.new(World.toWorld(m.x, m.y, pos.Y - World.GROUND_Y + SPRITE_Y))
+			* CFrame.Angles(0, -(Facing.residual(h, d, 16) + GUI_YAW), 0)
+	end
+end
+
 local function lerpAngle(a: number, b: number, t: number): number
 	local d = (b - a + math.pi) % (2 * math.pi) - math.pi
 	return a + d * t
@@ -205,7 +300,11 @@ function UnitRenderer.start()
 	RunService.RenderStepped:Connect(function(dt)
 		for _, v in views do
 			v.t = math.min(1, v.t + dt / SNAPSHOT_SEC)
-			place(v, v.from:Lerp(v.to, v.t), lerpAngle(v.fromYaw, v.toYaw, v.t))
+			local pos = v.from:Lerp(v.to, v.t)
+			place(v, pos, lerpAngle(v.fromYaw, v.toYaw, v.t))
+			if #v.men > 0 then
+				placeMen(v, pos, dt)
+			end
 		end
 	end)
 end
@@ -245,6 +344,7 @@ function UnitRenderer.apply(tick: number, units: { any })
 			end
 		end
 		v.status.Text = table.concat(bits, " ")
+		v.hpFrac, v.flags, v.aimX, v.aimY, v.inTrench = frac, u[12] or 0, u[13] or 0, u[14] or 0, u[9] == 13
 		v.bar.Size = UDim2.fromScale(frac, 1)
 		v.bar.BackgroundColor3 = if frac > 0.5 then Color3.fromRGB(110, 220, 90) elseif frac > 0.25 then Color3.fromRGB(240, 200, 60) else Color3.fromRGB(230, 70, 60)
 	end

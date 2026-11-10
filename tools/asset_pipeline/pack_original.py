@@ -1,7 +1,7 @@
 """Pack sprite strips cut from the original sheets into dev pixel modules the client can draw.
 
 Each strip is a PNG holding 16 facings in one row (frame F x F, column 0 east, clockwise). Every strip
-is laid out as 8 columns x 2 rows at its own y in one page (frames are never resized). The page and its
+is laid out as 8 columns x 2 rows (or "columns": 16 for one row) at its own y in one page (frames are never resized). The page and its
 layout go to one Luau module in src/client/DevAssets/ (git-ignored: it embeds the art).
 
 Usage:
@@ -23,10 +23,10 @@ OUT = os.path.join(ROOT, "src", "client", "DevAssets")
 MAX_PAGE = 1024  # EditableImage limit
 
 
-def pack(name, frame, strips):
-    cols = 8
+def pack(name, frame, strips, cols=8):
+    rows = 16 // cols
     w = cols * frame
-    h = len(strips) * 2 * frame
+    h = len(strips) * rows * frame
     if w > MAX_PAGE or h > MAX_PAGE:
         raise SystemExit(f"{name}: page {w}x{h} is over {MAX_PAGE}; split it")
     page = Image.new("RGBA", (w, h), (0, 0, 0, 0))
@@ -35,7 +35,7 @@ def pack(name, frame, strips):
         src = Image.open(os.path.join(ROOT, path)).convert("RGBA")
         if src.size != (16 * frame, frame):
             raise SystemExit(f"{path}: {src.size}, expected {(16 * frame, frame)}")
-        y0 = k * 2 * frame
+        y0 = k * rows * frame
         for d in range(16):
             cell = src.crop((d * frame, 0, (d + 1) * frame, frame))
             page.paste(cell, ((d % cols) * frame, y0 + (d // cols) * frame))
@@ -61,7 +61,7 @@ def pack(name, frame, strips):
 def main():
     spec = json.load(open(sys.argv[1]))
     for name, s in spec.items():
-        w, h, n = pack(name, s["frame"], s["strips"])
+        w, h, n = pack(name, s["frame"], s["strips"], s.get("columns", 8))
         print(f"{name}: {w}x{h}, {len(s['strips'])} strips, {n // 1024} KB")
 
 

@@ -601,6 +601,47 @@ if fs.isFile(matchPath) then
 		eq(select(2, sim.upgradeRig(2, rig.id, "tank")), "notOwned")
 	end)
 
+	test("squad men: the game's hash, wedge when moving, losses, walk frames", function()
+		local SM = require("../src/client/Rendering/SquadMen")
+		-- values from the game's q5 run in node
+		near(SM.hash(1, 1), 0.8882474072743207)
+		near(SM.hash(7, 10), 0.01096736709587276)
+		near(SM.hash(123, 50), 0.38830226683057845)
+		near(SM.hash(99999, 42), 0.6716460343450308)
+		local inp = { x = 10, y = 10, vx = 1, vy = 0, hpFrac = 1, firing = false, aimX = 0, aimY = 0, road = false, contact = false, cover = false }
+		local sq = SM.new(5, "infantry", inp)
+		eq(#sq.men, 3)
+		eq(sq.men[1].kind, "leader")
+		SM.step(sq, inp, 1 / 60)
+		-- wedge, heading east: leader ahead on the axis, riflemen behind on each side
+		local mean = (0.62 - 0.31 - 0.31) / 3
+		near(sq.men[1].x, 10 + (0.62 - mean) * 0.6)
+		near(sq.men[1].y, 10)
+		near(sq.men[2].y, 10 - 0.9 * 0.6)
+		near(sq.men[3].y, 10 + 0.9 * 0.6)
+		-- walking for a while cycles the walk frames and faces east
+		local poses = {}
+		for _ = 1, 120 do
+			inp.x += 1 / 60
+			SM.step(sq, inp, 1 / 60)
+			poses[sq.men[1].pose] = true
+		end
+		eq(poses.walk0 and poses.walk1 and poses.walk2 and poses.walk3, true, "all four walk frames")
+		eq(math.abs(sq.men[1].heading) < 0.05, true, "faces east")
+		-- a third of its health gone: one rifleman falls, never the leader
+		inp.hpFrac = 0.6
+		SM.step(sq, inp, 1 / 60)
+		eq(sq.men[1].up, true)
+		eq((if sq.men[2].up then 1 else 0) + (if sq.men[3].up then 1 else 0), 1)
+		-- stopped and firing: everyone ends up kneeling, facing the aim point
+		inp.vx, inp.firing, inp.aimX, inp.aimY = 0, true, inp.x, inp.y - 20
+		for _ = 1, 240 do
+			SM.step(sq, inp, 1 / 60)
+		end
+		eq(sq.men[1].pose, "kneel")
+		eq(math.abs(sq.men[1].heading + math.pi / 2) < 0.05, true, "faces the aim")
+	end)
+
 	test("rig card: the lines and buttons the panel shows", function()
 		local RC = require("../src/client/UI/RigCard")
 		local prices = { truck = 40, pump = 120, tank = 60, pumpMult = 1.5, tankMult = 2, baseTank = 440 }

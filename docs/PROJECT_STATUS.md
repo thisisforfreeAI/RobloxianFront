@@ -682,7 +682,7 @@ Bot: bridges (2026-11-10), traced from the game's _h / v7e / kUe / nat / Yst / X
 - Stopping a unit now also ends a sabotage job.
 
 ## Next
-1. You run Studio tests B18–B78 (defences, mortar, artillery, scout) and commit.
+1. You run Studio tests B18–B79 (defences, mortar, artillery, scout) and commit.
 2. Done since: engineers' repair, vehicle steering, the bot's HQ push, shared group routes,
    separation, the 100/250/500-unit performance check (`lune run tools/perf.luau 250`) and the
    convoy rules (spacing, town/bridge/off-road pace, held and stranded trucks), airfield drops and
@@ -713,9 +713,17 @@ turreted unit has 3 more rows for the turret; men sheet: 48 px, same 3 rows a po
   colour layer, then the paint layer tinted with the side's colour (Roblox multiplies like the game's
   paint pass), frame = 16-step facing, the rest of the heading turns the quad, drawn width =
   cells / art.w from the game's unit table. Missing modules (a fresh clone) fall back to the blocks.
+- Sizes: every unit is drawn at the game's unit scale 1.3 (za.scale), so a tank's frame is
+  1 x 1.3 / 0.492 = 2.6 cells wide.
+- Infantry squads draw each soldier on his own (`SquadMen`, traced from the game's squad drawer): the
+  leader and two riflemen, 0.55 cells each, 0.6 cells apart in a wedge when moving (a file on roads),
+  a line when firing, loosely spread otherwise; they walk to their places with the game's gain and
+  catch-up limits, the walk frame changing every 0.17 cells walked; kneel when firing or in a trench.
+  Losing health drops riflemen first (ceil(hp share x 3) stand). The server now sends each unit's
+  firing, road and contact flags and its aim point for this.
 - Not yet: the turret turns with the hull (no turret angle in the snapshot), no dark rim or shadow
-  (the shape row), trucks always look full, wrecks, the other infantry kinds, men figures, buildings.
-  Still to trace: walk frame timing and how many of each figure a squad shows.
+  (the shape row), trucks always look full, wrecks, bodies left behind, flinching from blasts, the AT,
+  mortar and para crews (they keep the icon or block), buildings.
 
 ## Open questions
 1. Rights scope: answered for the art (see Original art above). Still open: audio and voice, and

@@ -486,6 +486,26 @@ local function unitStatus(e: any): number
 	return 0
 end
 
+-- what the client needs to draw a squad's men (the game's squad drawer): 1 firing, 2 on a road, 4 in
+-- contact (firing, or hit within movement.contactSec); then the aim point (0, 0 when not firing)
+local function unitLook(e: any): (number, number, number)
+	local flags = 0
+	if e.firing then
+		flags += 1
+	end
+	local c = sim.roads.cellAt(e.x, e.y)
+	if c >= 0 and sim.roads.isRoad(c) then
+		flags += 2
+	end
+	if e.firing or (e.hitAt ~= nil and sim.time - e.hitAt < rules:number("movement.contactSec")) then
+		flags += 4
+	end
+	if e.firing and e.aimX then
+		return flags, e.aimX, e.aimY
+	end
+	return flags, 0, 0
+end
+
 local function viewFor(side: number): ({ any }, { any }, { number }?)
 	local viewer = if side > 0 then viewers[side] else nil
 	if side > 0 and not viewer then
@@ -500,7 +520,8 @@ local function viewFor(side: number): ({ any }, { any }, { number }?)
 	for _, e in sim.list do
 		if e.cat == "unit" then
 			if not viewer or viewer.unitVisible(e) then
-				table.insert(units, { e.id, e.kind, e.side, e.x, e.y, e.heading, e.hp, e.maxHp, unitStatus(e), e.rank or 0, if e.cargo then #e.cargo else 0 })
+				local flags, aimX, aimY = unitLook(e)
+				table.insert(units, { e.id, e.kind, e.side, e.x, e.y, e.heading, e.hp, e.maxHp, unitStatus(e), e.rank or 0, if e.cargo then #e.cargo else 0, flags, aimX, aimY })
 			end
 		elseif e.kind == "rig" then
 			local seen = not viewer or e.side == side or viewer.visibleAt(e.x, e.y)

@@ -10,8 +10,11 @@
 	the nation colour and clipped to the paint's own alpha, drawn over it. Roblox's ImageColor3 multiplies
 	the same way, so the paint is a second ImageLabel tinted with the side colour. A turreted unit draws
 	its turret rows the same way on top. Frame for heading h: Facing.index(h, 16); the rest of the angle
-	turns the quad. Drawn width in cells = cells / art.w from the game's unit table (fa.units).
-	Not drawn yet: the shape row (the game uses it for the dark rim and shadow), wrecks, the men sheet.
+	turns the quad. Drawn width in cells = cells * 1.3 / art.w: cells and art.w from the game's unit
+	table (fa.units), 1.3 its unit scale (za.scale), which every unit size is multiplied by.
+	Men (men-top.png, 48 px frames): SpriteBank.figure("rifle" | "leader") gives each pose's colour and
+	paint strips; SquadMen places them.
+	Not drawn yet: the shape row (the game uses it for the dark rim and shadow), wrecks.
 ]]
 local AssetService = game:GetService("AssetService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -32,6 +35,9 @@ export type Look = {
 }
 
 -- kind -> module, strips, game cells and art.w (fa.units in the bundle)
+local UNIT_SCALE = 1.3 -- za.scale
+local FIGURES = { rifle = "OrigMenRifle", leader = "OrigMenLeader" }
+
 local KINDS: { [string]: { module: string, body: string, turret: string?, cells: number, artW: number } } = {
 	tank = { module = "OrigTank", body = "hull", turret = "turret", cells = 1, artW = 0.492 },
 	truck = { module = "OrigTruck", body = "full", cells = 0.8, artW = 0.4 },
@@ -99,7 +105,7 @@ function SpriteBank.look(kind: string): Look?
 	local look: Look = {
 		frame = p.meta.frame,
 		columns = p.meta.columns,
-		cells = k.cells / k.artW,
+		cells = k.cells * UNIT_SCALE / k.artW,
 		body = body,
 		turret = if k.turret then layer(k.turret) else nil,
 	}
@@ -107,15 +113,46 @@ function SpriteBank.look(kind: string): Look?
 	return look
 end
 
+export type Figure = { content: Content, frame: number, columns: number, poses: { [string]: { colour: number, paint: number } } }
+local figures: { [string]: Figure | false } = {}
+
+-- one soldier figure: per pose, the y of its colour and paint strips
+function SpriteBank.figure(name: string): Figure?
+	local cached = figures[name]
+	if cached ~= nil then
+		return cached or nil
+	end
+	figures[name] = false
+	local mod = FIGURES[name]
+	local p = mod and page(mod)
+	if not p then
+		return nil
+	end
+	local poses = {}
+	for label, y0 in p.meta.strips do
+		local pose, layer = string.match(label, "^(.+)_(%a+)$")
+		if pose and (layer == "colour" or layer == "paint") then
+			poses[pose] = poses[pose] or { colour = -1, paint = -1 }
+			poses[pose][layer] = y0
+		end
+	end
+	local fig: Figure = { content = p.content, frame = p.meta.frame, columns = p.meta.columns, poses = poses }
+	figures[name] = fig
+	return fig
+end
+
 -- loads every page up front, so the first unit of a kind doesn't stall a frame
 function SpriteBank.preload()
 	for kind in KINDS do
 		SpriteBank.look(kind)
 	end
+	for name in FIGURES do
+		SpriteBank.figure(name)
+	end
 end
 
 -- top-left pixel of facing d in the strip that starts at y0
-function SpriteBank.offset(look: Look, y0: number, d: number): Vector2
+function SpriteBank.offset(look: { frame: number, columns: number }, y0: number, d: number): Vector2
 	return Vector2.new((d % look.columns) * look.frame, y0 + (d // look.columns) * look.frame)
 end
 
