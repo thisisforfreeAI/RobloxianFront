@@ -28,7 +28,7 @@ local SIDE_COLOR = { [1] = Color3.fromRGB(70, 130, 230), [2] = Color3.fromRGB(22
 local GUI_YAW = -World.TOP_GUI_YAW -- a Top-face SurfaceGui needs this turn to line up with the map
 local SPRITE_Y = -0.05 -- sprite quads sit just under the unit's anchor height
 
-export type Sprite = { quad: Part, colour: ImageLabel, paint: ImageLabel, y0c: number, y0p: number, rise: number }
+export type Sprite = { quad: Part, colour: ImageLabel, paint: ImageLabel, y0c: number, y0p: number, rise: number, facing: number, turret: boolean }
 
 export type ManSprite = { quad: Part, gui: SurfaceGui, colour: ImageLabel, paint: ImageLabel, fig: SpriteBank.Figure, pose: string, facing: number }
 
@@ -62,6 +62,8 @@ export type View = {
 	sinceShot: number,
 	tube: ManSprite?,
 	empty: boolean,
+	turretWant: number, -- the sim's turret angle (latest snapshot)
+	turretAt: number?, -- the drawn one, easing after it
 }
 
 local views: { [number]: View } = {}
@@ -109,7 +111,7 @@ local function spriteQuad(parent: Instance, look: SpriteBank.Look, layer: Sprite
 	local colour = label(1)
 	local paint = label(2)
 	paint.ImageColor3 = color -- multiply, as the game's paint pass
-	return { quad = quad, colour = colour, paint = paint, y0c = layer.colour, y0p = layer.paint, rise = rise }
+	return { quad = quad, colour = colour, paint = paint, y0c = layer.colour, y0p = layer.paint, rise = rise, facing = -1, turret = false }
 end
 
 local function manQuad(parent: Instance, fig: SpriteBank.Figure, color: Color3): ManSprite
@@ -223,7 +225,9 @@ local function create(id: number, kind: string, side: number): View
 		nose.Transparency = 1
 		table.insert(sprites, spriteQuad(model, look, look.body, color, 0))
 		if look.turret then
-			table.insert(sprites, spriteQuad(model, look, look.turret, color, 0.04))
+			local tq = spriteQuad(model, look, look.turret, color, 0.04)
+			tq.turret = true
+			table.insert(sprites, tq)
 		end
 	end
 	model.PrimaryPart = body
@@ -233,10 +237,13 @@ local function create(id: number, kind: string, side: number): View
 		from = Vector3.zero, to = Vector3.zero, fromYaw = 0, toYaw = 0, t = 1, seen = 0,
 		look = look, sprites = sprites, facing = -1,
 		squad = nil, men = men, hpFrac = 1, flags = 0, aimX = 0, aimY = 0, inTrench = false, status = 0, sinceShot = 9, tube = tube, empty = false,
+		turretWant = 0, turretAt = nil,
 	}
 end
 
-local function place(v: View, pos: Vector3, yaw: number)
+local TURRET_FOLLOW = 20 -- the game's za.turretFollowPerSec: the drawn turret eases after the sim's
+
+local function place(v: View, pos: Vector3, yaw: number, dt: number)
 	-- Rotating about Y by -heading turns local +X towards (cos h, 0, sin h): east = +X, south = +Z.
 	local cf = CFrame.new(pos) * CFrame.Angles(0, -yaw, 0)
 	v.body.CFrame = cf
@@ -245,20 +252,29 @@ local function place(v: View, pos: Vector3, yaw: number)
 	v.ring.CFrame = CFrame.new(pos - Vector3.new(0, 0.25, 0)) * CFrame.Angles(0, 0, math.rad(90))
 	local look = v.look
 	if look then
-		-- the turret follows the hull for now: the snapshot carries no turret angle yet
-		local h = yaw % (2 * math.pi)
-		local d = Facing.index(h, 16)
-		local residual = Facing.residual(h, d, 16)
-		if d ~= v.facing then
-			v.facing = d
-			for _, sp in v.sprites do
+		-- hull layers face the hull; the turret layer faces the turret (the sim turns it, the drawing eases after it)
+		local tAt = v.turretAt
+		if tAt == nil then
+			tAt = v.turretWant
+		else
+			local d = (v.turretWant - tAt + math.pi) % (2 * math.pi) - math.pi
+			tAt += d * (1 - math.exp(-TURRET_FOLLOW * dt))
+		end
+		v.turretAt = tAt
+		local hullH = yaw % (2 * math.pi)
+		local turretH = (tAt :: number) % (2 * math.pi)
+		for _, sp in v.sprites do
+			local h = if sp.turret then turretH else hullH
+			local d = Facing.index(h, 16)
+			if d ~= sp.facing or v.facing == -1 then
+				sp.facing = d
 				sp.colour.ImageRectOffset = SpriteBank.offset(look, sp.y0c, d)
 				sp.paint.ImageRectOffset = SpriteBank.offset(look, sp.y0p, d)
 			end
-		end
-		for _, sp in v.sprites do
+			local residual = Facing.residual(h, d, 16)
 			sp.quad.CFrame = CFrame.new(pos + Vector3.new(0, SPRITE_Y + sp.rise, 0)) * CFrame.Angles(0, -(residual + GUI_YAW), 0)
 		end
+		v.facing = 0
 	end
 end
 
@@ -334,7 +350,7 @@ function UnitRenderer.start()
 		for _, v in views do
 			v.t = math.min(1, v.t + dt / SNAPSHOT_SEC)
 			local pos = v.from:Lerp(v.to, v.t)
-			place(v, pos, lerpAngle(v.fromYaw, v.toYaw, v.t))
+			place(v, pos, lerpAngle(v.fromYaw, v.toYaw, v.t), dt)
 			if #v.men > 0 then
 				placeMen(v, pos, dt)
 			end
@@ -379,6 +395,7 @@ function UnitRenderer.apply(tick: number, units: { any })
 		v.status.Text = table.concat(bits, " ")
 		v.hpFrac, v.flags, v.aimX, v.aimY, v.inTrench = frac, u[12] or 0, u[13] or 0, u[14] or 0, u[9] == 13
 		v.status, v.sinceShot = u[9] or 0, u[15] or 9
+		v.turretWant = u[16] or heading
 		-- an oil truck driving out or carrying nothing shows its empty look (the game's truck_empty)
 		local empty = bit32.btest(v.flags, 8)
 		if empty ~= v.empty and v.look and v.look.empty and v.sprites[1] then

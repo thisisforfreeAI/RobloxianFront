@@ -682,7 +682,7 @@ Bot: bridges (2026-11-10), traced from the game's _h / v7e / kUe / nat / Yst / X
 - Stopping a unit now also ends a sabotage job.
 
 ## Next
-1. You run Studio tests B18–B83 (defences, mortar, artillery, scout) and commit.
+1. You run Studio tests B18–B84 (defences, mortar, artillery, scout) and commit.
 2. Done since: engineers' repair, vehicle steering, the bot's HQ push, shared group routes,
    separation, the 100/250/500-unit performance check (`lune run tools/perf.luau 250`) and the
    convoy rules (spacing, town/bridge/off-road pace, held and stranded trucks), airfield drops and
@@ -755,7 +755,7 @@ turreted unit has 3 more rows for the turret; men sheet: 48 px, same 3 rows a po
   uses out of the local install's bundle at run time (acorn; nothing copied) and runs it for a map;
   `tools/asset_pipeline/pack_ground.py` stores it as Ground_<id>.luau (Saddle: 1152 x 720 px, 100 KB).
   MapRenderer draws it instead of the placeholder colours. Not reproduced: the shader's per-pixel work
-  on top (forest floor darkening, animated water and foam, day/night light, fog, territory wash).
+  on top (animated water and foam, day/night light, fog, territory wash).
 - Town light: pack_city.py now bakes the ground shader's close-up town lighting (its "towns at real
   size" pass, traced): each town pixel darkened by what the buildings round it shut out of the sky
   (aux green x 0.3), and roof shadows: every roof toward the sun shades a pixel by
@@ -763,7 +763,27 @@ turreted unit has 3 more rows for the turret; men sheet: 48 px, same 3 rows a po
   distance, strength 0.58; heights from aux red (/8 = storeys); px a level from the sun as the game
   works it out (us.city shadowPx 2.8, at most 4.6). APPROX: one fixed sun, noon (shadows due south);
   the game turns the sun through a 480 s day starting at a low morning sun, and darkens at night.
-- Next: the shader's forest-floor darkening and the water (shallows, foam, rivers).
+- Forest floor (fixed): the first ground bake drew every forest cell as deep-water blue-black with
+  stray wave specks, hidden under the trees. The baker's colour and mask tables are filled by loose
+  top-level statements in the bundle (A2[...] = ..., a for loop over rh), which the extractor skipped.
+  export_ground.cjs now keeps every top-level statement that fills a table it needs. On top it lays
+  the shader's close-up forest floor: forest texels (fine mask 11) x (1 - 0.34 x heart), heart being
+  each cell's depth into its wood (the game's ZLe then jLe: 0 at the edge, 1 five cells in), sampled
+  bilinearly per texel and cut to 48 steps. The canopy colour the game blends in when zoomed far out
+  is left out (trees are always drawn here). Saddle re-baked: 119 KB.
+- Next: the water (shallows, foam, rivers), which Saddle barely has.
+
+## Turrets like the game (2026-11-10)
+- The sim now has turrets, traced from the game (r7e / Tie): a unit with turretDegSec (tank 70, IFV 80),
+  not at sea, not air, not garrisoned, turns its turret at that rate towards what it shoots at and holds
+  fire until it is within movement.drive.turretOnDeg (4) of the aim; its reload keeps counting meanwhile.
+  Not shooting, the turret turns to the enemy its standing hull faces (steer.face, within sight x 1.25),
+  else back over the hull. The hull no longer has to face the target for a tank to fire.
+- The unit row carries the turret angle (index 16); UnitRenderer draws the turret layer at its own
+  facing and eases it after the sim's at the game's turretFollowPerSec (20 a second).
+- Gameplay effect: a tank caught from behind now pauses up to about 2.5 s before its first shot. The
+  bot-vs-bot check run (d5r) now ends "winner 1" instead of "winner 2".
+- Test: "a tank turns its turret at turretDegSec ..." (150 pass). Studio: B84.
 
 ## Open questions
 1. Rights scope: answered for the art (see Original art above). Still open: audio and voice, and

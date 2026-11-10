@@ -84,11 +84,12 @@
 	        rig routes refresh every 10 ticks per rig; units caught inside a new footprint step to the
 	        nearest free cell centre; vehicles drive with the game's model (Pathing: accelerate, brake,
 	        corner, pivot / three-point turn, reverse) minus formations, overtaking and dodging; a
-	        standing vehicle without a turret turns its hull to its target (the game's Wat).
+	        standing vehicle without a turret turns its hull to its target (the game's Wat); a turret
+	        turns at turretDegSec and holds fire until within turretOnDeg of the aim (the game's Tie).
 	UNCONFIRMED: the territory edge noise uses the map's seed (the game uses its match seed); where
 	        the headless check sits in the tick order.
 	UNCONFIRMED (older): new units start with no face direction and an empty shot timer; a dead nation's
-	        trucks are removed; a firing vehicle's hull keeps its heading (turrets not modelled).
+	        trucks are removed; a firing vehicle's hull keeps its heading.
 	Idle units (idleThink / holdAtEnemy below): each unit keeps a post (where it was sent, stopped or
 	        arrived). Standing idle, an armed unit chases enemies within movement.leashCells of its post
 	        and walks back once more than half the leash away; a unit walking straight into an enemy it
@@ -4105,11 +4106,43 @@ function Sim.new(deps: Deps)
 		return if speed > 0 then math.sqrt(d2(ax, ay, bx, by)) / speed else 0
 	end
 
+	-- The game's turrets (r7e / Tie): a unit with a turret (turretDegSec > 0, not at sea, not in the air,
+	-- not garrisoned) turns it at turretDegSec towards what it shoots at; it holds fire until the
+	-- turret is within movement.drive.turretOnDeg of the aim (its reload keeps counting meanwhile).
+	-- Not shooting, the turret turns to the enemy its hull faces while standing (steer.face, within
+	-- sight x 1.25), else back to the hull.
+	-- (kept on self, not in a local: the constructor is at Luau's 200 local limit)
+	self.Turret = {}
+	function self.Turret.has(e: Entity, key: string): boolean
+		return e.cat == "unit" and not e.inside and numOr(key .. ".turretDegSec", 0) > 0
+			and text(key .. ".move") ~= "sea" and e.class ~= "air"
+	end
+	function self.Turret.wrap(a: number): number -- the game's KB
+		a = math.fmod(a, 2 * math.pi)
+		return if a > math.pi then a - 2 * math.pi elseif a < -math.pi then a + 2 * math.pi else a
+	end
+	-- returns true when the turret is on the aim (always, with no aim)
+	function self.Turret.turn(e: Entity, key: string, dt: number, tx: number?, ty: number?): boolean
+		local hull = e.heading or 0
+		if e.turret == nil or e.turret ~= e.turret then
+			e.turret = hull
+		end
+		local want = if tx == nil or (tx - e.x) ^ 2 + ((ty :: number) - e.y) ^ 2 < 1e-6 then hull else math.atan2((ty :: number) - e.y, tx - e.x)
+		local l = self.Turret.wrap(want - e.turret)
+		local c = numOr(key .. ".turretDegSec", 0) * math.pi * dt / 180
+		e.turret = self.Turret.wrap(e.turret + (if l > c then c elseif l < -c then -c else l))
+		return tx == nil or math.abs(self.Turret.wrap(want - e.turret)) <= num("movement.drive.turretOnDeg") * math.pi / 180
+	end
+
 	local function fire(e: Entity, key: string, target: Entity, kind: string, dps: number, dt: number)
 		local tx, ty = target.x, target.y
 		e.firing, e.aimX, e.aimY = true, tx, ty
 		if e.cat == "unit" and not hasHull(e) then
 			e.heading = math.atan2(ty - e.y, tx - e.x) -- presentation only for foot units
+		end
+		if self.Turret.has(e, key) and not self.Turret.turn(e, key, dt, tx, ty) then
+			e.shotTimer = math.max(0, e.shotTimer - dt)
+			return
 		end
 		local vr = if e.cat == "unit" then self.vetReload(e) else 1
 		local secs = shoot(e, num(key .. ".reloadSec") * vr, dt)
@@ -4700,6 +4733,16 @@ function Sim.new(deps: Deps)
 							end
 						end
 
+					end
+				end
+				if not e.firing and self.Turret.has(e, key) then
+					local f = if not e.path and e.steer then e.steer.face else -1
+					local t = if f and f >= 0 then self.entities[f] else nil
+					local sight = num(key .. ".sight")
+					if t and t.alive and not t.inside and d2(t.x, t.y, e.x, e.y) <= (sight * 1.25) ^ 2 then
+						self.Turret.turn(e, key, dt, t.x, t.y)
+					else
+						self.Turret.turn(e, key, dt, nil, nil)
 					end
 				end
 			end

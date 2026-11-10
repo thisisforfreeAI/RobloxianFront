@@ -526,7 +526,7 @@ local function viewFor(side: number): ({ any }, { any }, { number }?)
 		if e.cat == "unit" then
 			if not viewer or viewer.unitVisible(e) then
 				local flags, aimX, aimY, since = unitLook(e)
-				table.insert(units, { e.id, e.kind, e.side, e.x, e.y, e.heading, e.hp, e.maxHp, unitStatus(e), e.rank or 0, if e.cargo then #e.cargo else 0, flags, aimX, aimY, since })
+				table.insert(units, { e.id, e.kind, e.side, e.x, e.y, e.heading, e.hp, e.maxHp, unitStatus(e), e.rank or 0, if e.cargo then #e.cargo else 0, flags, aimX, aimY, since, e.turret or e.heading })
 			end
 		elseif e.kind == "rig" then
 			local seen = not viewer or e.side == side or viewer.visibleAt(e.x, e.y)

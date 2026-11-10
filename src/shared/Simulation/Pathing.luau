@@ -928,7 +928,7 @@ function Pathing.new(roads: any, num: (string) -> number, text: (string) -> stri
 			e.headed = true
 		end
 		if opt(k .. ".turretDegSec", 0) > 0 or (rx - e.x) ^ 2 + (ry - e.y) ^ 2 < 1e-6 then
-			return -- a turret turns instead of the hull (turrets are not modelled)
+			return -- a turret turns instead of the hull (Sim turnTurret)
 		end
 		local l = wrap(math.atan2(ry - e.y, rx - e.x) - e.heading)
 		local rate = if text(k .. ".move") == "tracks" then opt(k .. ".pivotDegSec", 30) * DEG else drv("idleWheelDegSec") * DEG

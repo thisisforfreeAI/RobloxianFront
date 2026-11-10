@@ -3,8 +3,8 @@
 The ground is the game's "fine" ground texture, 3 px a map cell. It is cut into upright strips no
 wider than 1024 px (the EditableImage limit) and each strip is stored raw DEFLATE + base64 in
 src/client/DevAssets/Ground_<id>.luau (git-ignored: it is the game's art). MapRenderer draws it in
-place of the placeholder 1 px a cell terrain colours. Pixels are unchanged; the shader's per-pixel
-work on top of it (forest floor, water, light) is not reproduced.
+place of the placeholder 1 px a cell terrain colours. export_ground.cjs already lays the shader's
+forest floor on; the rest of the shader's per-pixel work (water, moving light) is not reproduced.
 
 Usage: python tools/asset_pipeline/pack_ground.py <map id> <ground.rgba> <width> <height>
 """

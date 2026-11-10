@@ -945,6 +945,29 @@ if fs.isFile(matchPath) then
 		near(hp1 - tank.hp, 8 * 0.25 * 1.35, "rear (flanked, armour keeps facing only)")
 	end)
 
+	test("a tank turns its turret at turretDegSec and fires once it is on the aim (the game's Tie)", function()
+		local function about(x: number, want: number, msg: string, tol: number)
+			assert(math.abs(x - want) <= tol, `{msg}: got {x}, expected {want}`)
+		end
+		local sim = newSim()
+		local tank = sim.spawnUnit("tank", 1, 60, 10)
+		local foe = sim.spawnUnit("infantry", 2, 57, 10) -- straight behind
+		clearUnits(sim, { tank, foe })
+		tank.heading, tank.turret, tank.shotTimer = 0, 0, 0
+		foe.shotTimer = math.huge
+		run(sim, 1)
+		assert(tank.firedAt == nil, "held fire while the turret turns")
+		about(math.abs(tank.turret), 70 * math.pi / 180, "turned 70 degrees in a second", 0.05)
+		about(tank.heading, 0, "the hull stays", 1e-9)
+		run(sim, 1.6)
+		assert(tank.firedAt ~= nil, "fired once within 4 degrees")
+		about(math.abs(tank.turret), math.pi, "on the aim", 4 * math.pi / 180)
+		-- the foe gone, the turret swings back to the hull
+		foe.alive = false
+		run(sim, 3)
+		about(tank.turret, 0, "back over the hull", 0.01)
+	end)
+
 	test("a destroyed truck loses its cargo and its rig reports no trucks", function()
 		local sim = newSim()
 		local rig = rigAt(sim, 50)
