@@ -268,6 +268,16 @@ function Sim.new(deps: Deps)
 			return 1 + (num(`units.{kind}.roadMult`) - 1) * cu
 		end
 		local t = roads.terrain(c)
+		local code = roads.trenchSoft(c)
+		if code > 0 then
+			-- the game's paceOn on a trench: the terrain pace x max(0.05, the kind's share)
+			local share = math.max(0.05, roads.softPace(if text(`units.{kind}.armour`) == "air" then "air" else move, code,
+				num("trenchWorks.kinds.fire.footPace"), num("trenchWorks.kinds.traps.footPace"), num("trenchWorks.kinds.wire.footPace")))
+			local base = if move == "tracks" then math.max(0.05, numOr(`movement.terrainPace.tracks.{t}`, 1))
+				elseif move == "wheels" then math.max(0.05, numOr(`movement.terrainPace.wheels.{t}`, 1))
+				else 1 / math.max(0.001, 1 + (num(`terrain.{t}.moveCost`) - 1) * num(`units.{kind}.rough`))
+			return base * share
+		end
 		if move == "tracks" then
 			return math.max(0.05, numOr(`movement.terrainPace.tracks.{t}`, 1))
 		elseif move == "wheels" then
@@ -6169,8 +6179,17 @@ function Sim.new(deps: Deps)
 		local T: any = {}
 		self.trenches = {} :: { [number]: any }
 		local nextTrench = 1
-		local WIRE, DUG, GONE, BAD, PLAN = 5, 1, 3, 4, 0
-		self.TRENCH = { plan = PLAN, dug = DUG, gone = GONE, bad = BAD, wire = WIRE }
+		local WIRE, DUG, GONE, BAD, PLAN, WET = 5, 1, 3, 4, 0, 2
+		self.TRENCH = { plan = PLAN, dug = DUG, gone = GONE, bad = BAD, wire = WIRE, wet = WET }
+		local SOFT = { fire = 1, traps = 2, wire = 3 } -- the game's ab / tD / F_
+		self.TRENCH_KINDS = { "ditch", "fire", "traps", "wire" }
+		-- the game's FY: seconds and oil a cell for the trench's kind
+		function T.rate(kind: string?): (number, number)
+			if not kind or kind == "ditch" then
+				return num("trenches.secPerCell"), num("trenches.oilPerCell")
+			end
+			return num(`trenchWorks.kinds.{kind}.secPerCell`), num(`trenchWorks.kinds.{kind}.oilPerCell`)
+		end
 		function T.line(x0: number, y0: number, x1: number, y1: number): { number }
 			-- the game's Sg: cells along a segment, one step at a time
 			local a, b = math.floor(x0), math.floor(y0)
@@ -6266,7 +6285,7 @@ function Sim.new(deps: Deps)
 		end
 		-- the game's sD: may this side dig here?
 		function self.trenchCellProblem(side: number, c: number): string?
-			if c < 0 or c >= W * H or roads.trenchAt(c) >= 0 or roads.buildingAt(c) >= 0 then
+			if c < 0 or c >= W * H or roads.trenchAt(c) >= 0 or roads.trenchSoftId(c) >= 0 or roads.buildingAt(c) >= 0 then
 				return "blocked"
 			end
 			if not roads.passable(c) then
@@ -6303,10 +6322,10 @@ function Sim.new(deps: Deps)
 			return false
 		end
 		-- the game's lI: an own trench end within joinCells
-		function T.joinAt(side: number, x: number, y: number): any
+		function T.joinAt(side: number, x: number, y: number, kind: string?): any
 			local best, bd = nil, num("trenches.joinCells") ^ 2
 			for _, t in self.trenches do
-				if t.owner == side and #t.pts >= 2 then
+				if t.owner == side and #t.pts >= 2 and (t.kind or "ditch") == (kind or "ditch") then
 					for k = 1, 2 do
 						local p = if k == 2 then t.pts[#t.pts] else t.pts[1]
 						local d = (p.x - x) ^ 2 + (p.y - y) ^ 2
@@ -6319,9 +6338,9 @@ function Sim.new(deps: Deps)
 			return best
 		end
 		-- the game's Uie: the cells of a line, ends trimmed to good ground
-		function self.trenchLayout(side: number, pts: { any }): { [string]: any }
+		function self.trenchLayout(side: number, pts: { any }, kind: string?): { [string]: any }
 			local line = T.prepare(pts)
-			local join = if #line > 0 then T.joinAt(side, line[1].x, line[1].y) else nil
+			local join = if #line > 0 then T.joinAt(side, line[1].x, line[1].y, kind) else nil
 			local cells, seen = {}, {}
 			local skip = {}
 			if join then
@@ -6397,11 +6416,17 @@ function Sim.new(deps: Deps)
 			end
 		end
 		-- the game's digTrench
-		function self.orderDig(side: number, ids: { number }?, pts: { any }): (number, string?)
+		function self.orderDig(side: number, ids: { number }?, pts: { any }, kind: string?): (number, string?)
 			if #pts < 2 then
 				return 0, "lineShort"
 			end
-			local lay = self.trenchLayout(side, pts)
+			if kind and not table.find(self.TRENCH_KINDS, kind) then
+				return 0, "blocked"
+			end
+			if kind == "ditch" then
+				kind = nil
+			end
+			local lay = self.trenchLayout(side, pts, kind)
 			if lay.good < num("trenches.minCells") then
 				return 0, if lay.good > 0 then "lineShort" else (lay.stopped or "badLine")
 			end
@@ -6423,6 +6448,8 @@ function Sim.new(deps: Deps)
 					table.insert(t.state, if lay.why[i] then BAD else PLAN)
 					table.insert(t.wire, lay.wire[i])
 					table.insert(t.work, 0)
+					table.insert(t.flood, 0)
+					table.insert(t.damage, 0)
 				end
 				if whole then
 					t.dug, t.progress = had, 0
@@ -6430,11 +6457,12 @@ function Sim.new(deps: Deps)
 				t.stalled = false
 			else
 				t = { id = nextTrench, owner = side, pts = lay.pts, cells = lay.cells, state = {}, wire = lay.wire, work = {},
-					dug = 0, progress = 0, stalled = false, startedAt = self.time }
+					dug = 0, progress = 0, stalled = false, startedAt = self.time, kind = kind, flood = {}, damage = {} }
 				nextTrench += 1
 				for i in lay.cells do
 					t.state[i] = if lay.why[i] then BAD else PLAN
 					t.work[i] = 0
+					t.flood[i], t.damage[i] = 0, 0
 				end
 				self.trenches[t.id] = t
 			end
@@ -6448,7 +6476,7 @@ function Sim.new(deps: Deps)
 			return #crew, nil
 		end
 		function T.dugState(st: number): boolean
-			return st == DUG or st == WIRE
+			return st == DUG or st == WIRE or st == WET
 		end
 		function T.firstDug(t: any, from: number, to: number): number
 			for i = from, math.min(to, #t.cells) do
@@ -6460,6 +6488,9 @@ function Sim.new(deps: Deps)
 		end
 		function self.trenchAtCell(c: number): any
 			local id = roads.trenchAt(c)
+			if id < 0 then
+				id = roads.trenchSoftId(c)
+			end
 			if id >= 0 then
 				return self.trenches[id]
 			end
@@ -6527,11 +6558,60 @@ function Sim.new(deps: Deps)
 		end
 		-- a cell is dug (the game's wWe / vWe): it blocks the way; units on it step off (KY), routes
 		-- through it re-plan (YY), oil routes over it are redone
+		-- the game's k7e / _Ue: what a dug cell is now. Wire (by a road) and a flooded cell block the way;
+		-- a ditch blocks it unless shells caved it (then it is crossed like a fire trench); a fire trench,
+		-- traps and a wire belt are crossable by some (see Roads.softPace) and a wrecked one by all.
+		function T.settle(t: any, i: number)
+			local c = t.cells[i]
+			local st = t.state[i]
+			local hard, soft = false, 0
+			if st == WIRE or st == WET then
+				hard = true
+			elseif st == DUG then
+				local caved = (t.damage[i] or 0) >= 1
+				local k = t.kind or "ditch"
+				if k == "ditch" then
+					if caved then
+						soft = SOFT.fire
+					else
+						hard = true
+					end
+				elseif k == "fire" then
+					soft = SOFT.fire
+				elseif not caved then
+					soft = SOFT[k]
+				end
+			end
+			if hard then
+				roads.setTrench(c, t.id)
+			elseif roads.trenchAt(c) == t.id then
+				roads.setTrench(c, -1)
+			end
+			if soft > 0 then
+				roads.setTrenchSoft(c, soft, t.id)
+			elseif roads.trenchSoftId(c) == t.id then
+				roads.setTrenchSoft(c, 0, -1)
+			end
+			gridTick = -1
+			return hard
+		end
 		function T.close(t: any, i: number, wire: boolean)
 			local c = t.cells[i]
 			t.state[i] = if wire then WIRE else DUG
-			roads.setTrench(c, t.id)
-			gridTick = -1
+			if not T.settle(t, i) then
+				-- crossable: routes through it re-plan with the new costs
+				for _, e in self.list do
+					if e.alive and e.cat == "unit" and e.path and e.pathIndex and e.kind ~= TRUCK then
+						for k = e.pathIndex, #e.path do
+							if e.path[k] == c then
+								planLater(e)
+								break
+							end
+						end
+					end
+				end
+				return
+			end
 			for _, e in self.list do
 				if e.alive and e.cat == "unit" and not e.inside and not e.carrier then
 					if cellAt(e.x, e.y) == c then
@@ -6565,10 +6645,8 @@ function Sim.new(deps: Deps)
 			local c = t.cells[i]
 			t.state[i] = GONE
 			t.work[i] = 0
-			if roads.trenchAt(c) == t.id then
-				roads.setTrench(c, -1)
-			end
-			gridTick = -1
+			t.flood[i] = 0
+			T.settle(t, i)
 			for _, rig in rigList do
 				if not rig.route then
 					resetRoute(rig)
@@ -6622,7 +6700,8 @@ function Sim.new(deps: Deps)
 				else
 					local n = math.min(f.crew, num("trenches.crewMax"))
 					if n > 0 then
-						local per = if t.state[i] == WIRE then num("trenches.wireClearSecPerCell") else num("trenches.fillSecPerCell")
+						local per = if t.state[i] == WIRE then num("trenches.wireClearSecPerCell")
+							else num("trenches.fillSecPerCell") * (if t.state[i] == WET then num("trenches.wetFillMult") else 1)
 						t.work[i] += dt / per * n
 						if t.work[i] >= 1 then
 							T.open(t, i)
@@ -6652,6 +6731,7 @@ function Sim.new(deps: Deps)
 				end
 				if self.trenches[id] then
 					T.dig(t, dt, digs[id] or 0)
+					T.flood(t, dt)
 					local left = false
 					for k = 1, #t.cells do
 						if t.state[k] ~= GONE and t.state[k] ~= BAD then
@@ -6661,6 +6741,62 @@ function Sim.new(deps: Deps)
 					end
 					if t.dug >= #t.cells and not left then
 						self.trenches[id] = nil
+					end
+				end
+			end
+		end
+		-- the game's _We: a ditch or fire trench cell next to water (or a flooded cell) fills with water
+		-- over floodSecPerCell; it then blocks the way and is slower to fill in
+		function T.flood(t: any, dt: number)
+			if t.kind == "traps" or t.kind == "wire" then
+				return
+			end
+			for i = 1, math.min(t.dug, #t.cells) do
+				if t.state[i] == DUG then
+					local c = t.cells[i]
+					local x, y = c % W, c // W
+					local wet = false
+					for _, n in { if x > 0 then c - 1 else -1, if x < W - 1 then c + 1 else -1, if y > 0 then c - W else -1, if y < H - 1 then c + W else -1 } do
+						if n >= 0 then
+							local key = `terrain.{roads.terrain(n)}.passable`
+							local tn = self.trenchAtCell(n)
+							local k = if tn then table.find(tn.cells, n) else nil
+							if (r:has(key) and not r:flag(key)) or (tn and k and tn.state[k] == WET) then
+								wet = true
+								break
+							end
+						end
+					end
+					if wet then
+						t.flood[i] = (t.flood[i] or 0) + dt / num("trenches.floodSecPerCell")
+						if t.flood[i] >= 1 then
+							t.state[i] = WET
+							T.settle(t, i)
+							if not t.fed then
+								t.fed = true
+								local fx, fy = centre(c)
+								event({ type = "trenchFlooded", side = t.owner, x = fx, y = fy })
+							end
+						end
+					end
+				end
+			end
+		end
+		-- the game's zUe: tracks roll a wire belt flat
+		function self.crushWire()
+			if next(self.trenches) == nil then
+				return
+			end
+			for _, e in self.list do
+				if e.alive and e.cat == "unit" and not e.inside and not e.carrier and text(`units.{e.kind}.move`) == "tracks" then
+					local c = cellAt(e.x, e.y)
+					if c >= 0 and roads.trenchSoft(c) == SOFT.wire then
+						local t = self.trenches[roads.trenchSoftId(c)]
+						local i = if t then table.find(t.cells, c) else nil
+						if t and i then
+							t.damage[i] = 1
+							T.settle(t, i)
+						end
 					end
 				end
 			end
@@ -6675,7 +6811,8 @@ function Sim.new(deps: Deps)
 				return
 			end
 			local wireNext = t.wire[t.dug + 1]
-			t.progress += dt / (if wireNext then num("trenches.wireSecPerCell") else num("trenches.secPerCell")) * crew
+			local sec, oil = T.rate(t.kind)
+			t.progress += dt / (if wireNext then num("trenches.wireSecPerCell") else sec) * crew
 			while t.progress >= 1 and t.dug < #t.cells do
 				local i = t.dug + 1
 				if self.trenchCellProblem(t.owner, t.cells[i]) then
@@ -6685,7 +6822,7 @@ function Sim.new(deps: Deps)
 					t.progress = math.min(t.progress, 1)
 				else
 					local wire = t.wire[i] or T.nearRoad(t.cells[i])
-					local cost = if wire then num("trenches.wireOilPerCell") else num("trenches.oilPerCell")
+					local cost = if wire then num("trenches.wireOilPerCell") else oil
 					local sd = self.sides[t.owner]
 					if not sd or sd.oil < cost then
 						t.progress = 1
@@ -7095,6 +7232,7 @@ function Sim.new(deps: Deps)
 		self.demolishTick()
 		self.minesTick(dt)
 		self.trenchTick(dt)
+		self.crushWire()
 		checkHeadless()
 		landStrikes()
 		structuresFire(dt)

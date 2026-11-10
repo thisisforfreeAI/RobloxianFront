@@ -27,6 +27,8 @@ local stroke: { { x: number, y: number } } = {}
 local drawing = false
 local strokeParts: { Part } = {}
 local trenchIds: { number } = {} -- engineers digging the line being drawn (placing == "trench")
+local TRENCH_KINDS = { "ditch", "fire", "traps", "wire" }
+local trenchKind = 1 -- which of TRENCH_KINDS key 9 picked
 local placing: string? = nil
 local lastPlaced = -1
 local ghost: Part
@@ -162,7 +164,7 @@ function BuildController.start(mapWidth: number, send: (any) -> ())
 			end
 			if #pts > 0 then
 				if placing == "trench" then
-					sendIntent({ kind = "dig", unitIds = trenchIds, pts = pts })
+					sendIntent({ kind = "dig", unitIds = trenchIds, pts = pts, trench = TRENCH_KINDS[trenchKind] })
 				else
 					sendIntent({ kind = "layMines", pts = pts })
 				end
@@ -184,6 +186,12 @@ end
 function BuildController.beginTrench(ids: { number })
 	trenchIds = ids
 	placing = "trench"
+end
+
+-- the next trench kind (key 9); returns its name
+function BuildController.cycleTrenchKind(): string
+	trenchKind = trenchKind % #TRENCH_KINDS + 1
+	return TRENCH_KINDS[trenchKind]
 end
 
 -- True while placing, and just after, so the click that placed or cancelled does not also select or order.

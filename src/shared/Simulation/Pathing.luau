@@ -73,13 +73,27 @@ function Pathing.new(roads: any, num: (string) -> number, text: (string) -> stri
 		return t
 	end
 
-	local function costFn(tab: { [string]: number }): (number) -> number
+	-- the game's softShare: a crossable trench cell costs 1 / its pace share (never crossable at 0)
+	local function softMove(kind: string): string
+		return if text(`units.{kind}.armour`) == "air" then "air" else text(`units.{kind}.move`)
+	end
+	local function costFn(tab: { [string]: number }, kind: string?): (number) -> number
+		local move = if kind then softMove(kind) else "foot"
+		local fire, traps, wire = num("trenchWorks.kinds.fire.footPace"), num("trenchWorks.kinds.traps.footPace"), num("trenchWorks.kinds.wire.footPace")
 		return function(c: number): number
 			if not passable(c) then
 				return math.huge
 			end
 			if roads.isRoad(c) then
 				return tab["@road"]
+			end
+			local code = roads.trenchSoft(c)
+			if code > 0 then
+				local p = roads.softPace(move, code, fire, traps, wire)
+				if p <= 0 then
+					return math.huge
+				end
+				return (tab[roads.terrain(c)] or math.huge) * math.max(1, 1 / p)
 			end
 			return tab[roads.terrain(c)] or math.huge
 		end
@@ -98,7 +112,7 @@ function Pathing.new(roads: any, num: (string) -> number, text: (string) -> stri
 	-- the game's routeBy (without the path guide)
 	function self.route(from: number, to: number, kind: string): { number }?
 		local tab = self.moveTable(kind)
-		local cost = costFn(tab)
+		local cost = costFn(tab, kind)
 		if cost(to) == math.huge then
 			return nil
 		end

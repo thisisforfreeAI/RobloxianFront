@@ -231,7 +231,7 @@ local function onIntent(player: Player, raw: any)
 		for k = 1, #i.pts, 2 do
 			table.insert(pts, { x = i.pts[k], y = i.pts[k + 1] })
 		end
-		local n, why = sim.orderDig(side, i.unitIds, pts)
+		local n, why = sim.orderDig(side, i.unitIds, pts, i.trench)
 		if n == 0 then
 			Net.sendState(player, { notice = why })
 		end
@@ -546,6 +546,8 @@ local function alertsFor(ev: any)
 		alertSide(ev.side, `Trench dug: {ev.n} cells`)
 	elseif t == "trenchStalled" then
 		alertSide(ev.side, "Trench work stopped: not enough oil")
+	elseif t == "trenchFlooded" then
+		alertSide(ev.side, "Water is seeping into your trench")
 	elseif t == "trenchClosed" then
 		alertSide(ev.side, "Gap filled in the trench")
 	elseif t == "trenchGapped" then
@@ -752,20 +754,26 @@ local function privateState()
 					end
 				end
 			end
-			-- trenches this side can see: owner, then cell, state pairs (dug / wire / planned, own planned only)
+			-- trenches this side can see: owner, then cell, look pairs. Looks: 0 planned (own only), 1 ditch,
+			-- 2 flooded, 5 wire by a road, 6 fire trench, 7 traps, 8 wire belt, 9 caved / flattened
 			local trenches = {}
 			for _, t in sim.trenches do
 				local row = { t.owner }
 				for k, c in t.cells do
 					local st = t.state[k]
-					local shown = st == sim.TRENCH.dug or st == sim.TRENCH.wire or (st == sim.TRENCH.plan and t.owner == side)
+					local shown = st == sim.TRENCH.dug or st == sim.TRENCH.wire or st == sim.TRENCH.wet or (st == sim.TRENCH.plan and t.owner == side)
 					if shown and (t.owner == side or not viewer or viewer.grid[c + 1] == 2 or (viewer.trenchSeen and viewer.trenchSeen[c])) then
 						if t.owner ~= side and viewer then
 							viewer.trenchSeen = viewer.trenchSeen or {}
 							viewer.trenchSeen[c] = true
 						end
+						local look = st
+						if st == sim.TRENCH.dug then
+							local caved = (t.damage and t.damage[k] or 0) >= 1
+							look = if caved then 9 elseif t.kind == "fire" then 6 elseif t.kind == "traps" then 7 elseif t.kind == "wire" then 8 else 1
+						end
 						table.insert(row, c)
-						table.insert(row, st)
+						table.insert(row, look)
 					end
 				end
 				if #row > 1 then

@@ -107,10 +107,15 @@ do
 			RoadOverlay.applyWorn(state.worn)
 		end
 	end)
+	local TRENCH_NAMES = { ditch = "Trench kind: ditch (blocks the way)", fire = "Trench kind: fire trench (infantry cross slowly)",
+		traps = "Trench kind: vehicle traps (infantry only)", wire = "Trench kind: wire belt (slows infantry, stops wheels; tanks flatten it)" }
 	SelectionController.start(info.side, send, {
 		busy = BuildController.busy,
 		onProducer = Hud.selectProducer,
 		digLine = BuildController.beginTrench,
+		cycleTrench = function()
+			Hud.note(TRENCH_NAMES[BuildController.cycleTrenchKind()])
+		end,
 	})
 	if DevFlags.OWNERSHIP_PROBE then
 		require(script.Dev.OwnershipProbe).start(info.side, UnitRenderer.each, function(payload)

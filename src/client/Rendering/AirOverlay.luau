@@ -172,15 +172,24 @@ function AirOverlay.applyMines(list: { any }, mapWidth: number)
 end
 
 local trenchPool: { Part } = {}
--- trenches you can see: { owner, cell, state, cell, state, ... }; state 1 dug (a dark ditch), 5 wire
--- (grey), 0 planned (a faint marker, own only). PLACEHOLDER visuals.
+-- trenches you can see: { owner, cell, look, cell, look, ... }; 0 planned (a faint marker, own only),
+-- 1 ditch, 2 flooded, 5 wire by a road, 6 fire trench, 7 traps, 8 wire belt, 9 caved. PLACEHOLDER visuals.
+local TRENCH_COLOR = {
+	[1] = Color3.fromRGB(70, 52, 34),
+	[2] = Color3.fromRGB(60, 90, 120),
+	[5] = Color3.fromRGB(150, 150, 150),
+	[6] = Color3.fromRGB(105, 80, 50),
+	[7] = Color3.fromRGB(120, 60, 40),
+	[8] = Color3.fromRGB(175, 175, 165),
+	[9] = Color3.fromRGB(130, 110, 80),
+}
 function AirOverlay.applyTrenches(list: { any }, mapWidth: number)
 	local n = 0
 	for _, row in list do
 		for k = 2, #row - 1, 2 do
 			local c, st = row[k], row[k + 1]
 			n += 1
-			local color = if st == 1 then Color3.fromRGB(70, 52, 34) elseif st == 5 then Color3.fromRGB(150, 150, 150) else Color3.fromRGB(230, 210, 120)
+			local color = TRENCH_COLOR[st] or Color3.fromRGB(230, 210, 120)
 			local p = pooled(trenchPool, n, color, Vector3.new(0.95 * S, 0.12, 0.95 * S))
 			p.Transparency = if st == 0 then 0.7 else 0.1
 			p.CFrame = CFrame.new(World.toWorld(c % mapWidth + 0.5, c // mapWidth + 0.5, 0.4)) -- above the ground tiles (top 0.2) and roads

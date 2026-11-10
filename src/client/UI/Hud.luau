@@ -405,6 +405,18 @@ function Hud.update(state: { [string]: any }, mySide: number)
 end
 
 -- night vision is on now (the N key switches it)
+-- a short notice from the client itself
+function Hud.note(text: string)
+	notice.Text = text
+	notice.Visible = true
+	noticeUntil = os.clock() + 2.5
+	task.delay(2.6, function()
+		if os.clock() >= noticeUntil then
+			notice.Visible = false
+		end
+	end)
+end
+
 function Hud.nightVisionOn(): boolean
 	return nvOn
 end

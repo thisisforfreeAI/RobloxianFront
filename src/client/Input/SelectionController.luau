@@ -13,7 +13,7 @@
 	Right click on a road cut or worn road with engineers selected: they mend it (PROVISIONAL).
 	V with engineers selected and the cursor on a road: they sabotage it (PROVISIONAL key).
 	7 with engineers selected: drag a line for them to dig a trench; 8 with the cursor on a trench:
-	they fill a gap in it (PROVISIONAL keys).
+	they fill a gap in it; 9 picks the kind of trench to dig (ditch, fire trench, traps, wire belt) (PROVISIONAL keys).
 	P / J / L at the cursor: the capital's paratroopers / bomb truck, or a drop from your nearest ready
 	airfield town; O sends the recon drone there. N: selected bomb trucks blow up. I: selected rocket
 	artillery fires a barrage at the cursor. (PROVISIONAL keys)
@@ -98,7 +98,7 @@ end
 
 -- opts.busy(): true while a building is being placed (clicks belong to the placement);
 -- opts.onProducer(id, kind): a building was picked as the producer (nil = back to the HQ).
-function SelectionController.start(mySide: number, sendIntent: (any) -> (), opts: { busy: () -> boolean, onProducer: (number?, string?) -> (), digLine: ({ number }) -> () })
+function SelectionController.start(mySide: number, sendIntent: (any) -> (), opts: { busy: () -> boolean, onProducer: (number?, string?) -> (), digLine: ({ number }) -> (), cycleTrench: () -> () })
 	local gui = Instance.new("ScreenGui")
 	gui.Name = "WarFrontSelection"
 	gui.IgnoreGuiInset = true
@@ -304,6 +304,8 @@ function SelectionController.start(mySide: number, sendIntent: (any) -> (), opts
 			if #ids > 0 then
 				sendIntent({ kind = "recon", unitIds = ids })
 			end
+		elseif input.KeyCode == Enum.KeyCode.Nine then
+			opts.cycleTrench()
 		elseif (input.KeyCode == Enum.KeyCode.Seven or input.KeyCode == Enum.KeyCode.Eight) and next(selected) then
 			local ids = {}
 			for id in selected do

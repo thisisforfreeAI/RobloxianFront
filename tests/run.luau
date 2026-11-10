@@ -2070,6 +2070,105 @@ if fs.isFile(matchPath) then
 		run(sim, 0.1)
 		eq(#t.cells, dug, "cut back to what was dug")
 	end)
+	test("trench kinds: a wire belt costs its own rate, slows infantry, stops wheels and is flattened by tracks", function()
+		local sim = newSim()
+		clearUnits(sim, {})
+		local sd = sim.sides[1]
+		sd.oil = 500
+		local engs = {}
+		for i = 0, 2 do
+			table.insert(engs, sim.spawnUnit("engineer", 1, 58.5, 44.5 + i))
+		end
+		local ids = { engs[1].id, engs[2].id, engs[3].id }
+		eq(select(2, sim.orderDig(1, ids, { { x = 62.5, y = 38.5 }, { x = 62.5, y = 52.5 } }, "moat")), "blocked", "unknown kind")
+		eq((sim.orderDig(1, ids, { { x = 62.5, y = 38.5 }, { x = 62.5, y = 52.5 } }, "wire")), 3)
+		local t = nil
+		for _, tr in sim.trenches do
+			t = tr
+		end
+		eq(t.kind, "wire")
+		run(sim, 30)
+		eq(t.dug, 15, "all laid")
+		local ctl = newSim()
+		clearUnits(ctl, {})
+		ctl.sides[1].oil = 500
+		for i = 0, 2 do
+			ctl.spawnUnit("engineer", 1, 58.5, 44.5 + i)
+		end
+		run(ctl, 30)
+		local spent = ctl.sides[1].oil - sd.oil
+		assert(math.abs(spent - 15 * sim.num("trenchWorks.kinds.wire.oilPerCell")) < 0.5, `oil per cell: {spent}`)
+		local c = t.cells[5]
+		local x, y = c % sim.roads.width + 0.5, c // sim.roads.width + 0.5
+		eq(sim.roads.passable(c), true, "a belt is not a wall")
+		eq(sim.roads.trenchSoft(c), 3)
+		local foot = sim.paceAt("infantry", x, y)
+		assert(math.abs(foot - sim.num("trenchWorks.kinds.wire.footPace")) < 1e-6, `infantry pace {foot}`)
+		eq(sim.paceAt("tank", x, y), 1, "tracks roll over")
+		eq(sim.paceAt("scout", x, y), 0.05, "wheels barely (routes avoid it)")
+		-- a tank on the belt flattens that cell
+		sim.spawnUnit("tank", 1, x, y)
+		run(sim, 0.1)
+		eq(t.damage[5], 1)
+		eq(sim.roads.trenchSoft(c), 0, "flattened")
+		eq(sim.roads.trenchSoft(t.cells[1]), 3, "the rest stays")
+	end)
+	test("trench kinds: a fire trench is crossed slowly on foot; a ditch by the water floods and still blocks", function()
+		local sim = newSim({ terrainAt = function(c)
+			local x, y = c % W, c // W
+			return if x == 63 and y >= 44 and y <= 46 then "river" else "plains"
+		end })
+		clearUnits(sim, {})
+		sim.sides[1].oil = 500
+		local engs = {}
+		for i = 0, 2 do
+			table.insert(engs, sim.spawnUnit("engineer", 1, 58.5, 44.5 + i))
+		end
+		local ids = { engs[1].id, engs[2].id, engs[3].id }
+		eq((sim.orderDig(1, ids, { { x = 56.5, y = 30.5 + 8 }, { x = 56.5, y = 38.5 + 8 } }, "fire")), 3)
+		run(sim, 20)
+		local fire = nil
+		for _, tr in sim.trenches do
+			fire = tr
+		end
+		eq(fire.dug, #fire.cells, "fire trench dug")
+		local c = fire.cells[3]
+		eq(sim.roads.passable(c), true)
+		eq(sim.roads.trenchSoft(c), 1)
+		local foot = sim.paceAt("infantry", c % W + 0.5, c // W + 0.5)
+		assert(math.abs(foot - sim.num("trenchWorks.kinds.fire.footPace")) < 1e-6, `infantry pace {foot}`)
+		-- a ditch along the river bank floods
+		local flooded = false
+		eq((sim.orderDig(1, ids, { { x = 62.5, y = 40.5 }, { x = 62.5, y = 50.5 } })), 3)
+		local ditch = nil
+		for _, tr in sim.trenches do
+			if tr ~= fire then
+				ditch = tr
+			end
+		end
+		for _ = 1, 20 * 25 do
+			sim.step(0.05)
+			for _, ev in sim.takeEvents() do
+				if ev.type == "trenchFlooded" then
+					flooded = true
+				end
+			end
+		end
+		assert(flooded, "flood notice")
+		local wet, dry = 0, 0
+		for i = 1, #ditch.cells do
+			if ditch.state[i] == sim.TRENCH.wet then
+				wet += 1
+			elseif ditch.state[i] == sim.TRENCH.dug then
+				dry += 1
+			end
+		end
+		assert(wet >= 3, `wet cells: {wet}`)
+		eq(wet + dry, #ditch.cells, "all dug")
+		for i = 1, #ditch.cells do
+			eq(sim.roads.passable(ditch.cells[i]), false, "wet or dry, a ditch blocks")
+		end
+	end)
 	test("armies: only the coalition fields mortars, only the republic lays minefields", function()
 		local sim = newSim({ armies = { "republic", "coalition" } })
 		clearUnits(sim, {})

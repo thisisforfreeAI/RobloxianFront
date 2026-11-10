@@ -248,6 +248,32 @@ function Roads.build(cfg: Config)
 	function self.trenchAt(c: number): number
 		return trench[c] or -1
 	end
+	-- crossable trench cells (the game's trenchSoft: 1 fire trench or caved ditch, 2 traps, 3 wire belt)
+	local soft: { [number]: number } = {}
+	local softId: { [number]: number } = {}
+	function self.setTrenchSoft(c: number, code: number, id: number)
+		soft[c] = if code > 0 then code else nil
+		softId[c] = if code > 0 then id else nil
+		groundEpoch += 1
+	end
+	function self.trenchSoft(c: number): number
+		return soft[c] or 0
+	end
+	function self.trenchSoftId(c: number): number
+		return softId[c] or -1
+	end
+	-- the game's zY: pace share on a soft cell by how the unit moves (0 = it can't cross)
+	function self.softPace(move: string, code: number, fire: number, traps: number, wire: number): number
+		if code == 0 or move == "sea" or move == "air" then
+			return 1
+		end
+		if code == 1 then
+			return if move == "foot" then fire else 0
+		elseif code == 2 then
+			return if move == "foot" then traps else 0
+		end
+		return if move == "foot" then wire elseif move == "tracks" then 1 else 0
+	end
 	-- id >= 0 marks the cell as covered by that building, -1 clears it
 	function self.setBlocked(c: number, id: number)
 		buffer.writeu8(blocked, c, if id >= 0 then 1 else 0)

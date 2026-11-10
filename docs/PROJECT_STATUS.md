@@ -11,7 +11,7 @@ Last updated: 2026-11-09
 Phase 1. Milestone 1A done (Studio tests 1–7 pass). Pilot sprite REQ-0001 approved. Milestone 1B (gameplay loop) rewritten for WarFront parity and tested outside Studio; Studio tests B1–B9 pending.
 
 ## Verified outside Studio (actually run, Linux container)
-- Lune 0.11.1 `tests/run`: 121 passed, 0 failed (latest run) (including the 2 that read the GameData generated from your install).
+- Lune 0.11.1 `tests/run`: 123 passed, 0 failed (latest run) (including the 2 that read the GameData generated from your install).
 - Rojo 7.4.4 `rojo build` succeeds. All .luau files compile (syntax only).
 - Synthetic atlas: 16 × 120 px frames pack to 960×240 (8×2, no padding); validator passes on dimensions,
   rectangles, direction order, pixel identity, pivot, partial alpha, edge bleed, arrow orientation, manifest.
@@ -469,15 +469,23 @@ cuts it; oil routes are redone). With the cursor on a trench, 8 sends selected e
 9-cell gap (0.8 s a cell, wire 1.67 s). A line nobody is digging any more is cut back to what was dug,
 and an existing line can be carried on from its far end. APPROX: diggers walk to the next cell (the
 game picks a side of the line to stand on); the game's seal extension (zie) is not ported. Not ported
-yet: flooding near water, the trench kinds (fire trench, traps, wire belt), manning trenches, shell
-damage and mending, breaching charges, and the bot's digging (from 300 s).
+yet: manning trenches, shell damage and mending, breaching charges, and the bot's digging (from 300 s).
+
+Trenches, part 2 (2026-11-10), traced from the game's FY / zY / k7e / _Ue / _We / zUe: key 9 picks the kind
+dug next. A ditch blocks every unit; a fire trench (0.37 s, 0.5 oil a cell) lets infantry cross at half
+pace; vehicle traps (0.23 s, 0.33 oil) let infantry through at 0.85 and stop vehicles; a wire belt
+(0.17 s, 0.27 oil) slows infantry to 0.25, stops wheels and lets tracks cross, and a tracked unit on a
+belt cell flattens it. Routes weigh these cells by the slowdown. Lines only join lines of their own kind.
+A ditch or fire trench cell next to impassable water, or next to a flooded cell, floods (0.12 s a
+cell): it then blocks the way, fills in 3x slower, and the owner gets one notice per trench. A caved
+ditch cell (damage 1) is crossed like a fire trench; damage itself comes with part 3 (shelling).
 
 ## Next
-1. You run Studio tests B18–B55 (defences, mortar, artillery, scout) and commit.
+1. You run Studio tests B18–B56 (defences, mortar, artillery, scout) and commit.
 2. Done since: engineers' repair, vehicle steering, the bot's HQ push, shared group routes,
    separation, the 100/250/500-unit performance check (`lune run tools/perf.luau 250`) and the
    convoy rules (spacing, town/bridge/off-road pace, held and stranded trucks), airfield drops and
-   the capital's paratroopers and bomb truck, the recon drone and SAM sites, rocket artillery, the artillery base, the night operations tower, veterancy, IFV transport, the command truck, the opening drop, cancel and demolish, armies and minefields, the republic missile launcher, the opening deck.
+   the capital's paratroopers and bomb truck, the recon drone and SAM sites, rocket artillery, the artillery base, the night operations tower, veterancy, IFV transport, the command truck, the opening drop, cancel and demolish, armies and minefields, the republic missile launcher, the opening deck, trenches parts 1-2.
 3. Next: more of the game's land units and buildings that the slice still passes over.
 
 ## Open questions

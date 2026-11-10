@@ -39,7 +39,7 @@ export type DropPickIntent = { kind: "dropPick", x: number, y: number } -- where
 export type DropReadyIntent = { kind: "dropReady" } -- done picking
 export type CancelQueueIntent = { kind: "cancelQueue", structureId: number?, index: number } -- call off a queued unit (index 0 = the last; no id = the HQ)
 export type DemolishIntent = { kind: "demolish", structureId: number } -- cancel a building going up, or pull a finished one down
-export type DigIntent = { kind: "dig", unitIds: { number }, pts: { number } } -- engineers dig a trench along a line
+export type DigIntent = { kind: "dig", unitIds: { number }, pts: { number }, trench: string? } -- engineers dig a trench along a line
 export type FillIntent = { kind: "fill", unitIds: { number }, x: number, y: number } -- engineers fill a gap in a trench
 export type NightOpsIntent = { kind: "nightOps", on: boolean } -- switch your night operations towers on or off
 export type LayMinesIntent = { kind: "layMines", pts: { number } } -- a minefield along a stroke: x1, y1, x2, y2, ... in cells
@@ -202,7 +202,11 @@ function Protocol.parse(raw: any, mapWidth: number, mapHeight: number): (Intent?
 			end
 			out[k] = v
 		end
-		return { kind = "dig", unitIds = ids, pts = out } :: any, nil
+		local tk = raw.trench
+		if tk ~= nil and tk ~= "ditch" and tk ~= "fire" and tk ~= "traps" and tk ~= "wire" then
+			return nil, "unknown trench kind"
+		end
+		return { kind = "dig", unitIds = ids, pts = out, trench = tk } :: any, nil
 	elseif raw.kind == "fill" then
 		if not finite(raw.x) or not finite(raw.y) or raw.x < 0 or raw.y < 0 or raw.x >= mapWidth or raw.y >= mapHeight then
 			return nil, "target outside the map"
