@@ -3,13 +3,24 @@
 	FogOverlay: darkens the ground your side cannot see right now, from the vision runs the server
 	sends with snapshots (cells seen now = clear). One pixel per cell on an EditableImage laid just
 	above the ground. If EditableImage is unavailable there is no overlay (units and buildings are
-	still hidden, since the server never sends them). PLACEHOLDER look (TEMP-003).
+	still hidden, since the server never sends them). Local FogLook supplies source terrain/chart
+	and explored-region colours. Canvas blur is approximated by a finite Gaussian; source noise,
+	hatching and zoom-adaptive feather are pending. Binary detection stays separate from the display.
 ]]
 
 local ImageMemory = require(script.Parent.ImageMemory)
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local World = require(ReplicatedStorage:WaitForChild("Shared").Config.World)
+local FogPixels = require(ReplicatedStorage:WaitForChild("Shared").Presentation.FogPixels)
+local Terrain = require(ReplicatedStorage:WaitForChild("Shared").Definitions.Terrain)
+local data = ReplicatedStorage:WaitForChild("Shared"):FindFirstChild("GameData")
+local settings = data and data:FindFirstChild("FogLook")
+local profile: any = nil
+if settings then
+	local ok,value=pcall(require,settings :: ModuleScript)
+	if ok then profile=value end
+end
 
 local FogOverlay = {}
 
@@ -18,8 +29,12 @@ local DARK_ALPHA = 150 -- 0..255 over unseen cells
 local image: any = nil
 local width, height = 0, 0
 local pixels: buffer
+local visible: buffer
+local explored: buffer
+local terrain: buffer? = nil
+local colourCache: any = {}
 
-function FogOverlay.start(mapWidth: number, mapHeight: number)
+function FogOverlay.start(mapWidth: number, mapHeight: number, terrainPixels: buffer?)
 	width, height = mapWidth, mapHeight
 	local ok, img = pcall(function()
 		return ImageMemory.create(Vector2.new(mapWidth, mapHeight))
@@ -30,6 +45,11 @@ function FogOverlay.start(mapWidth: number, mapHeight: number)
 	end
 	image = img
 	pixels = buffer.create(mapWidth * mapHeight * 4)
+	visible = buffer.create(mapWidth * mapHeight)
+	explored = buffer.create(mapWidth * mapHeight)
+	colourCache = {}
+	terrain = terrainPixels
+	if not profile then warn("[FogOverlay] Generate source fog colours with export_fog.cjs; legacy black fog stays") end
 	local part = Instance.new("Part")
 	part.Name = "FogOverlay"
 	part.Anchored, part.CanCollide, part.CanQuery, part.CanTouch, part.CastShadow = true, false, false, false, false
@@ -46,7 +66,7 @@ function FogOverlay.start(mapWidth: number, mapHeight: number)
 	local label = Instance.new("ImageLabel")
 	label.Size = UDim2.fromScale(1, 1)
 	label.BackgroundTransparency = 1
-	label.ResampleMode = Enum.ResamplerMode.Pixelated
+	label.ResampleMode = Enum.ResamplerMode.Default
 	label.ImageContent = Content.fromObject(image)
 	label.Parent = gui
 	gui.Parent = part
@@ -64,19 +84,20 @@ function FogOverlay.apply(vision: { number }, seeAll: boolean)
 		return
 	end
 	local n = width * height
-	local alpha = if seeAll then 0 else DARK_ALPHA
 	for i = 0, n - 1 do
-		buffer.writeu32(pixels, i * 4, 0)
-		buffer.writeu8(pixels, i * 4 + 3, alpha)
+		buffer.writeu8(visible,i,if seeAll then 1 else 0)
 	end
 	if not seeAll then
 		for i = 1, #vision, 3 do
 			local y, x0, x1 = vision[i], vision[i + 1], vision[i + 2]
 			for x = x0, x1 do
-				buffer.writeu8(pixels, (y * width + x) * 4 + 3, 0)
+				buffer.writeu8(visible,y*width+x,1)
 			end
 		end
 	end
+	if seeAll then pixels=buffer.create(n*4)
+	elseif profile and terrain then pixels=FogPixels.colour(visible,terrain,explored,Terrain.names,profile,width,height,colourCache)
+	else pixels=FogPixels.soften(visible,width,height,DARK_ALPHA) end
 	image:WritePixelsBuffer(Vector2.zero, Vector2.new(width, height), pixels)
 end
 
@@ -89,7 +110,7 @@ function FogOverlay.hidden(x: number, y: number): boolean
 	if cx < 0 or cy < 0 or cx >= width or cy >= height then
 		return false
 	end
-	return buffer.readu8(pixels, (cy * width + cx) * 4 + 3) > 0
+	return buffer.readu8(visible,cy*width+cx)==0
 end
 
 return FogOverlay

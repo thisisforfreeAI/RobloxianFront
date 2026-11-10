@@ -1187,3 +1187,190 @@ Verification actually run on Windows:
 - Studio visuals, colour-transfer parity and Script Analysis are **not run**. New Studio checks
   **B106-B108** remain unrun. The owner's "looking good" on the memory batch is informal feedback;
   individual earlier memory test rows were not marked passed without their results.
+
+## Zoom detail, roof-shadow direction and road visibility (2026-11-10)
+
+The owner reported that town-building shadows stayed fixed while units' shadows moved, suggested
+camera-dependent detail, and reported roads becoming visible only near maximum zoom without their
+road textures. This batch addresses all three through the existing renderers; no simulation or
+admin permissions changed. HQ/facility blocks remain the existing placeholders.
+
+TownDetail is an APPROX screen-space rendering policy: full 14 px/cell, half 7 px/cell, quarter
+3.5 px/cell and the persistent 2 px/cell overview. It transitions in both directions, with separate
+enter/exit thresholds to avoid oscillation while scrolling. Larger images are released before a
+downsize; upgrades still need ImageMemory headroom, and allocation refusal can fall back two levels.
+The nine-chunk maximum, nearest-first loading, compressed/CPU caches, pressure reclamation and
+live-unit image protection remain. These thresholds are port policy, not extracted game rules.
+
+pack_city.py --lighting 16 generates local-only sparse XOR patches for 17 sun-path directions,
+using its existing traced aux-height/sky-occlusion/roof-ray shading and identical tree compositing.
+The same geometric path is reused for the source's separate sun and moon segments. All 24 noon
+base chunks match the owner's existing RGBA bytes exactly; existing base art was not replaced.
+TownPatch validates whole runs before mutation and reverses the previous patch in-place before
+applying the next. TownRenderer rewrites the existing image, refreshing at most one nearest shown
+chunk per 0.1-second check. Cached pixels retain their current patch until evicted, then reload the
+known noon base. Missing/corrupt patch assets retain the last valid appearance and warn once, without
+blocking other chunks. Overview sections are cleared while a detail chunk covers them, and restored
+on unload; otherwise the old noon ground shadows could show through the relit transparent pixels.
+408 patch modules total about 16.45 MiB of base64/module text on disk, loaded as needed; they do not
+create EditableImages. Only the current decoded patch per cached chunk is retained by this renderer.
+Roblox require can retain the compressed strings of previously visited patches.
+
+APPROX: roof-shadow direction is sampled (steps are visible) rather than a continuous GPU ray walk.
+The far overview, tree cast shadows and ground relief retain fixed lighting. Roof-shadow strength
+retains the existing daytime bake; the source's separate city shadowNight strength (0.3 versus 0.58
+day) and continuous transition are not yet ported. Global day/night colour grading still applies.
+
+RoadRenderer/RoadPixels replace normal plain road Parts with persistent far roads composited into
+the existing ground pixel buffers, plus three shared 128x128 procedural textures for close detail
+(192 KiB total managed image storage). The far network no longer relies on the visibility of thin
+Parts or streamed town chunks. Detail fades over the source's 3-to-9 screen-pixels/cell range; the
+far network stays beneath it. Road depth stays below town/tree/roof-shadow pixels and above ground,
+with highway/minor/track depth priority at overlaps. SurfaceGui.MaxDistance is explicitly unlimited.
+No image is created per road segment. Road wear/cuts/repair overlays remain above these surfaces.
+Missing RoadLook retains the former plain-Part fallback; every new image write checks allocation.
+
+export_roads.cjs reads the local original bundle's road widths (ET), real-size look (Qr) and road
+settings (me), writing git-ignored GameData/RoadLook.luau. Source IT confirms highway rank >=2
+before the track flag, replacing the earlier unconfirmed classification for these new renderers.
+Widths, colours, shoulder widths, barrier, lane/edge/dash locations and track-rut dimensions derive
+from those tables. Grain uses the source hash21 arithmetic on repeating strip coordinates.
+APPROX: this is a first straight-road texture pass; original world-space noise, junction distance
+fields/fillets, town medians, roundabouts, crossing markings, bridge geometry, road lamps and
+damage/pothole shader effects are not reproduced. It is not a claim of full road-rendering parity.
+The source draws these details procedurally, rather than shipping a separate road sprite sheet.
+The tree exporter also supports the current bundle's renamed functions, retaining its older path.
+
+Generation: node tools/conversion/export_roads.cjs <original-install>. Repack towns with the same
+city, map, placement JSON and tree sheet inputs as before, adding --lighting 16 to pack_city.py.
+An optional --output directory allows review before replacing any local art. Private art/settings
+remain git-ignored. The original install was only read.
+
+API references: https://create.roblox.com/docs/reference/engine/classes/SurfaceGui and
+https://create.roblox.com/docs/reference/engine/classes/ImageLabel (MaxDistance, TileSize/ScaleType).
+
+Verification: nine new pure Luau checks cover hysteresis, zoom jumps, source sun/moon resets,
+reversible patches, corrupt-input atomicity, road-strip seams, clipping, class precedence and
+generated strip bounds/detail. Two Python checks cover RGBA XOR reconstruction and roof-shadow
+direction. All 408 generated patches were structurally validated; all noon patches preserve the
+original base. The generated road strips were inspected as a local PNG; Studio rendering is unrun.
+Full suite/build results are recorded after installation below. New Studio checks B109-B112 are
+unrun; no earlier checklist rows were marked passed from general visual feedback.
+
+Installed-batch verification actually run:
+- Full lune run tests/run: **197 passed, 0 failed**.
+- Both Python city-lighting tests passed.
+- Rojo build succeeded with all local lighting patches and RoadLook present.
+- Changed Luau modules/tests compiled with @lune/luau; both JS exporters passed node --check.
+- Source base-art comparison and all 408 patch-structure validations passed.
+- Studio visuals, Script Analysis and B109-B112 remain **not run**. Fresh Play is required after sync.
+
+## Connected roads, building visibility and smooth fog (2026-11-10)
+
+The owner supplied screenshots of square road fringes, disconnected junctions, town-yard pixels
+covering roads and trees in the road, then requested building-blocked sight, smooth fog and whole-city
+visibility while garrisoned. The former road strips and coarse ground-road bake were replaced on
+the generated Saddle map by one connected road raster inside the existing town chunks/overview.
+No new EditableImages are used; the former three road images are no longer allocated.
+
+road_layer.py uses the locally exported source widths/look tables, world-coordinate grain and
+capsule distance fields. Crossing directions suppress kerb/lane/barrier lines across mouths.
+Roads composite above gardens/streets and below roofs, then receive the same roof-shadow lighting
+as the town. True fractional opacity preserves road-edge antialiasing through shading. Overview
+masking prevents a second coarse road peeking beneath close detail. RoadPixels retains only the
+legacy far-raster fallback for maps without integrated art; obsolete strip generation was removed.
+Worker road points wrapped in {data: ...} are now decoded correctly for tree clearing. All trees,
+including yard trees, are additionally omitted if their actual canopy alpha overlaps pavement.
+Saddle tree count changed from 12,445 to 12,222 after the combined clearance fixes. All 24 base
+chunks and 408 matching roof-lighting patches were regenerated together. Generation adds
+--roads docs/private/road-look.json to pack_city.py with the existing --lighting 16 and tree inputs.
+export_roads.cjs now produces that private JSON alongside its existing private Luau look table.
+
+APPROX: road unions and crossing masks replace the original GPU fillet/junction shader. Roundabouts,
+town medians, bridge structures, lamps, damage, world shader transfer and full crossing markings
+remain incomplete. Canopy-overlap clearance is a requested presentation policy, beyond the source
+centre-cell clearing. Art still streams at the existing 14/7/3.5/2 pixels per cell. No original
+install files or Git state were modified; generated original material remains in ignored paths.
+
+Simulation.Visibility ports source k6/hN ground-sight ray traversal with a summed-area lookup.
+export_visibility.py reads the original .city townCells part (3,508 Saddle footprint cells), not
+the much larger all-town-tile mask. MatchService loads the private Visibility_saddle module and
+injects this into Sim. Source track-cell exemptions, visible origin/destination cells and the ray
+corner tie rule are preserved. Ground sight is occluded, air/drone/flare/reveal exceptions remain,
+and source grouping of nearby observers is disabled when blockers exist so a unit across a wall
+cannot lose its separate sight. Already-visible cells skip redundant rays. Server Fog uses this
+grid for snapshots and intel; clients never receive hidden enemy units simply because of a blur.
+Ground direct fire also checks the same obstruction; artillery, air targets and rooftop troops
+retain their bypass. Full attack-order navigation around a blocking building is not added here.
+
+Per the owner's explicit rule, a live garrison bypasses roof blockers and reveals at least the
+settlement radius plus every urban cell assigned to that settlement, including at night, in
+addition to its normal night-scaled outside sight. Empty/dead/withdrawn garrisons lose that reveal.
+The whole-urban-footprint extension is a requested rule change beyond the source's garrison circle.
+Only original static settlement building footprints block sight; placeholder HQ/facility blocks
+are not new blockers, and movement collision/pathing has not changed. The source's extra enclosed
+small-pocket filling is not ported (APPROX mask preparation).
+
+FogPixels approximates the source Canvas fog blur using a separable Gaussian at the traced minimum
+2.4-cell feather radius. FogOverlay uses bilinear sampling in its existing image. Display pixels
+and the authoritative binary visibility mask are separate, so feathered edges cannot hide visible
+units or reveal an enemy through a wall. Existing fog darkness is retained. APPROX: the source's
+zoom-adaptive feather, explored-terrain tones/noise, transitions and chart colouring are pending.
+There is no facing-locked cone: buildings carve sectors out of surrounding ground sight.
+
+Verification actually run:
+- Full lune run tests/run: **200 passed, 0 failed**.
+- Six Python pipeline tests passed (typed points, connected seams, canopy alpha, roof preservation,
+  fractional opacity and prior lighting/XOR checks).
+- 1,000 synthetic rays matched the original k6 function evaluated directly from the local bundle.
+- Changed Luau compiled, including the near-limit Sim constructor; Rojo build succeeded.
+- Regenerated town/road crops were inspected locally. Studio visuals and Script Analysis remain
+  unrun. Tests B113-B116 below are new; earlier B111/B112 road architecture notes are superseded.
+
+## Source fog colour correction (2026-11-10)
+
+The owner compared screenshots and reported a flatter/greyer Roblox view. One confirmed mismatch
+was the black fog overlay. export_fog.cjs now extracts the original N0 terrain chart, shroud colour
+and opacity, explored-region colour and opacity, and feather radius to private GameData/FogLook.
+FogOverlay receives the decoded terrain and remembers explored cells locally for presentation.
+FogPixels.colour uses the supplied chart on unexplored ground and the distinct explored tint after
+sight leaves. Premultiplied RGBA is blurred together, avoiding black fringes along clear areas.
+Detection remains the separate unfiltered server-fed mask. Fog-disabled/spectator display stays
+clear; missing generated look data retains the prior black-overlay fallback.
+
+Incremental colour blur tracks changed raw pixels and refreshes only the affected bounds expanded
+by the blur radius. No new EditableImages or larger image allocation were added. Local Lune timing
+was about 153 ms for an initial full 384x240 rebuild and 2.8 ms for a one-cell incremental change;
+these are CPU measurements, not Studio frame-rate results. Wide changes can still require a full
+rebuild. Cached output was tested against full recomputation after movement and exploration.
+
+This is the first source-colour correction, not a claim of matched overall vibrancy. Visible-area
+daylight/post-processing still uses the prior APPROX Roblox adapter. Source fog murk/noise,
+hatching, zoom-adaptive feather and sweep transitions remain pending. Finite Gaussian blur and
+RGBA quantization approximate Canvas filtering. The screenshots differ in visible area and may
+also differ in time/weather; compare matched Clear/Noon conditions before further grading changes.
+
+Verification: full lune run tests/run **202 passed, 0 failed**; Rojo build succeeded; changed Luau
+compiled. New tests cover unexplored/explored/clear colour states, unmodified detection and cached
+versus fresh output. Original install was read only, and extracted settings remain git-ignored.
+Studio appearance, Script Analysis and new B117 remain unrun. Restart Play after Rojo sync.
+
+## Living-world milestone: planned scope (owner additions, 2026-11-10)
+
+These features are PLANNED, not implemented or verified by the fog-colour batch:
+1. Civilian road traffic and pedestrians, followed by evacuation/reactions to fighting.
+2. Moving clouds and ground shadows.
+3. Night-time city/building lights, street lamp posts and traffic lights, coordinated with the
+   existing day/night clock; source placement/behaviour to be traced before implementation.
+4. Visible power lines/poles. A functioning power-grid simulation remains a separate later system;
+   visual power lines alone must not be presented as working electricity rules.
+5. Buildings igniting from nearby explosions: burning, smoke and fire progression, with source
+   ignition/damage/extinguishing behaviour traced first and unconfirmed values marked explicitly.
+6. Forest ignition and spreading fires, smoke and burned vegetation. Trace source spread,
+   weather interaction and end conditions before choosing gameplay rules. Bound simulation and
+   particle/rendering work so many simultaneous fires cannot exhaust the client image/effect budget.
+
+Lighting/infrastructure and fire are separate implementation batches. Preserve the owner's
+building-blocked sight and whole-city garrison reveal when vegetation/building state changes.
+Water integration, full colour calibration and the remaining road/building artwork stay on the
+broader roadmap. No implementation-completion percentage is claimed from the stale Phase-0 matrix.

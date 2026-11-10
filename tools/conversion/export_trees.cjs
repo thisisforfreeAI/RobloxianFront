@@ -12,12 +12,14 @@ const fs = require("fs");
 
 const [bundlePath, mapPath, townPath] = process.argv.slice(2);
 const src = fs.readFileSync(bundlePath, "utf8");
-const a = src.indexOf('const dVt="/tiles/trees-top.png"');
-const b = src.indexOf("const MVt=");
+const modern = src.includes('const U2e="/tiles/trees-top.png"');
+const a = src.indexOf(modern ? 'const U2e="/tiles/trees-top.png"' : 'const dVt="/tiles/trees-top.png"');
+const b = src.indexOf(modern ? 'const Yc={town:' : 'const MVt=', a);
 if (a < 0 || b < a) throw new Error("tree placement code not found in this bundle (names changed?)");
 const legend = ["deep", "shallow", "beach", "plains", "forest", "hills", "mountain", "snow", "desert", "marsh", "river", "fallout"];
 const uo = (n) => legend.indexOf(n);
-const api = new Function("uo", "H3", src.slice(a, b) + "\nreturn { xVt, CVt, Pc, h$ };")(uo, () => {});
+const exportNames = modern ? '{ xVt: ele, CVt: ole, Pc: X2, h$: WS }' : '{ xVt, CVt, Pc, h$ }';
+const api = new Function(modern ? "ho" : "uo", "H3", src.slice(a, b) + "\nreturn " + exportNames + ";")(uo, () => {});
 
 const map = JSON.parse(fs.readFileSync(mapPath, "utf8"));
 const terrain = Uint8Array.from(map.terrain.data);

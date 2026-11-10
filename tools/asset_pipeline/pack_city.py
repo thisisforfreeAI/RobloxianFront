@@ -13,7 +13,10 @@ This writes, git-ignored (it embeds the art):
 Chunks are chunkCells x chunkCells cells (64 x 14 px = 896 px, under the 1024 px EditableImage limit);
 chunks with nothing drawn are skipped. Town pixels keep their colour, made opaque, and get the ground
 shader's close-up town light baked in (see shade(): sky occlusion and roof shadows from the aux part,
-for one fixed sun, noon by default; --no-shade skips it).
+for one fixed sun, noon by default; --no-shade skips it). With --lighting 16, additional local-only
+XOR patches sample roof shadows at 17 directions along the source sun/moon path. The client changes
+only existing image pixels, not image allocation. APPROX: direction sampling replaces continuous
+shader lighting; the far overview and tree shadows retain their bake.
 
 Trees (optional, --trees/--sheet/--map): every tree from tools/conversion/export_trees.cjs (the game's
 own placement) is drawn on top, from trees-top.png, as the game's forest layer does: a tree's sprite
@@ -37,6 +40,7 @@ import zlib
 
 import numpy as np
 from PIL import Image
+from road_layer import points, road_layer, composite, canopy_on_road
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 OUT = os.path.join(ROOT, "src", "client", "DevAssets")
@@ -81,7 +85,7 @@ def road_cells(m):
     for r in m["roads"]:
         if r.get("rank", 0) < 1:
             continue
-        p = r["pts"]
+        p = points(r)  # worker JSON wraps typed arrays in {data: ...}
         for i in range(2, len(p) - 1, 2):
             x0, y0, x1, y1 = p[i - 2], p[i - 1], p[i], p[i + 1]
             n = max(1, int(np.ceil(np.hypot(x1 - x0, y1 - y0) * 4)))
@@ -129,7 +133,7 @@ def sun_shadow(phase):
     return f[0] / n * k, f[1] / n * k
 
 
-def shade(img, aux, intile, phase):
+def shade(img, aux, intile, phase, opacity=None):
     """Bake the shader's close-up town light into the town image: each tile pixel darkened by what the
     buildings round it shut out of the sky (1 - aux.g x 0.3), and every pixel shaded by the roofs toward
     the sun that stand high enough to reach it (the 'towns at real size' walk: a roof of height `high`
@@ -160,6 +164,16 @@ def shade(img, aux, intile, phase):
     keep = (1 - CITY["shadow"] * sh) * np.where(intile, 1 - aux[:, :, 1].astype(np.float32) / 255 * TOWN["sky"], 1)
     out = np.zeros_like(img)
     opaque = code > 0
+    if opacity is not None:
+        # Preserve antialiased road coverage. Alpha in img still encodes the source surface type.
+        coverage = opacity.astype(np.float32)/255
+        alpha = coverage+(1-coverage)*(1-keep)
+        for ch in range(3):
+            value = img[:, :, ch]*keep*coverage
+            np.divide(value,alpha,out=value,where=alpha>0)
+            out[:, :, ch] = np.clip(np.round(value),0,255).astype(np.uint8)
+        out[:, :, 3] = np.clip(np.round(alpha*255),0,255).astype(np.uint8)
+        return out
     for ch in range(3):
         out[:, :, ch] = np.where(opaque, np.round(img[:, :, ch] * keep), 0).astype(np.uint8)
     out[:, :, 3] = np.where(opaque, 255, np.round((1 - keep) * 255)).astype(np.uint8)
@@ -175,6 +189,22 @@ def over(canvas, img, x, y):
     canvas.alpha_composite(img, (x + sx, y + sy), (sx, sy, sx + w, sy + h))
 
 
+def xor_patch(base, pixels):
+    """Changed RGBA runs, reversible in-place; keep gaps <=8 pixels inside a run to save headers."""
+    delta = np.bitwise_xor(np.ascontiguousarray(base).view('<u4').reshape(-1),
+                           np.ascontiguousarray(pixels).view('<u4').reshape(-1))
+    changed = np.flatnonzero(delta)
+    if not len(changed):
+        return b''
+    cuts = np.flatnonzero(np.diff(changed) > 9) + 1
+    out = bytearray()
+    for group in np.split(changed, cuts):
+        start, end = int(group[0]), int(group[-1]) + 1
+        out.extend(struct.pack('<II', start, end - start))
+        out.extend(delta[start:end].tobytes())
+    return bytes(out)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("city")
@@ -185,7 +215,13 @@ def main():
     ap.add_argument("--trees")
     ap.add_argument("--sheet")
     ap.add_argument("--map")
+    ap.add_argument("--roads", help="local road-look JSON from export_roads.cjs; joins roads in the town raster")
+    ap.add_argument("--output", default=OUT)
+    ap.add_argument("--lighting", type=int, default=0,
+                    help="APPROX: sample roof shadows at N sun-path intervals; sparse patches reuse image memory (16 recommended)")
     a = ap.parse_args()
+    if a.lighting and (a.lighting < 2 or a.lighting % 2 or a.no_shade or a.phase != 0.31):
+        raise SystemExit("--lighting needs an even interval count >=2 and the default shaded noon base")
     head, parts = read_city(a.city)
     if a.dump_town_trees:
         json.dump([float(v) for v in np.frombuffer(parts["trees"], np.float32)], open(a.dump_town_trees, "w"))
@@ -207,14 +243,31 @@ def main():
         if auxAtlas is not None:
             aux[y * T:(y + 1) * T, x * T:(x + 1) * T] = auxAtlas[ay:ay + T, ax:ax + T]
         intile[y * T:(y + 1) * T, x * T:(x + 1) * T] = True
+    pavement, opacity = None, None
+    if a.roads:
+        if not a.map:
+            raise SystemExit("--roads needs --map")
+        m = json.load(open(a.map))
+        config = json.load(open(a.roads))
+        pavement = np.zeros(img.shape[:2],bool)
+        opacity = np.where(img[:,:,3]>0,255,0).astype(np.uint8)
+        for cy in range(0,H,a.chunk):
+            for cx in range(0,W,a.chunk):
+                cw,chh = min(a.chunk,W-cx),min(a.chunk,H-cy)
+                layer, mask = road_layer(m,config,cx,cy,cw*T,chh*T,T)
+                area = np.s_[cy*T:(cy+chh)*T,cx*T:(cx+cw)*T]
+                img[area], opacity[area] = composite(img[area],layer)
+                pavement[area] = mask
+            print(f"connected roads row {cy}/{H}",flush=True)
+    raw_img = img
     if auxAtlas is not None and not a.no_shade:
-        img = shade(img, aux, intile, a.phase)
+        img = shade(img, aux, intile, a.phase, opacity)
     else:
         opaque = img[:, :, 3] > 0
-        img[:, :, 3] = np.where(opaque, 255, 0)
+        img[:, :, 3] = np.where(opaque,255,0) if opacity is None else opacity
         img[~opaque] = 0
 
-    os.makedirs(OUT, exist_ok=True)
+    os.makedirs(a.output, exist_ok=True)
     name = "City_" + mid
     C = a.chunk
     # trees: keep the ones the game keeps, bucket them by chunk (a tree may reach into the next chunk)
@@ -233,47 +286,75 @@ def main():
             x, y = td["x"][i], td["y"][i]
             if not td["yard"][i] and clear[min(H - 1, int(y)), min(W - 1, int(x))]:
                 continue
+            if pavement is not None:
+                tree,_ = trees.sprite(td["tile"][i],td["scale"][i])
+                if canopy_on_road(tree,round(x*T-tree.width/2),round(y*T-tree.height/2),pavement):
+                    continue  # APPROX clearance policy: include yard trees and actual canopy pixels.
             kept += 1
             for bx in {int((x - 1.5) // C), int((x + 1.5) // C)}:
                 for by in {int((y - 1.5) // C), int((y + 1.5) // C)}:
                     buckets.setdefault((bx, by), []).append(i)
-    chunks, total = [], 0
+    def draw_chunk(px, cx, cy):
+        mine = buckets.get((cx // C, cy // C), [])
+        if not mine:
+            return np.ascontiguousarray(px)
+        canvas = Image.fromarray(np.ascontiguousarray(px))
+        ox, oy = cx * T, cy * T
+        for layer in (1, 0):
+            for i in mine:
+                tree, shadow = trees.sprite(td["tile"][i], td["scale"][i])
+                w0 = td["tiles"][td["tile"][i]][2] * td["scale"][i] * TREE_CELLS_PER_PX * T
+                left = round(td["x"][i] * T - tree.width / 2) - ox
+                top = round(td["y"][i] * T - tree.height / 2) - oy
+                if layer == 1:
+                    over(canvas, shadow, left + round(w0 * SHADOW["dx"]), top + round(w0 * SHADOW["dy"]))
+                else:
+                    over(canvas, tree, left, top)
+        return np.array(canvas)
+
+    chunks, total, bases = [], 0, {}
     for cy in range(0, H, C):
         for cx in range(0, W, C):
             cw, chh = min(C, W - cx), min(C, H - cy)
             px = img[cy * T:(cy + chh) * T, cx * T:(cx + cw) * T]
-            mine = buckets.get((cx // C, cy // C), [])
-            if mine:
-                canvas = Image.fromarray(np.ascontiguousarray(px))
-                ox, oy = cx * T, cy * T
-                for layer in (1, 0):  # all shadows, then all trees
-                    for i in mine:
-                        tree, shadow = trees.sprite(td["tile"][i], td["scale"][i])
-                        w0 = td["tiles"][td["tile"][i]][2] * td["scale"][i] * TREE_CELLS_PER_PX * T
-                        left = round(td["x"][i] * T - tree.width / 2) - ox
-                        top = round(td["y"][i] * T - tree.height / 2) - oy
-                        if layer == 1:
-                            over(canvas, shadow, left + round(w0 * SHADOW["dx"]), top + round(w0 * SHADOW["dy"]))
-                        else:
-                            over(canvas, tree, left, top)
-                px = np.array(canvas)
+            px = draw_chunk(px, cx, cy)
             if not px[:, :, 3].any():
                 continue
             data = base64.b64encode(deflate(np.ascontiguousarray(px).tobytes())).decode()
             mod = f"{name}_{cx}_{cy}"
-            with open(os.path.join(OUT, mod + ".luau"), "w", newline="\n") as f:
+            with open(os.path.join(a.output, mod + ".luau"), "w", newline="\n") as f:
                 f.write("--!strict\n-- GENERATED by tools/asset_pipeline/pack_city.py from the game's baked towns. Local only (git-ignored).\n")
                 f.write(f'return {{ width = {cw * T}, height = {chh * T}, deflate = "{data}" }}\n')
             chunks.append((cx, cy, cw, chh, mod))
             total += len(data)
+            if a.lighting:
+                bases[mod] = px.copy()
+    if a.lighting:
+        if auxAtlas is None:
+            raise SystemExit("lighting requires the city's aux height/light data")
+        for frame in range(a.lighting + 1):
+            lit = shade(raw_img, aux, intile, min(SUN["up"] - 1e-10, SUN["up"] * frame / a.lighting), opacity)
+            for cx, cy, cw, chh, mod in chunks:
+                pixels = draw_chunk(lit[cy*T:(cy+chh)*T, cx*T:(cx+cw)*T], cx, cy)
+                patch = xor_patch(bases[mod], pixels)
+                data = base64.b64encode(deflate(patch)).decode()
+                with open(os.path.join(a.output, f"{mod}_Light{frame+1}.luau"), "w", newline="\n") as f:
+                    f.write('--!strict\n-- GENERATED local-only sparse roof-lighting patch.\n')
+                    f.write(f'return {{ bytes = {len(patch)}, deflate = "{data}" }}\n')
+            print(f"roof lighting {frame+1}/{a.lighting+1}", flush=True)
     town_trees = np.frombuffer(parts["trees"], np.float32)
-    with open(os.path.join(OUT, name + ".luau"), "w", newline="\n") as f:
+    with open(os.path.join(a.output, name + ".luau"), "w", newline="\n") as f:
         f.write("--!strict\n-- GENERATED by tools/asset_pipeline/pack_city.py. Local only (git-ignored).\n")
         f.write("-- chunks: { cx, cy, w, h, module } in cells; trees: x, y pairs in cells (town trees).\n")
         f.write(f'return {{\n\tid = "{mid}", width = {W}, height = {H}, cellPx = {T}, chunkCells = {C},\n\tchunks = {{\n')
         for cx, cy, cw, chh, mod in chunks:
             f.write(f'\t\t{{ {cx}, {cy}, {cw}, {chh}, "{mod}" }},\n')
-        f.write("\t},\n\ttrees = { " + ", ".join(f"{v:.3f}" for v in town_trees) + " },\n}\n")
+        f.write("\t},\n")
+        if a.roads:
+            f.write("\troads = true,\n")
+        if a.lighting:
+            f.write(f'\tlighting = {{ steps = {a.lighting}, sunUp = {SUN["up"]}, base = {a.lighting//2+1} }},\n')
+        f.write("\ttrees = { " + ", ".join(f"{v:.3f}" for v in town_trees) + " },\n}\n")
     print(f"{name}: {W}x{H} cells, {len(chunks)} chunks, {total // 1024} KB, {kept} trees drawn")
 
 

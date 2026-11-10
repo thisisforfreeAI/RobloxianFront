@@ -19,6 +19,8 @@ local Movement = require(Shared.Simulation.Movement)
 local Pathing = require(Shared.Simulation.Pathing)
 local Territory = require(Shared.Simulation.Territory)
 local Fog = require(Shared.Simulation.Fog)
+local Visibility = require(Shared.Simulation.Visibility)
+local Inflate = require(Shared.Utilities.Inflate)
 local ValueNoise = require(Shared.Utilities.ValueNoise)
 local Rng = require(Shared.Utilities.Rng)
 local Roads = require(Shared.Simulation.Roads)
@@ -1230,7 +1232,15 @@ function MatchService.start(mapModule: string)
 		table.insert(rigs, { x = r.x, y = r.y, name = r.name })
 	end
 	local w = map.width
+	local blockers: buffer? = nil
+	local blockerModule = GameData:FindFirstChild("Visibility_" .. map.data.id)
+	if blockerModule then
+		local data = require(blockerModule :: ModuleScript) :: any
+		assert(data.width==map.width and data.height==map.height,"Visibility map dimensions differ")
+		blockers = Inflate.raw(MapCodec.base64Decode(data.deflate),map.width*map.height)
+	else warn("[Match] Generate local visibility footprints with export_visibility.py; open sight fallback stays") end
 	sim = Sim.new({
+		visibilityLib = Visibility,
 		drop = OPENING_DROP,
 		armies = ARMIES,
 		rules = rules :: any,
@@ -1243,6 +1253,7 @@ function MatchService.start(mapModule: string)
 		map = {
 			width = map.width,
 			height = map.height,
+			blockers = blockers,
 			terrainAt = function(cell: number): string?
 				return MapCodec.terrainName(map, cell % w, cell // w)
 			end,

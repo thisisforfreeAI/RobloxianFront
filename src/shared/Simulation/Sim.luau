@@ -130,6 +130,7 @@ export type MapInfo = {
 	height: number,
 	terrainAt: (cell: number) -> string?,
 	urbanAt: ((cell: number) -> boolean)?,
+	blockers: buffer?,
 	roads: { any },
 }
 
@@ -146,6 +147,7 @@ export type Deps = {
 	rigs: { { x: number, y: number, name: string? } },
 	settlements: { { name: string?, x: number, y: number, kind: string } }?, -- map order
 	seed: number?,
+	visibilityLib: any?,
 	drop: boolean?, -- start with the game's opening drop instead of HQs on the start points
 	armies: { string }?, -- per side: "coalition" (the default) or "republic"
 	deckSeed: number?, -- the match's own seed for the opening deck (the game draws one per match); else seed
@@ -239,6 +241,7 @@ function Sim.new(deps: Deps)
 		offRoadReach = offReach + hqFoot,
 	})
 	self.roads = roads
+	self.visibility = if deps.visibilityLib then deps.visibilityLib.new(W,H,map.blockers,roads.classAt) else nil
 	local function cellAt(x: number, y: number): number
 		return roads.cellAt(x, y)
 	end
@@ -651,6 +654,7 @@ function Sim.new(deps: Deps)
 		})
 	end
 	self.settlements = settlements
+	self.citySightCells = {}
 	if #settlements > 0 and map.urbanAt then
 		local counts = {}
 		for c = 0, W * H - 1 do
@@ -664,6 +668,8 @@ function Sim.new(deps: Deps)
 					end
 				end
 				counts[best.id] = (counts[best.id] or 0) + 1
+				self.citySightCells[best.id] = self.citySightCells[best.id] or {}
+				table.insert(self.citySightCells[best.id],c)
 			end
 		end
 		for _, st in settlements do
@@ -4031,6 +4037,11 @@ function Sim.new(deps: Deps)
 	end
 
 	---------------------------------------------------------------- combat
+	function self.clearShot(e: Entity, o: Entity, key: string): boolean
+		return not self.visibility or e.inside or e.class=="air" or o.class=="air"
+			or (e.cat=="unit" and text(key..".nato")=="artillery")
+			or self.visibility.clear(e.x,e.y,o.x,o.y)
+	end
 
 	local function validUnitTarget(side: number, o: Entity, key: string): boolean
 		return o.alive and o.hp > 0 and o.cat == "unit" and o.kind ~= TRUCK and canAttack(side, o.side) and vsOf(key, o.class) > 0
@@ -4135,6 +4146,7 @@ function Sim.new(deps: Deps)
 	end
 
 	local function fire(e: Entity, key: string, target: Entity, kind: string, dps: number, dt: number)
+		if not self.clearShot(e,target,key) then return end
 		local tx, ty = target.x, target.y
 		e.firing, e.aimX, e.aimY = true, tx, ty
 		if e.cat == "unit" and not hasHull(e) then
@@ -4183,7 +4195,7 @@ function Sim.new(deps: Deps)
 				local dps = numOr(key .. ".dps", 0)
 				if dps > 0 and numOr(key .. ".vs.air", 0) < 1 then -- SAM sites shoot only aircraft and drones
 					local range = num(key .. ".range")
-					local u = nearestUnit(st.x, st.y, st.side, range, key)
+					local u = nearestUnit(st.x,st.y,st.side,range,key,nil,function(o) return self.clearShot(st,o,key) end)
 					if u then
 						fire(st, key, u, "unit", dps, dt)
 					else
@@ -4654,6 +4666,9 @@ function Sim.new(deps: Deps)
 							local cx, cy = centre(o.cell)
 							return spotted(e.side, cx, cy)
 						end
+					elseif not arty and not e.inside and e.class~="air" then
+						spotUnit = function(o) return self.clearShot(e,o,key) end
+						spotStructure = spotUnit
 					end
 					-- armoured shooters fire weaker on the move
 					local eff = dps * (if e.class == "armour" and e.moved then num("armour.movingFire") else 1)
@@ -9740,7 +9755,8 @@ function Sim.new(deps: Deps)
 		for i = 1, n do
 			grid[i] = 0
 		end
-		local function circle(x: number, y: number, m: number)
+		local function circle(x: number, y: number, m: number, through: boolean?)
+			local blocked = not through and self.visibility and self.visibility.hasIn(x-m,y-m,x+m,y+m)
 			local mm = m * m
 			for py = math.max(0, math.floor(y - m)), math.min(H - 1, math.ceil(y + m)) do
 				local hh = py + 0.5 - y
@@ -9751,7 +9767,7 @@ function Sim.new(deps: Deps)
 					local t1 = math.min(W - 1, math.floor(x - 0.5 + q))
 					local base = py * W + 1
 					for c = t0, t1 do
-						grid[base + c] = 2
+						if grid[base+c]~=2 and (not blocked or self.visibility.clear(x,y,c+0.5,py+0.5)) then grid[base+c]=2 end
 					end
 				end
 			end
@@ -9776,13 +9792,20 @@ function Sim.new(deps: Deps)
 		for _, st in settlements do
 			if st.owner == side and #st.garrison > 0 then
 				local m = num("cities.sight")
+				local live = false
 				for _, id in st.garrison do
 					local u = self.entities[id]
-					if u then
+					if u and u.alive and u.inside and u.side==side then
+						live = true
 						m = math.max(m, num(`units.{u.kind}.sight`))
 					end
 				end
-				circle(st.x, st.y, m * c)
+				if live then
+					-- Owner-requested rule: an occupied garrison reveals the whole urban footprint,
+					-- independent of roof blockers/night, plus the source garrison's normal sight.
+					circle(st.x,st.y,math.max(m*c,st.radius),true)
+					for _,cell in self.citySightCells[st.id] or {} do grid[cell+1]=2 end
+				end
 			end
 		end
 		local seen = {}
@@ -9797,9 +9820,9 @@ function Sim.new(deps: Deps)
 				else
 					local m = num(`units.{e.kind}.sight`) * c
 					local key = (math.floor(e.y / f) * 4096 + math.floor(e.x / f)) * 64 + math.floor(m + 0.5)
-					if not seen[key] then
+					if not seen[key] or (self.visibility and self.visibility.count>0) then
 						seen[key] = true
-						circle(e.x, e.y, m)
+						circle(e.x,e.y,m,e.class=="air")
 					end
 				end
 			end
@@ -9825,24 +9848,24 @@ function Sim.new(deps: Deps)
 		for _, d in self.drones do
 			if d.alive and d.side == side then
 				if d.phase == "scan" then
-					circle(d.tx, d.ty, d.radius * c)
+				circle(d.tx, d.ty, d.radius * c,true)
 				end
 				if trail > 0 then
-					circle(d.x, d.y, trail)
+				circle(d.x, d.y, trail,true)
 				end
 			end
 		end
 		-- burning flares light flare.radius round them (the game's yge in its vision pass)
 		for _, f in self.flares do
 			if f.side == side and self.time >= f.burstAt and self.time < f.untilT then
-				circle(f.x, f.y, f.r)
+				circle(f.x, f.y, f.r,true)
 			end
 		end
 		-- areas shown to a side for a while (the game's roadReveals: a breached trench's owner sees round it)
 		for _, rv in self.reveals do
 			if rv.side == side and self.time < rv.untilT then
 				for k = 1, #rv.pts - 1, 2 do
-					circle(rv.pts[k], rv.pts[k + 1], rv.r)
+					circle(rv.pts[k], rv.pts[k + 1], rv.r,true)
 				end
 			end
 		end
@@ -9850,7 +9873,7 @@ function Sim.new(deps: Deps)
 		local rc = num("artillery.revealCells")
 		for _, e in self.list do
 			if e.alive and e.cat == "unit" and e.side ~= side and e.revealedUntil and e.revealedUntil > self.time then
-				circle(e.x, e.y, rc)
+				circle(e.x, e.y, rc,true)
 			end
 		end
 	end

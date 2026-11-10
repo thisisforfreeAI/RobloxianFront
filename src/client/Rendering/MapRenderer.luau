@@ -19,6 +19,7 @@ local Rules = require(Shared.Config.Rules)
 local DevFlags = require(script.Parent.Parent.Dev.DevFlags)
 local TownRenderer = require(script.Parent.TownRenderer)
 local Inflate = require(Shared.Utilities.Inflate)
+local RoadRenderer = require(script.Parent.RoadRenderer)
 
 local MapRenderer = {}
 
@@ -68,7 +69,9 @@ local function bakedGround(map: MapCodec.DecodedMap): { { content: Content, x: n
 			local image = ImageMemory.create(size)
 			assert(image, "EditableImage memory unavailable for ground strip")
 			table.insert(allocated, image)
-			image:WritePixelsBuffer(Vector2.zero, size, Inflate.raw(MapCodec.base64Decode(piece.deflate), piece.width * g.height * 4))
+			local pixels = Inflate.raw(MapCodec.base64Decode(piece.deflate), piece.width * g.height * 4)
+			RoadRenderer.paint(pixels, piece.width, g.height, map, piece.x, g.width)
+			image:WritePixelsBuffer(Vector2.zero, size, pixels)
 			table.insert(out, { content = Content.fromObject(image), x = piece.x / g.width, width = piece.width / g.width, image = image })
 		end
 		return out
@@ -121,6 +124,7 @@ local function buildImageGround(map: MapCodec.DecodedMap, ground: Part): boolean
 		buffer.writeu8(pixels, i * 4 + 2, b)
 		buffer.writeu8(pixels, i * 4 + 3, 255)
 	end
+	RoadRenderer.paint(pixels, map.width, map.height, map, 0, map.width)
 	image:WritePixelsBuffer(Vector2.zero, Vector2.new(map.width, map.height), pixels)
 
 	-- The ground part is turned by World.TOP_GUI_YAW, so GUI x runs east (+X) and GUI y south (+Z):
@@ -230,6 +234,9 @@ function MapRenderer.build(map: MapCodec.DecodedMap): Folder
 	-- The game's own town art, when the local modules are there (TownRenderer).
 	local towns = TownRenderer.build(map.data.id, folder)
 
+	-- Persistent far roads are already in the ground; close detail uses tiny shared source-derived
+	-- procedural strips. Missing local look data retains the former plain Parts as a fallback.
+	if not RoadRenderer.build(map, folder) then
 	-- Roads: widths from the game's city painter (half widths major 0.7, minor 0.36, track 0.2, plus
 	-- shoulder 0.08 / 0.1 / 0), so they fill the gaps the town art leaves; asphalt #4d5357, road
 	-- #70777a. APPROX: rank 2+ taken as major, rank 1 as minor; tracks keep the placeholder brown.
@@ -250,6 +257,7 @@ function MapRenderer.build(map: MapCodec.DecodedMap): Folder
 				})
 			end
 		end
+	end
 	end
 
 	for _, rig in map.data.rigs do

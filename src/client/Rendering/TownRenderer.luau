@@ -12,8 +12,8 @@
 	placeholder town discs stay.
 	The chunks also carry every tree (forests, scattered trees, town yard trees), placed by the game's
 	own tree code (tools/conversion/export_trees.cjs) and drawn from trees-top.png with their shadows.
-	Not yet: the roof shading (the file's aux data drives the game's lighting), trees swaying, burning
-	or being cleared round new buildings.
+	Optional sparse lighting patches move roof shadows through the source sun/moon path, reusing each
+	image. APPROX: sampled directions and a fixed-noon overview; tree shadows remain baked.
 ]]
 local ImageMemory = require(script.Parent.ImageMemory)
 local RunService = game:GetService("RunService")
@@ -24,6 +24,9 @@ local World = require(Shared.Config.World)
 local MapCodec = require(Shared.Maps.MapCodec)
 local Inflate = require(Shared.Utilities.Inflate)
 local ImagePixels = require(Shared.Presentation.ImagePixels)
+local TownDetail = require(Shared.Presentation.TownDetail)
+local TownPatch = require(Shared.Presentation.TownPatch)
+local DaylightController = require(script.Parent.DaylightController)
 
 local TownRenderer = {}
 
@@ -32,7 +35,6 @@ local HEIGHT = 0.07 -- above the ground (0), under the roads (0.15)
 local OVERVIEW_PX = 2 -- overview pixels a cell
 local TILE_PX = 14 -- chunk pixels a cell (the game's 14 px town tiles)
 local MAX_LOADED = 9 -- full chunks shown at once
-local DETAIL_FROM = 5 -- screen pixels a cell from which the full chunks are worth loading
 local CHECK_SEC = 0.1
 local RETRY_SEC = 1.5 -- after the budget refused an image
 local KEEP_REACH = 1.6 -- shown chunks stay until this far past the view (so panning back is instant)
@@ -66,7 +68,7 @@ local function newImage(size: Vector2, kind: string?): any
 	return ImageMemory.create(size, kind or "detail")
 end
 
-type Chunk = { cx: number, cy: number, cw: number, ch: number, name: string, mod: ModuleScript, part: Part?, image: any, packed: buffer?, px: buffer?, w: number, h: number, iw: number, ih: number, distance: number, used: number }
+type Chunk = { cx: number, cy: number, cw: number, ch: number, name: string, mod: ModuleScript, part: Part?, image: any, packed: buffer?, px: buffer?, w: number, h: number, iw: number, ih: number, distance: number, used: number, frame: number, patch: buffer?, missed: number? }
 
 -- returns true when the town art was drawn
 function TownRenderer.build(mapId: string, parent: Instance): boolean
@@ -76,6 +78,8 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 		return false
 	end
 	local meta = require(metaModule) :: any
+	local lighting = meta.lighting
+	local baseFrame = if lighting then lighting.base else 0
 	local folder = Instance.new("Folder")
 	folder.Name = "Towns"
 	local chunks: { Chunk } = {}
@@ -83,7 +87,7 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 	for _, c in meta.chunks do
 		local mod = assets:FindFirstChild(c[5])
 		if mod and mod:IsA("ModuleScript") then
-			table.insert(chunks, { cx = c[1], cy = c[2], cw = c[3], ch = c[4], name = c[5], mod = mod, part = nil, image = nil, packed = nil, px = nil, w = 0, h = 0, iw = 0, ih = 0, distance = math.huge, used = 0 })
+			table.insert(chunks, { cx = c[1], cy = c[2], cw = c[3], ch = c[4], name = c[5], mod = mod, part = nil, image = nil, packed = nil, px = nil, w = 0, h = 0, iw = 0, ih = 0, distance = math.huge, used = 0, frame = baseFrame, patch = nil })
 			mapW, mapH = math.max(mapW, c[1] + c[3]), math.max(mapH, c[2] + c[4])
 		else
 			warn(`[TownRenderer] {c[5]} missing, that part of the map has no towns drawn`)
@@ -99,6 +103,36 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 			c.packed = MapCodec.base64Decode(chunk.deflate)
 		end
 		return Inflate.raw(c.packed :: buffer, chunk.width * chunk.height * 4), chunk.width, chunk.height
+	end
+	local warnedLighting = false
+	local function relight(c: Chunk, frame: number)
+		if not lighting or c.frame == frame then return end
+		local ok, patch = pcall(function(): buffer
+			if frame == baseFrame then return buffer.create(0) end
+			local mod = assets:FindFirstChild(c.name .. "_Light" .. frame)
+			assert(mod and mod:IsA("ModuleScript"), "local lighting patch missing")
+			local data = require(mod :: ModuleScript) :: any
+			local out = if data.bytes == 0 then buffer.create(0) else Inflate.raw(MapCodec.base64Decode(data.deflate), data.bytes)
+			TownPatch.validate(out, c.px :: buffer)
+			return out
+		end)
+		if not ok then
+			c.missed = frame
+			if not warnedLighting then
+				warnedLighting = true
+				warn("[TownRenderer] roof lighting unavailable; existing lighting stays:", patch)
+			end
+			return
+		end
+		if c.patch then TownPatch.apply(c.px :: buffer, c.patch) end -- undo the previous sample
+		TownPatch.apply(c.px :: buffer, patch)
+		c.patch, c.frame = patch, frame
+	end
+	local function pixelsAt(c: Chunk, stride: number): buffer
+		local px, w, h = c.px :: buffer, c.w, c.h
+		if stride >= 2 then px, w, h = ImagePixels.half(px, w, h) end
+		if stride >= 4 then px = ImagePixels.half(px, w, h) end
+		return px
 	end
 
 	-- the overview: every chunk sampled down to 2 px a cell (2 x 2 samples a pixel), in one image
@@ -170,10 +204,23 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 	local function sizeKey(w: number, h: number): string
 		return `{w}x{h}`
 	end
+	local function coverOverview(c: Chunk, covered: boolean)
+		if not overviewOk then return end
+		local w, h = c.cw * OVERVIEW_PX, c.ch * OVERVIEW_PX
+		local x, y = c.cx * OVERVIEW_PX, c.cy * OVERVIEW_PX
+		local pixels = buffer.create(w * h * 4)
+		if not covered then
+			for row = 0, h - 1 do buffer.copy(pixels, row * w * 4, overviewPixels, ((y + row) * ow + x) * 4, w * 4) end
+		end
+		-- Same overview image, with its noon pixels hidden below a shown chunk. Otherwise old
+		-- ground shadows would remain visible through the newly lit chunk's transparent pixels.
+		overview:WritePixelsBuffer(Vector2.new(x, y), Vector2.new(w, h), pixels)
+	end
 	local function unload(c: Chunk)
 		if c.part then
 			c.part:Destroy()
 			c.part = nil
+			coverOverview(c, false)
 		end
 		if c.image then
 			-- Full source pixels stay in the bounded CPU cache; native images may be half-size.
@@ -226,29 +273,33 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 		end)
 		for i = 1, #spare - PIXEL_CACHE do
 			spare[i].px = nil
+			spare[i].patch, spare[i].frame = nil, baseFrame
 		end
 	end
 	-- returns false when the budget refused the image
-	local function show(c: Chunk, half: boolean): boolean
-		local px = c.px :: buffer
-		local iw, ih = if half then math.ceil(c.w / 2) else c.w, if half then math.ceil(c.h / 2) else c.h
+	local function show(c: Chunk, stride: number): boolean
+		-- Admission may reclaim inactive CPU caches as well as native detail. Keep this chunk's
+		-- full source and reversible patch alive until it becomes a shown chunk.
+		local source, oldPatch, oldFrame = c.px, c.patch, c.frame
+		local iw, ih = math.ceil(c.w / stride), math.ceil(c.h / stride)
 		local image = takeImage(iw, ih)
-		if not image and not half then
-			half = true
-			iw, ih = math.ceil(c.w / 2), math.ceil(c.h / 2)
+		while not image and stride < 4 do
+			stride *= 2
+			iw, ih = math.ceil(c.w / stride), math.ceil(c.h / stride)
 			image = takeImage(iw, ih)
 		end
 		if not image then return false end
+		c.px, c.patch, c.frame = source, oldPatch, oldFrame
 		local size = Vector2.new(iw, ih)
 		local ok = pcall(function()
-			if half then px = ImagePixels.half(px, c.w, c.h) end
-			image:WritePixelsBuffer(Vector2.zero, size, px)
+			image:WritePixelsBuffer(Vector2.zero, size, pixelsAt(c, stride))
 		end)
 		if not ok then ImageMemory.release(image); return false end
 		local part, label = imagePart(c.name, c.cx, c.cy, c.cw, c.ch, size, HEIGHT + 0.01, true)
 		label.ImageContent = Content.fromObject(image)
 		part.Parent = folder
 		c.part, c.image, c.iw, c.ih = part, image, iw, ih
+		coverOverview(c, true)
 		loaded += 1
 		return true
 	end
@@ -283,6 +334,7 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 	end)
 	local warnedPressure = false
 	local acc = 0
+	local zoomStride = 0
 	connection = RunService.Heartbeat:Connect(function(dt)
 		acc += dt
 		if acc < CHECK_SEC then
@@ -310,8 +362,10 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 			return math.sqrt((nx - fx) ^ 2 + (ny - fy) ^ 2)
 		end
 		for _, c in chunks do c.distance = far(c) end
-		local preferHalf = cellPx <= TILE_PX / 2
-		local detail = cellPx >= DETAIL_FROM or not overviewOk
+		zoomStride = TownDetail.stride(cellPx, zoomStride)
+		local stride = if zoomStride == 0 then 4 else zoomStride
+		local detail = zoomStride ~= 0 or not overviewOk
+		local frame = if lighting then TownDetail.frame(DaylightController.get().phase, lighting.sunUp, lighting.steps) else baseFrame
 		local want: { Chunk } = {}
 		local keep: { [Chunk]: boolean } = {}
 		if detail then
@@ -346,8 +400,19 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 		for _, c in want do
 			c.used = clock
 			if c.image then
-				if not preferHalf and c.iw < c.w and ImageMemory.canDetail(Vector2.new(c.w, c.h)) then
-					unload(c) -- upgrade when there is real headroom, not every tick under pressure
+				local targetW, targetH = math.ceil(c.w / stride), math.ceil(c.h / stride)
+				if targetW < c.iw then
+					unload(c); drainPool() -- return the larger allocation before creating the smaller one
+				elseif targetW > c.iw and ImageMemory.canDetail(Vector2.new(targetW, targetH)) then
+					unload(c); drainPool()
+				elseif c.frame ~= frame and c.missed ~= frame then
+					relight(c, frame)
+					local shownStride = math.round(c.w / c.iw)
+					local ok = pcall(function()
+						c.image:WritePixelsBuffer(Vector2.zero, Vector2.new(c.iw, c.ih), pixelsAt(c, shownStride))
+					end)
+					if not ok then unload(c); drainPool() end
+					break -- at most one shadow refresh per check; nearest chunks first
 				else
 					continue
 				end
@@ -363,7 +428,8 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 				end
 				c.px, c.w, c.h = px, w, h
 			end
-			if not show(c, preferHalf) then
+			relight(c, frame)
+			if not show(c, stride) then
 				holdUntil = os.clock() + RETRY_SEC
 				if not warnedPressure then
 					warnedPressure = true

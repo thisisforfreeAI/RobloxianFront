@@ -234,6 +234,7 @@ if fs.isFile(matchPath) then
 	local function newSim(opts: { [string]: any }?)
 		local o = opts or {}
 		return Sim.new({
+			visibilityLib = o.visibilityLib,
 			rules = Rules.new(rulesData) :: any,
 			movement = Movement,
 			roadsLib = Roads,
@@ -249,6 +250,7 @@ if fs.isFile(matchPath) then
 				end,
 				roads = o.roads or { { rank = 2, track = false, pts = { 0.5, 30.5, 179.5, 30.5 } } },
 				urbanAt = o.urbanAt,
+				blockers = o.blockers,
 			},
 			starts = { { x = 10.5, y = 30.5 }, { x = 170.5, y = 30.5 } },
 			rigs = o.rigs or { { x = 50, y = 30 }, { x = 130, y = 30 } },
@@ -3969,6 +3971,26 @@ if fs.isFile(matchPath) then
 	end)
 
 	-- fog of war
+	test("building occlusion filters enemy snapshots and a live garrison reveals its entire urban footprint",function()
+		local Visibility=require("../src/shared/Simulation/Visibility")
+		local FogTest=require("../src/shared/Simulation/Fog")
+		local mask=buffer.create(W*H)
+		for y=0,H-1 do buffer.writeu8(mask,y*W+95,1) end
+		local sim=newSim({roads={},visibilityLib=Visibility,blockers=mask,
+			settlements={{x=90.5,y=30.5,kind="town"}},urbanAt=function(c) return c%W==150 end})
+		for _,e in sim.list do if e.cat=="unit" then e.alive=false end end
+		local scout=sim.spawnUnit("infantry",1,90.5,30.5)
+		local enemy=sim.spawnUnit("infantry",2,100.5,30.5)
+		local viewer=FogTest.newViewer(sim,1);viewer.update()
+		assert(not viewer.unitVisible(enemy),"enemy behind town building must be hidden")
+		assert(not sim.clearShot(scout,enemy,"units.infantry"),"ground fire must not pass through buildings")
+		local city=sim.settlements[1];city.owner=1;city.garrison={scout.id};scout.inside=true
+		sim.time=320;viewer.update()
+		assert(viewer.unitVisible(enemy),"garrison sight bypasses roofs")
+		eq(viewer.grid[30*W+150+1],2,"entire urban footprint even at night")
+		city.garrison={};scout.inside=false;viewer.update()
+		eq(viewer.grid[30*W+150+1],0,"last garrison leaving removes reveal")
+	end)
 	local Fog = require("../src/shared/Simulation/Fog")
 	local function soloSim()
 		local sim = newSim({ roads = {} })
@@ -4255,6 +4277,9 @@ require("./unit_stages")(test, eq)
 require("./image_budget")(test, eq)
 
 require("./daylight")(test, eq)
+require("./town_detail")(test, eq)
+require("./road_pixels")(test, eq)
+require("./visibility")(test, eq)
 
 print(`\n{passed} passed, {failed} failed`)
 if failed > 0 then
