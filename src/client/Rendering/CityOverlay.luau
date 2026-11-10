@@ -69,7 +69,7 @@ function CityOverlay.apply(cities: { any })
 		local v = views[id]
 		if v then
 			v.owner = owner
-			v.ring.Transparency = if owner > 0 then 0.55 else 1
+			v.ring.Transparency = 1 -- territory wash and original fort sprites replace the placeholder blue disc
 			v.ring.Color = SIDE_COLOR[owner] or Color3.new(1, 1, 1)
 			if owner <= 0 and capSide > 0 and capProgress > 0 then
 				v.text.Text = `capturing {math.floor(capProgress * 100)}%`

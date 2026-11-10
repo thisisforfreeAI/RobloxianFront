@@ -51,13 +51,20 @@ function Daylight.sample(config: any, phase: number): any
 	for i = 1, 3 do color[i] = if p < up then style.sunNoon[i] + (config.sunGolden[i] - style.sunNoon[i]) * golden else style.moon[i] end
 	return { phase = p, mul = mul, add = add, night = night, golden = golden, elevation = elevation,
 		toward = toward, shadow = { -toward[1] * length, -toward[2] * length }, color = color,
-		shadowAlpha = 1 - config.shadow.nightFade * night }
+		shadowAlpha = 1 - config.shadow.nightFade * night,
+		groundGain = 1 + ((config.nightGround and config.nightGround.contrast or 1)-1)*night,
+		groundPivot = if config.nightGround then config.nightGround.pivot else 0 }
 end
 function Daylight.postEffect(sample: any): any
 	-- APPROX: Roblox exposes a common brightness/contrast and a multiplicative RGB tint, rather than
 	-- the game's per-channel additive shader. Fit a common offset to its source RGB add vector.
 	-- This is a source-derived adapter, not a claim about Roblox's exact GPU transfer/tonemapping.
-	local mul, add = sample.mul, sample.add
+	local mul, add = {},{}
+	local groundGain,pivot=sample.groundGain or 1,sample.groundPivot or 0
+	for i=1,3 do
+		mul[i]=sample.mul[i]*groundGain
+		add[i]=(sample.add[i]-pivot)*groundGain+pivot
+	end
 	local gain = math.max(1, mul[1], mul[2], mul[3])
 	local dot, square = 0, 0
 	for i = 1, 3 do dot += mul[i] * add[i]; square += mul[i] * mul[i] end

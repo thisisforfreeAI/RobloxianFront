@@ -14,6 +14,8 @@ local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 
 local DaylightController = require(script.Parent.DaylightController)
+local WorldLight = require(script.Parent.WorldLight)
+local WeatherGround = require(script.Parent.WeatherGround)
 local Atmosphere = {}
 
 type Look = { haze: Color3, hazeAlpha: number, streaks: number, streakColor: Color3, fall: Vector2, saturation: number, brightness: number, flash: boolean }
@@ -68,6 +70,7 @@ local function refresh()
 end
 
 function Atmosphere.start()
+	WorldLight.start()
 	cc = Instance.new("ColorCorrectionEffect")
 	cc.Name = "WarFrontAtmosphere"
 	cc.Parent = Lighting
@@ -122,6 +125,8 @@ end
 -- day: { phase, night } from the server; weather: its weather name
 function Atmosphere.apply(day: { number }?, weather: string?)
 	DaylightController.apply(day)
+	WeatherGround.setWeather(weather)
+	WorldLight.update()
 	if not cc then
 		return
 	end

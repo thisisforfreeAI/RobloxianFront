@@ -26,6 +26,7 @@ local Rng = require(Shared.Utilities.Rng)
 local Roads = require(Shared.Simulation.Roads)
 local Sim = require(Shared.Simulation.Sim)
 local UnitStages = require(Shared.Presentation.UnitStages)
+local TerritoryPixels = require(Shared.Presentation.TerritoryPixels)
 local Bot = require(Shared.Simulation.Bot)
 local Protocol = require(Shared.Protocol.Protocol)
 local Net = require(script.Parent.Parent.Networking.Net)
@@ -686,6 +687,7 @@ end
 -- Own territory as row runs { y, x0, x1, ... } (sent only when it changes): the client tints the
 -- placement ghost with it; the server still checks every placement.
 local sentTerritory: { [Player]: string } = {}
+local sentTerritoryView: { [Player]: string } = {}
 local sentWear: { [Player]: number } = {}
 local wearSentAt: { [Player]: number } = {}
 local function territoryRuns(side: number): { number }
@@ -1173,6 +1175,13 @@ local function privateState()
 				payload.territory = runs
 			end
 		end
+		-- Paint follows server ownership. Enemy claims are sent only where this side currently sees;
+		-- own build territory stays complete. Do not reveal unseen enemy infrastructure through paint.
+		local paintViewer = if side>0 and sim.fogOn() then viewers[side] else nil
+		local paintRuns=TerritoryPixels.runs(sim.territoryOwners(),map.width,map.height,side,
+			if paintViewer then function(cell) return paintViewer.grid[cell+1]==2 end else nil)
+		local paintKey=table.concat(paintRuns,",")
+		if sentTerritoryView[player]~=paintKey then sentTerritoryView[player]=paintKey;payload.territoryView=paintRuns end
 		-- settlements: owner, capture side and progress, hold. With fog, like rigs: a settlement your
 		-- side does not see now shows the owner last seen there (neutral until first seen) and no
 		-- capture or hold progress; your own always show. (APPROX of the game's viewer intel.)
@@ -1291,6 +1300,7 @@ function MatchService.start(mapModule: string)
 	Players.PlayerRemoving:Connect(function(p)
 		sideOf[p] = nil
 		sentTerritory[p] = nil
+		sentTerritoryView[p] = nil
 		sentWear[p], wearSentAt[p] = nil, nil
 		sentCities[p] = nil
 		sentVision[p] = nil

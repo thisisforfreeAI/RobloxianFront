@@ -23,6 +23,9 @@ local Hud = require(script.UI.Hud)
 local RigCard = require(script.UI.RigCard)
 local AdminPanel = require(script.UI.AdminPanel)
 local Atmosphere = require(script.Rendering.Atmosphere)
+local TerritoryRenderer = require(script.Rendering.TerritoryRenderer)
+local WeatherGround = require(script.Rendering.WeatherGround)
+local FortRenderer = require(script.Rendering.FortRenderer)
 local Rules = require(Shared.Config.Rules)
 local DevFlags = require(script.Dev.DevFlags)
 
@@ -43,6 +46,9 @@ do
 	FogOverlay.start(map.width,map.height,map.terrain)
 	UnitRenderer.start()
 	MapRenderer.build(map)
+	TerritoryRenderer.start(map.width,map.height,map.data.id)
+	WeatherGround.start(map)
+	FortRenderer.start(map.data.id)
 	CameraController.start(map.width, map.height, map.data.starts[info.side] or map.data.starts[1])
 	StructureRenderer.start()
 	CityOverlay.start((map.data :: any).settlements or {})
@@ -95,8 +101,10 @@ do
 		if state.territory then
 			BuildController.setTerritory(state.territory)
 		end
+		if state.territoryView then TerritoryRenderer.apply(state.territoryView) end
 		if state.cities then
 			CityOverlay.apply(state.cities)
+			FortRenderer.apply(state.cities)
 		end
 		if state.cuts then
 			RoadOverlay.applyCuts(state.cuts)

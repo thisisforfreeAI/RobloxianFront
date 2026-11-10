@@ -1374,3 +1374,112 @@ Lighting/infrastructure and fire are separate implementation batches. Preserve t
 building-blocked sight and whole-city garrison reveal when vegetation/building state changes.
 Water integration, full colour calibration and the remaining road/building artwork stay on the
 broader roadmap. No implementation-completion percentage is claimed from the stale Phase-0 matrix.
+
+## Final milestone: cosmetic skins and microtransactions (2026-11-10)
+
+Owner-requested roadmap addition: make cosmetic skins/monetization the LAST milestone, after
+core feature parity, living-world visuals, multiplayer, performance work and release readiness.
+Status: PLANNED ONLY. No purchases, pricing, products or shop UI were implemented by this update.
+
+Planned scope:
+- Cosmetic unit/vehicle skins and paint schemes; retain default appearances for every unit.
+- Skin previews, a cosmetic shop, an owned-skins collection and equip/unequip controls.
+- Persistent ownership/equipment and server-verified purchase/entitlement handling, with recovery
+  for interrupted purchases and rejoining. Select the appropriate Roblox purchase products during
+  implementation after checking the current official documentation.
+- Replicate equipped cosmetics consistently for other players, retaining faction colours,
+  recognisable silhouettes, damage/deploy states and visibility/fog readability.
+- Keep gameplay statistics, combat capabilities and progression independent of paid cosmetics.
+- Set prices, launch selection and purchase flow later; test persistence, purchase handling and
+  texture-memory impact before enabling sales. Skins must fit the shared image budget.
+
+This is a Roblox-specific addition after the faithful gameplay/visual port, not an original-game
+feature being claimed as ported. It does not move ahead of the previously requested milestones.
+
+## World lighting, territory, wet ground and original city forts (2026-11-10)
+
+Owner requests in this batch: closer original lighting/vibrancy, source-style territory, storm
+puddles drying to darker mud, and full-garrison fortifications with gates. All are first visual
+passes, not a claim of exact GPU-shader parity. Existing authoritative build/combat/capture rules
+remain; paid cosmetics remain the final planned milestone.
+
+Lighting: Daylight.sample now includes the original night ground contrast gain and pivot; the
+post-effect adapter composes this after the source palette transform. WorldLight adds source-based
+sun-side colour wash, shade-side falloff and the day/night vignette behind the HUD/weather UI.
+Its existing 192x128 managed image also carries drifting ground cloud shadows, sampled from the
+source three-octave noise/threshold formula with source scale, drift, zoom cutoff and night fade.
+WorldLook is extracted locally by export_world_look.cjs. Phase/camera/cloud-clock stamps throttle
+uploads. APPROX: the source adds light in a ground fragment shader; this uses a blended ScreenGui
+wash affecting the world view, with finite screen resolution/refresh, no source cloud cast offset,
+shafts, dusk-side cooling or separate cloud-body pass. Ground-only contrast is approximated by the
+existing global ColorCorrectionEffect. Exact colour transfer/tonemapping is still unverified.
+Night windows, street lamps, city emissive glow/reflections and full night vision remain pending;
+the supplied night-city screenshot is NOT claimed reproduced exactly by this batch.
+
+TerritoryPixels smooths authoritative owners with the source sigma/radius and computes edge
+distance, inner wash, outside border and dashed rival front using locally exported source look
+settings and nation palettes. MatchService sends a separate territoryView packet: complete own
+claims, currently visible enemy claims, all claims for spectators. Existing territory/build ghost
+packets and server placement checks are preserved. Unseen enemy holdings are not exposed as a new
+information channel. TerritoryRenderer uses one 2 px/cell managed image below fog and units.
+Static building footprints suppress paint. The placeholder blue ownership discs in CityOverlay
+are now hidden, leaving settlement labels and original fortifications. APPROX: cell-raster edge
+gradients, fixed near-view wash, footprint-level built masking and default source nation colours
+replace the original screen-pixel shader/masks and configurable palettes. Claim reveal waves,
+front emissive glow and remembered enemy claims are not yet ported. Territory repaint yields after
+about 3 ms and coalesces pending packets; visual updates may trail authoritative permission changes.
+
+GroundWetness and WeatherGround add a whole-map visual wetness layer for admin Storm/Downpour.
+Source weather-ground colours, darkening, two-frequency puddle noise and drying thresholds come
+from WorldLook. A storm builds wetness over the original front edge duration; clearing the weather
+lets puddles shrink over the source dry period (90 s), leaving mud that fades more slowly.
+APPROX/user adaptation: uniform admin weather instead of moving fronts, both storm/rain saturating
+the map, and residual mud lasting two dry periods (180 s). These are visual states, not new movement
+penalties. Roof footprints/permanent water are excluded; roads can darken but do not receive soil
+puddles. Coarse terrain/urban/road masks approximate the source fine mask. No rain-ring animation,
+exact reflective film or puddle-edge glints yet. The weather image is allocated only while wet/muddy,
+retries after refusal with a cooldown, and is released once dry. Repaints yield within a 3 ms budget.
+
+FortRenderer uses the ORIGINAL gJt settlement outline/gate layout, evaluated locally by
+export_forts.cjs against the port's map/match inputs plus the original .city cells. The output for
+Saddle contains 23 settlement layouts, 1,267 pieces including 67 gates. pack_forts.py packs all
+21 fort-wall/gate/tower/nest/tank/bag frames and their paint masks from buildings-top.png into
+private OrigForts_saddle. Two shared 384x144 images are loaded on demand and released when no
+fortifications are shown. Full garrisons show the original full layout; partial garrisons show the
+source gate sandbags. Ownership change, empty garrisons, unknown/hidden garrison state and ruins
+remove the prior display. Source rise/stagger timings fade pieces in; source zoom cutoff hides
+them at a distance. Gates are placed at the original road crossings, not guessed on a circle.
+Existing garrison combat bonuses stay authoritative; these visual walls do not add collision or
+new visibility blockers. APPROX: simplified shadow offset versus original projected extrusion,
+fade-only rise without source drop/scale animation, and removing unseen forts rather than retaining
+an intel memory. Settlement sprites beyond forts (HQ/factories/etc.) remain placeholders.
+
+Local generation: export_world_look.cjs <install>; lune run tools/conversion/export_fort_input;
+export_forts.cjs <local-main-bundle> docs/private/fort-input_saddle.json <city> <private-layout.json>;
+pack_forts.py <private-layout.json> <buildings-top.png> src/client/DevAssets/OrigForts_saddle.luau.
+WorldLook and fort art/layout data stay git-ignored. Original install was only read. Native image
+cost at maximum simultaneous use is about 3.33 MiB across territory, screen light, wet ground and
+the two fort sheets, all admitted through ImageMemory. No per-fort images are allocated.
+
+Verification actually run: full lune run tests/run **209 passed, 0 failed**; Rojo build succeeded;
+changed Luau compiled; the installed fort-input exporter ran successfully. Seven new tests cover
+fort states/gate bags, wetness/drying, fog-safe owner packets, night contrast parameters, territory
+roof/neutral masking, bounded screen-light pixels and excluded/dry wet-ground pixels. All 21
+original sprite crops were checked for visible pixels. Source gJt itself generated the layouts.
+Local CPU measurements before cooperative scheduling were ~137 ms for a full two-side territory
+raster, 28 ms for initial puddle noise and 21 ms for a weather repaint; these are Lune timings, not
+Studio frame times. Studio appearance, Script Analysis and new B118-B122 remain unrun. Fresh Play
+after Rojo sync is required. Source numerical inputs do not establish an exact visual match.
+
+Roadmap update: first ground cloud shadows, territory presentation, wet-ground visuals and city
+fortification art now exist. Civilian traffic/evacuation, cloud bodies, city/street lighting, power
+lines, building ignition and forest fires remain planned. Water remains separately prepared for
+integration; this batch did not overwrite WaterRenderer or its integration guide.
+
+## Studio confirmation (2026-11-10)
+The owner explicitly reported that the current batch's Studio check passed. B118-B122 are recorded
+as passed (owner reported): lighting, territory, storm drying, city forts and combined image budget.
+This records the owner's runtime verification; no additional automated checks or independent
+Script Analysis were run for this documentation update. Earlier checklist rows retain their status.
+Next feature: night-time city lighting (windows, street lamps and city glow).
+
