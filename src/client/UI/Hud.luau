@@ -327,8 +327,8 @@ function Hud.update(state: { [string]: any }, mySide: number)
 		end
 		if state.nv then
 			nvOn = state.nv[1] == 1
-			table.insert(parts, if state.nv[1] == 1 then "Night vision on [\\ off]"
-				elseif state.nv[3] == 1 then "Night vision switched off [\\ on]"
+			table.insert(parts, if state.nv[1] == 1 then "Night vision on [N off]"
+				elseif state.nv[3] == 1 then "Night vision switched off [N on]"
 				elseif state.nv[2] > 0 then `Night ops tower: new one in {state.nv[2]} s` else "No night vision")
 		end
 		if state.kills then
@@ -397,7 +397,7 @@ function Hud.update(state: { [string]: any }, mySide: number)
 	end
 end
 
--- night vision is on now (the \\ key switches it)
+-- night vision is on now (the N key switches it)
 function Hud.nightVisionOn(): boolean
 	return nvOn
 end

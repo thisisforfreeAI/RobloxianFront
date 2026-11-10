@@ -399,4 +399,15 @@ function SelectionController.start(mySide: number, sendIntent: (any) -> (), opts
 	end)
 end
 
+-- true when any selected unit is a bomb truck (then N detonates instead of switching night vision)
+function SelectionController.demoSelected(): boolean
+	for id in selected do
+		local v = UnitRenderer.each()[id]
+		if v and v.kind == "demo" then
+			return true
+		end
+	end
+	return false
+end
+
 return SelectionController

@@ -49,9 +49,10 @@ do
 	end
 	BuildController.start(map.width, send)
 	DropController.start(send)
-	-- \\ switches your night operations towers on or off (the game's nvOff)
+	-- N switches your night operations towers on or off (the game's nvOff); with bomb trucks
+	-- selected N blows them up instead
 	game:GetService("UserInputService").InputBegan:Connect(function(input, processed)
-		if not processed and input.KeyCode == Enum.KeyCode.BackSlash then
+		if not processed and input.KeyCode == Enum.KeyCode.N and not SelectionController.demoSelected() then
 			send({ kind = "nightOps", on = not Hud.nightVisionOn() })
 		end
 	end)

@@ -452,8 +452,8 @@ at the cursor), 100 damage over 4.5 cells, 40 s reload, nothing closer than 24 c
 game's missile speed. The bot fires it like the rocket launcher. APPROX: alerts and unit labels
 still call it artillery (the HUD's train button uses the republic name).
 
-Night vision switch and opening deck (2026-11-10). Press \ to switch your night operations towers
-off or on (the game's nvOff); the HUD shows which. The opening deck (the game's hqe / sqe / uqe / Pg):
+Night vision switch and opening deck (2026-11-10). Press N to switch your night operations towers
+off or on (the game's nvOff; with bomb trucks selected N still blows them up); the HUD shows which. The opening deck (the game's hqe / sqe / uqe / Pg):
 each match draws the hour the drop arrives from its own seed, day 40 : dawn 18 : dusk 14 : night 8
 (storm and sandstorm need the weather, off in skirmish), and the day clock starts at that hour; the
 drop banner says which. Not ported: the opening scene (a picture only), the operation name and intel
