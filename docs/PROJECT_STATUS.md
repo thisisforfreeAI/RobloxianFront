@@ -1483,3 +1483,107 @@ This records the owner's runtime verification; no additional automated checks or
 Script Analysis were run for this documentation update. Earlier checklist rows retain their status.
 Next feature: night-time city lighting (windows, street lamps and city glow).
 
+## Night-time city lighting (2026-11-10)
+
+NightLightRenderer now starts with the map. It adds warm window lights, highway glow, near-view
+street/highway lamp pools and a dithered city halo, fading with the existing authoritative night
+fraction. The original .city material codes determine eligible window/lamp locations; unrelated
+ground does not receive random windows. Local source settings come from Nn, me, ET and active Y8.
+NightLightPixels uses the source window occupancy hash and staggered real-time flicker intervals.
+Freezing the admin day clock holds the daylight fade but does not freeze window activity. Zoom
+controls the road/pool transition using projected pixels per cell. The source lamp presentation
+is light pools, not a line of bright point dots. Physical lamp posts and traffic lights are still
+future infrastructure work.
+
+pack_night_lights.py samples the original material atlas at the source fine-grid density, traces
+the map roads and creates the urban glow through the source double box blur and Bayer dithering.
+Saddle has 822 candidate window/lamp texels before occupancy selection and 9,954 road/pool texels.
+The four-channel field is private generated data; the original install was read only. The public
+tools contain the conversion logic, not embedded artwork or extracted settings. WorldLook,
+NightLights_saddle and the private input/settings JSON remain covered by existing ignore rules.
+
+APPROX: Roblox world-space HDR alpha compositing replaces the source additive GPU shader. A
+linear inverse of the existing tint/contrast adapter preserves intended emission channel ratios
+numerically; actual engine blending, colour space and tone mapping require a Studio comparison.
+This is not a claim of an exact visual match. The field quantizes lamp strengths and samples capsule
+road geometry rather than the original complete road/junction shader. Road seeds and interpolation,
+CPU hash precision, lower-resolution averaging, and at-most-two-per-second flicker repaints are
+also adapters. Lights sit below forts, units and fog, so illumination does not bypass fog or change
+server vision/detection. There is no new night-vision bonus. The source default has power simulation
+disabled; no ownership-based blackout rule was invented. Power networks/outages, water reflections,
+front emission, and further building/ground night grading are outstanding.
+
+All native images go through ImageMemory. Full resolution uses two 576x720 pages, about 3.16 MiB
+total; a refused allocation releases partial pages and falls back to one 576x360 page, about
+0.79 MiB. Further refusal has a retry cooldown. The reduced resolution is retained for that session
+to avoid repeated full-size probes. Native images release during full daylight and map destruction;
+decoded fields stay cached for the next night. Sparse preparation/painting yields between frames,
+and session epochs prevent a dawn or destroyed-map repaint from uploading to released images.
+
+Local regeneration from the project root:
+
+1. node tools/conversion/export_world_look.cjs "<original install>"
+2. lune run tools/conversion/export_night_input
+3. python tools/asset_pipeline/pack_night_lights.py "<local original saddle.city>" docs/private/night-input_saddle.json docs/private/night-look.json src/client/DevAssets/NightLights_saddle.luau
+
+Verification actually run: full Lune suite **216 passed, 0 failed**; five Python synthetic asset
+tests passed; changed Luau compiled; exporter JavaScript syntax check and Rojo build succeeded.
+The generated fields decoded at their declared dimensions. Tests cover material eligibility,
+occupancy/flicker, near/far road behavior, reduced-resolution coverage, empty/malformed fields,
+cooperative callbacks, compensation across source day phases, urban glow and road/pool placement.
+Local Lune CPU timings were about 16 ms initial inflate, 6 ms sparse preparation and 4.2 ms per
+paint before cooperative yielding (140,307 active texels). These exclude Studio uploads and are
+not frame-time measurements. New B123-B125 and Studio Script Analysis remain unrun. Restart Play
+after Rojo sync for the new renderer.
+
+Next: owner visual comparison of the night lights, then civilian traffic/evacuation. Cloud bodies,
+traffic-light/pole/powerline infrastructure, building ignition/forest fires and separate water
+integration remain on the roadmap; paid skins remain the final milestone. Claude's water files
+and integration guide were preserved.
+
+## Building-integrated window light correction (2026-11-10)
+
+Owner Studio feedback: the first lighting pass was too dim, with visible square patches rather
+than light integrated into the original buildings. The coarse 3 px/cell eligibility sampling was
+the cause: it enlarged a sampled material pixel to a whole lighting texel and missed many small
+window strips between sample centres. That representation has been replaced for close views.
+
+pack_night_lights.py now retains ALL eligible pixels from the original 14 px/cell material art.
+It divides these silhouettes by the original fine-cell occupancy/flicker coordinates and packs
+repeated fragments into one shared atlas. NightWindowRenderer draws those fragments at their
+original pixel coordinates over the buildings. Bright cores follow the window/roof-light shapes;
+transparent soft halos spread out from them. NightWindows shares the source occupancy and
+staggered real-time flicker with the broad layer. Original Nn.city nearFrom/nearTo values are now
+exported, allowing a gradual close-view transition. Coarse windows use actual material coverage
+instead of solid eligible squares and fade out as the detailed windows become available. Broad
+city/road glow now uses smooth resampling. Ground and building base colours are not globally raised.
+
+APPROX / owner-requested rendering calibration: core opacity is 0.96, halo uses a 1.1-art-pixel
+Gaussian with 0.8 strength and three-pixel padding, and detailed SurfaceGui brightness has a 1.4
+gain over the previous compensation. These are port rendering choices, not claimed source values.
+The padded halo atlas uses filtered sampling; the full-resolution cores retain original placement.
+Roblox alpha/HDR blending still differs from the source additive shader and needs visual approval.
+SurfaceGui LightInfluence=0 and AlwaysOnTop=false retain world occlusion while enabling Brightness;
+see https://create.roblox.com/docs/reference/engine/classes/SurfaceGui. No global bloom or physical
+light objects were added. Window geometry stays below forts, troops and the existing fog layer.
+
+Saddle now has 9,361 fine-cell fragments across the original lit material pixels, with 3,674
+selected by the source occupancy hash. Its 1,102 shared shapes fit in ONE 384x420 image, about
+0.62 MiB. At most 768 nearby, onscreen fragments draw, nearest first, with a deterministic tie
+order and a 3 ms creation budget per update. This is a rendering cap, not a gameplay rule. The
+coarse layer remains until selected detailed fragments finish creating. A refused atlas allocation
+keeps the coverage fallback and retries with a cooldown; no native image is allocated per window.
+The atlas releases at full daylight/map destruction. Existing broad-light fallback and private
+asset ignore rules remain; original install, unrelated renderers and Claude's work were preserved.
+Regenerate using the same three commands in the preceding entry.
+
+Verification actually run: full Lune suite **219 passed, 0 failed**; **7 Python asset checks passed**;
+changed Luau compiled; exporter JavaScript syntax and Rojo build passed. New regression checks
+reconstruct a tiny window at its exact original pixel, preserve dark roofs, verify shared atlas
+shapes/bright cores/soft halo/transparency, occupancy and independent clocks, nearest-view cap,
+material coverage and suppression of coarse windows without suppressing city glow. The real
+generated atlas decodes at declared dimensions and fits native image limits. Local Lune CPU
+measurements were about 2.4 ms for initial occupancy selection and 1.6 ms per view selection in a
+sample city view; these exclude Roblox instance creation/drawing and are not Studio frame times.
+Studio recheck B123 and new B126-B127 remain pending; no exact brightness match is claimed.
+

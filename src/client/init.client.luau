@@ -26,6 +26,7 @@ local Atmosphere = require(script.Rendering.Atmosphere)
 local TerritoryRenderer = require(script.Rendering.TerritoryRenderer)
 local WeatherGround = require(script.Rendering.WeatherGround)
 local FortRenderer = require(script.Rendering.FortRenderer)
+local NightLightRenderer = require(script.Rendering.NightLightRenderer)
 local Rules = require(Shared.Config.Rules)
 local DevFlags = require(script.Dev.DevFlags)
 
@@ -45,7 +46,8 @@ do
 	-- then the map, whose town art streams in by camera (TownRenderer).
 	FogOverlay.start(map.width,map.height,map.terrain)
 	UnitRenderer.start()
-	MapRenderer.build(map)
+	local mapFolder=MapRenderer.build(map)
+	NightLightRenderer.start(map,mapFolder)
 	TerritoryRenderer.start(map.width,map.height,map.data.id)
 	WeatherGround.start(map)
 	FortRenderer.start(map.data.id)

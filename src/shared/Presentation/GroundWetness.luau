@@ -29,6 +29,7 @@ function GroundWetness.noise(w:number,h:number,scale:number,config:any):buffer
 	return out
 end
 GroundWetness.valueNoise=noise -- shared source numerical helper for the cloud-grid pass
+GroundWetness.hash21=hash -- same numerical source hash for independently flickering night windows
 function GroundWetness.pixels(field:buffer,eligible:buffer,w:number,h:number,state:any,config:any,checkpoint:(()->())?):buffer
 	local out=buffer.create(w*h*4)
 	local from=config.puddleNone+(config.puddleFrom-config.puddleNone)*state.wet

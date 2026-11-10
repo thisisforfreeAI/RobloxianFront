@@ -4281,6 +4281,7 @@ require("./town_detail")(test, eq)
 require("./road_pixels")(test, eq)
 require("./visibility")(test, eq)
 require("./world_look")(test, eq)
+require("./night_lights")(test, eq)
 
 print(`\n{passed} passed, {failed} failed`)
 if failed > 0 then
