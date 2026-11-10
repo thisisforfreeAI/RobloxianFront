@@ -642,6 +642,57 @@ if fs.isFile(matchPath) then
 		eq(math.abs(sq.men[1].heading + math.pi / 2) < 0.05, true, "faces the aim")
 	end)
 
+	test("squad men: crews, and a mortar puts its tube down", function()
+		local SM = require("../src/client/Rendering/SquadMen")
+		local inp = { x = 5, y = 5, vx = 0, vy = 0, hpFrac = 1, firing = false, aimX = 0, aimY = 0, road = false, contact = false, cover = false,
+			mortar = "setting", phaseSec = 2, sinceShot = 9 }
+		eq(#SM.new(1, "at", inp).men, 2)
+		eq(#SM.new(1, "para", inp).men, 3)
+		local sq = SM.new(3, "mortar", inp)
+		eq(sq.men[2].kind, "bearer")
+		SM.step(sq, inp, 1 / 60)
+		eq(sq.tube ~= nil and sq.tube.pose, "base", "first half of setting up")
+		for _ = 1, 90 do
+			SM.step(sq, inp, 1 / 60)
+		end
+		eq(sq.tube and sq.tube.pose, "set", "second half")
+		inp.mortar, inp.sinceShot = "set", 0.05
+		SM.step(sq, inp, 1 / 60)
+		eq(sq.tube and sq.tube.pose, "kick", "just fired")
+		-- crew at their places by the tube, kneeling
+		for _ = 1, 300 do
+			SM.step(sq, inp, 1 / 60)
+		end
+		local h = sq.heading
+		local bx = 5 + (math.cos(h) * 0.1 - math.sin(h) * 0.72) * SM.MAN_CELLS
+		eq(math.abs(sq.men[2].x - bx) < 0.01, true, "bearer beside the tube")
+		eq(sq.men[1].pose, "kneel")
+		-- moving packs it away
+		inp.vx = 1
+		SM.step(sq, inp, 1 / 60)
+		eq(sq.tube, nil)
+	end)
+
+	test("inflate: raw deflate round trips (stored, fixed and dynamic blocks)", function()
+		local serde = require("@lune/serde")
+		local Inflate = require("../src/shared/Utilities/Inflate")
+		local function check(data: string, label: string)
+			local z = serde.compress("zlib", data)
+			local raw = buffer.fromstring(string.sub(z, 3, #z - 4)) -- drop the zlib header and checksum
+			eq(buffer.tostring(Inflate.raw(raw, #data)), data, label)
+		end
+		check("", "empty")
+		check("hello hello hello hello", "short repeats")
+		local parts = {}
+		local seed = 1
+		for i = 1, 60000 do
+			seed = (seed * 1103515245 + 12345) % 2147483648
+			parts[i] = string.char(if i % 7 < 3 then 65 + seed % 4 else seed % 256)
+		end
+		check(table.concat(parts), "mixed noise and runs")
+		check(string.rep("ab", 40000), "long overlapping copies")
+	end)
+
 	test("rig card: the lines and buttons the panel shows", function()
 		local RC = require("../src/client/UI/RigCard")
 		local prices = { truck = 40, pump = 120, tank = 60, pumpMult = 1.5, tankMult = 2, baseTank = 440 }

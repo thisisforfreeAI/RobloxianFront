@@ -15,6 +15,7 @@ local Terrain = require(Shared.Definitions.Terrain)
 local World = require(Shared.Config.World)
 local Rules = require(Shared.Config.Rules)
 local DevFlags = require(script.Parent.Parent.Dev.DevFlags)
+local TownRenderer = require(script.Parent.TownRenderer)
 
 local MapRenderer = {}
 
@@ -171,10 +172,15 @@ function MapRenderer.build(map: MapCodec.DecodedMap): Folder
 		buildPartGround(map, folder)
 	end
 
-	-- Roads (placeholder look): highway rank 2, road rank 1, tracks thinner and brown.
+	-- The game's own town art, when the local modules are there (TownRenderer).
+	local towns = TownRenderer.build(map.data.id, folder)
+
+	-- Roads: widths from the game's city painter (half widths major 0.7, minor 0.36, track 0.2, plus
+	-- shoulder 0.08 / 0.1 / 0), so they fill the gaps the town art leaves; asphalt #4d5357, road
+	-- #70777a. APPROX: rank 2+ taken as major, rank 1 as minor; tracks keep the placeholder brown.
 	for _, road in map.data.roads do
-		local width = if road.track then 0.35 elseif road.rank >= 2 then 0.9 else 0.6
-		local color = if road.track then Color3.fromRGB(120, 96, 64) else Color3.fromRGB(58, 58, 60)
+		local width = if road.track then 0.4 elseif road.rank >= 2 then 2 * (0.7 + 0.08) else 2 * (0.36 + 0.1)
+		local color = if road.track then Color3.fromRGB(120, 96, 64) elseif road.rank >= 2 then Color3.fromRGB(0x4d, 0x53, 0x57) else Color3.fromRGB(0x70, 0x77, 0x7a)
 		local pts = road.pts
 		for i = 1, #pts - 3, 2 do
 			local a = World.toWorld(pts[i], pts[i + 1], 0.15)
@@ -212,7 +218,7 @@ function MapRenderer.build(map: MapCodec.DecodedMap): Folder
 			Size = Vector3.new(0.15, r * 2 * S, r * 2 * S),
 			CFrame = CFrame.new(World.toWorld(s.x + 0.5, s.y + 0.5, 0.2)) * CFrame.Angles(0, 0, math.rad(90)),
 			Color = Color3.fromRGB(200, 200, 200),
-			Transparency = 0.6,
+			Transparency = if towns then 1 else 0.6, -- the drawn town replaces the placeholder disc
 			Parent = folder,
 		})
 		label(disc, s.name, if s.kind == "capital" then 16 else 12)

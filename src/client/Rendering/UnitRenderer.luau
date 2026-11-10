@@ -58,6 +58,10 @@ export type View = {
 	aimX: number,
 	aimY: number,
 	inTrench: boolean,
+	status: number,
+	sinceShot: number,
+	tube: ManSprite?,
+	empty: boolean,
 }
 
 local views: { [number]: View } = {}
@@ -202,6 +206,13 @@ local function create(id: number, kind: string, side: number): View
 			table.insert(men, manQuad(model, fig, color))
 		end
 	end
+	local tube: ManSprite? = nil
+	if #men > 0 and kind == "mortar" then
+		local fig = SpriteBank.figure("tube")
+		if fig then
+			tube = manQuad(model, fig, color)
+		end
+	end
 	local look = if #men > 0 then nil else SpriteBank.look(kind)
 	local sprites: { Sprite } = {}
 	if #men > 0 then
@@ -221,7 +232,7 @@ local function create(id: number, kind: string, side: number): View
 		id = id, kind = kind, side = side, model = model, body = body, ring = ring, bar = bar, barGui = barGui, status = status,
 		from = Vector3.zero, to = Vector3.zero, fromYaw = 0, toYaw = 0, t = 1, seen = 0,
 		look = look, sprites = sprites, facing = -1,
-		squad = nil, men = men, hpFrac = 1, flags = 0, aimX = 0, aimY = 0, inTrench = false,
+		squad = nil, men = men, hpFrac = 1, flags = 0, aimX = 0, aimY = 0, inTrench = false, status = 0, sinceShot = 9, tube = tube, empty = false,
 	}
 end
 
@@ -251,12 +262,32 @@ local function place(v: View, pos: Vector3, yaw: number)
 	end
 end
 
+local mortarSec = { setting = 1, packing = 1 } -- set by UnitRenderer.configure from the rules
+
+local function setFigure(ms: ManSprite, pose: string, heading: number, x: number, y: number, height: number)
+	local h = heading % (2 * math.pi)
+	local d = Facing.index(h, 16)
+	pose = if ms.fig.poses[pose] then pose elseif ms.fig.poses.stand then "stand" else next(ms.fig.poses) :: string
+	if d ~= ms.facing or pose ~= ms.pose then
+		ms.facing, ms.pose = d, pose
+		local p = ms.fig.poses[pose]
+		ms.colour.ImageRectOffset = SpriteBank.offset(ms.fig, p.colour, d)
+		ms.paint.ImageRectOffset = SpriteBank.offset(ms.fig, p.paint, d)
+	end
+	ms.quad.CFrame = CFrame.new(World.toWorld(x, y, height)) * CFrame.Angles(0, -(Facing.residual(h, d, 16) + GUI_YAW), 0)
+end
+
 local function placeMen(v: View, pos: Vector3, dt: number)
 	local vel = (v.to - v.from) / (SNAPSHOT_SEC * S)
+	local phase: string? = nil
+	if v.kind == "mortar" then
+		phase = if v.status == 3 then "setting" elseif v.status == 2 then "packing" else "set"
+	end
 	local inp: SquadMen.Input = {
 		x = pos.X / S, y = pos.Z / S, vx = vel.X, vy = vel.Z,
 		hpFrac = v.hpFrac, firing = bit32.btest(v.flags, 1), aimX = v.aimX, aimY = v.aimY,
 		road = bit32.btest(v.flags, 2), contact = bit32.btest(v.flags, 4), cover = v.inTrench,
+		mortar = phase, phaseSec = if phase then mortarSec[phase] else nil, sinceShot = v.sinceShot + v.t * SNAPSHOT_SEC,
 	}
 	local sq = v.squad
 	if not sq then
@@ -273,18 +304,20 @@ local function placeMen(v: View, pos: Vector3, dt: number)
 		if not m.up then
 			continue
 		end
-		local h = m.heading % (2 * math.pi)
-		local d = Facing.index(h, 16)
-		local pose = if ms.fig.poses[m.pose] then m.pose else "stand"
-		if d ~= ms.facing or pose ~= ms.pose then
-			ms.facing, ms.pose = d, pose
-			local p = ms.fig.poses[pose]
-			ms.colour.ImageRectOffset = SpriteBank.offset(ms.fig, p.colour, d)
-			ms.paint.ImageRectOffset = SpriteBank.offset(ms.fig, p.paint, d)
-		end
-		ms.quad.CFrame = CFrame.new(World.toWorld(m.x, m.y, pos.Y - World.GROUND_Y + SPRITE_Y))
-			* CFrame.Angles(0, -(Facing.residual(h, d, 16) + GUI_YAW), 0)
+		setFigure(ms, m.pose, m.heading, m.x, m.y, pos.Y - World.GROUND_Y + SPRITE_Y)
 	end
+	local tube, at = v.tube, (sq :: SquadMen.Squad).tube
+	if tube then
+		tube.gui.Enabled = at ~= nil
+		if at then
+			setFigure(tube, at.pose, at.heading, at.x, at.y, pos.Y - World.GROUND_Y + SPRITE_Y - 0.02)
+		end
+	end
+end
+
+-- seconds a mortar takes to set up and to pack (rules mortar.setupSec, mortar.packSec)
+function UnitRenderer.configure(cfg: { mortarSetupSec: number, mortarPackSec: number })
+	mortarSec.setting, mortarSec.packing = cfg.mortarSetupSec, cfg.mortarPackSec
 end
 
 local function lerpAngle(a: number, b: number, t: number): number
@@ -345,6 +378,15 @@ function UnitRenderer.apply(tick: number, units: { any })
 		end
 		v.status.Text = table.concat(bits, " ")
 		v.hpFrac, v.flags, v.aimX, v.aimY, v.inTrench = frac, u[12] or 0, u[13] or 0, u[14] or 0, u[9] == 13
+		v.status, v.sinceShot = u[9] or 0, u[15] or 9
+		-- an oil truck driving out or carrying nothing shows its empty look (the game's truck_empty)
+		local empty = bit32.btest(v.flags, 8)
+		if empty ~= v.empty and v.look and v.look.empty and v.sprites[1] then
+			v.empty = empty
+			local layer = if empty then v.look.empty else v.look.body
+			v.sprites[1].y0c, v.sprites[1].y0p = layer.colour, layer.paint
+			v.facing = -1
+		end
 		v.bar.Size = UDim2.fromScale(frac, 1)
 		v.bar.BackgroundColor3 = if frac > 0.5 then Color3.fromRGB(110, 220, 90) elseif frac > 0.25 then Color3.fromRGB(240, 200, 60) else Color3.fromRGB(230, 70, 60)
 	end

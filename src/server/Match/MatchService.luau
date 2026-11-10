@@ -486,9 +486,10 @@ local function unitStatus(e: any): number
 	return 0
 end
 
--- what the client needs to draw a squad's men (the game's squad drawer): 1 firing, 2 on a road, 4 in
--- contact (firing, or hit within movement.contactSec); then the aim point (0, 0 when not firing)
-local function unitLook(e: any): (number, number, number)
+-- what the client needs to draw a unit (the game's squad drawer and truck look): 1 firing, 2 on a road,
+-- 4 in contact (firing, or hit within movement.contactSec), 8 an empty truck (driving out, or no load); then the aim point (0, 0 when not firing) and
+-- the seconds since its last shot (capped at 9)
+local function unitLook(e: any): (number, number, number, number)
 	local flags = 0
 	if e.firing then
 		flags += 1
@@ -500,10 +501,14 @@ local function unitLook(e: any): (number, number, number)
 	if e.firing or (e.hitAt ~= nil and sim.time - e.hitAt < rules:number("movement.contactSec")) then
 		flags += 4
 	end
-	if e.firing and e.aimX then
-		return flags, e.aimX, e.aimY
+	if e.kind == "truck" and (e.state == "out" or (e.payload or 0) <= 0) then
+		flags += 8
 	end
-	return flags, 0, 0
+	local since = if e.firedAt then math.min(9, sim.time - e.firedAt) else 9
+	if e.firing and e.aimX then
+		return flags, e.aimX, e.aimY, since
+	end
+	return flags, 0, 0, since
 end
 
 local function viewFor(side: number): ({ any }, { any }, { number }?)
@@ -520,8 +525,8 @@ local function viewFor(side: number): ({ any }, { any }, { number }?)
 	for _, e in sim.list do
 		if e.cat == "unit" then
 			if not viewer or viewer.unitVisible(e) then
-				local flags, aimX, aimY = unitLook(e)
-				table.insert(units, { e.id, e.kind, e.side, e.x, e.y, e.heading, e.hp, e.maxHp, unitStatus(e), e.rank or 0, if e.cargo then #e.cargo else 0, flags, aimX, aimY })
+				local flags, aimX, aimY, since = unitLook(e)
+				table.insert(units, { e.id, e.kind, e.side, e.x, e.y, e.heading, e.hp, e.maxHp, unitStatus(e), e.rank or 0, if e.cargo then #e.cargo else 0, flags, aimX, aimY, since })
 			end
 		elseif e.kind == "rig" then
 			local seen = not viewer or e.side == side or viewer.visibleAt(e.x, e.y)

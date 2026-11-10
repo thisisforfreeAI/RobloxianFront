@@ -12,7 +12,7 @@
 	its turret rows the same way on top. Frame for heading h: Facing.index(h, 16); the rest of the angle
 	turns the quad. Drawn width in cells = cells * 1.3 / art.w: cells and art.w from the game's unit
 	table (fa.units), 1.3 its unit scale (za.scale), which every unit size is multiplied by.
-	Men (men-top.png, 48 px frames): SpriteBank.figure("rifle" | "leader") gives each pose's colour and
+	Men (men-top.png, 48 px frames): SpriteBank.figure("rifle", "leader", "gunner", ... "tube") gives each pose's colour and
 	paint strips; SquadMen places them.
 	Not drawn yet: the shape row (the game uses it for the dark rim and shadow), wrecks.
 ]]
@@ -32,15 +32,19 @@ export type Look = {
 	cells: number, -- drawn width of one frame, in map cells
 	body: Layer,
 	turret: Layer?,
+	empty: Layer?, -- trucks: the look while driving out or carrying nothing
 }
 
 -- kind -> module, strips, game cells and art.w (fa.units in the bundle)
 local UNIT_SCALE = 1.3 -- za.scale
-local FIGURES = { rifle = "OrigMenRifle", leader = "OrigMenLeader" }
+local FIGURES = {
+	rifle = "OrigMenRifle", leader = "OrigMenLeader", para = "OrigMenPara", gunner = "OrigMenGunner",
+	loader = "OrigMenLoader", mortarman = "OrigMenMortarman", bearer = "OrigMenBearer", tube = "OrigMenTube",
+}
 
-local KINDS: { [string]: { module: string, body: string, turret: string?, cells: number, artW: number } } = {
+local KINDS: { [string]: { module: string, body: string, turret: string?, empty: string?, cells: number, artW: number } } = {
 	tank = { module = "OrigTank", body = "hull", turret = "turret", cells = 1, artW = 0.492 },
-	truck = { module = "OrigTruck", body = "full", cells = 0.8, artW = 0.4 },
+	truck = { module = "OrigTruck", body = "full", empty = "empty", cells = 0.8, artW = 0.4 },
 	scout = { module = "OrigScout", body = "body", cells = 0.62, artW = 0.317 },
 	artillery = { module = "OrigArtillery", body = "body", cells = 1.4, artW = 0.683 },
 	infantry = { module = "OrigInfantry", body = "body", cells = 0.78, artW = 0.5 },
@@ -108,6 +112,7 @@ function SpriteBank.look(kind: string): Look?
 		cells = k.cells * UNIT_SCALE / k.artW,
 		body = body,
 		turret = if k.turret then layer(k.turret) else nil,
+		empty = if k.empty then layer(k.empty) else nil,
 	}
 	looks[kind] = look
 	return look

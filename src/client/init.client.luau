@@ -68,6 +68,7 @@ do
 		build = BuildController.begin,
 	})
 	local rigRules = Rules.new(require(Shared:WaitForChild("GameData").RulesMatch) :: any)
+	UnitRenderer.configure({ mortarSetupSec = rigRules:number("mortar.setupSec"), mortarPackSec = rigRules:number("mortar.packSec") })
 	local rigCard = RigCard.start(send, {
 		truck = rigRules:number("trucks.kinds.light.cost"), pump = rigRules:number("rigs.upgrades.pump.cost"),
 		tank = rigRules:number("rigs.upgrades.tank.cost"), pumpMult = rigRules:number("rigs.upgrades.pump.mult"),

@@ -682,7 +682,7 @@ Bot: bridges (2026-11-10), traced from the game's _h / v7e / kUe / nat / Yst / X
 - Stopping a unit now also ends a sabotage job.
 
 ## Next
-1. You run Studio tests B18–B79 (defences, mortar, artillery, scout) and commit.
+1. You run Studio tests B18–B82 (defences, mortar, artillery, scout) and commit.
 2. Done since: engineers' repair, vehicle steering, the bot's HQ push, shared group routes,
    separation, the 100/250/500-unit performance check (`lune run tools/perf.luau 250`) and the
    convoy rules (spacing, town/bridge/off-road pace, held and stranded trucks), airfield drops and
@@ -721,9 +721,36 @@ turreted unit has 3 more rows for the turret; men sheet: 48 px, same 3 rows a po
   catch-up limits, the walk frame changing every 0.17 cells walked; kneel when firing or in a trench.
   Losing health drops riflemen first (ceil(hp share x 3) stand). The server now sends each unit's
   firing, road and contact flags and its aim point for this.
+- Crews drawn man by man too: AT (gunner and loader), mortar (mortarman and bearer), paratroopers
+  (three; their figures have no paint layer in the sheet). A mortar that is setting up, set or packing
+  puts its tube down with the crew kneeling beside it, the tube kicking on each shot and the bearer
+  turning away for 0.7 s (the game's e7t). The server sends seconds since the last shot for this.
+- Oil trucks show their empty look while driving out or carrying nothing (the game's truck_empty).
 - Not yet: the turret turns with the hull (no turret angle in the snapshot), no dark rim or shadow
-  (the shape row), trucks always look full, wrecks, bodies left behind, flinching from blasts, the AT,
-  mortar and para crews (they keep the icon or block), buildings.
+  (the shape row), wrecks, bodies left behind, flinching from blasts, the mortar bearer's loading
+  pose, buildings.
+
+## Towns, forests and ground like the game (2026-11-10)
+- The game ships every designed map's towns pre-drawn: dist/cities/<id>.city ("WFCT", a JSON header,
+  raw DEFLATE parts: a sheet of 14 px tiles (alpha = surface code: 150 green, 200 street, 201 lamp,
+  224+ roofs), an index of which tile each map cell uses, height/light data for the roof shading, and
+  the trees inside towns). Saddle: 11,008 town tiles on 384 x 240 cells.
+- `tools/asset_pipeline/pack_city.py <file.city>` lays the tiles out into 64 x 64-cell chunks (896 px)
+  and writes them, raw DEFLATE + base64, to local modules src/client/DevAssets/City_<id>*.luau
+  (git-ignored). `Shared.Utilities.Inflate` decodes raw DEFLATE in Luau (tested against zlib; a
+  chunk inflates in about 0.04 s). `TownRenderer` puts each chunk on a flat part between the ground
+  and the roads; the placeholder town discs go clear when the art is drawn.
+- Roads now use the city painter's widths and colours (major 1.56 cells asphalt #4d5357, minor 0.92
+  cells #70777a; APPROX: rank 2+ = major) so they fill the gaps the town art leaves for them.
+- Trees: `tools/conversion/export_trees.cjs` runs the game's own tree placement (loaded from the
+  local install, nothing copied) for a map: forests (denser and bigger deep inside), scattered trees
+  on plains and hills, a bushy fringe round forests, and the town yard trees. Saddle: 13,110 trees,
+  12,445 kept after the game's load-time clearing (town, urban and road cells). pack_city.py draws
+  them into the same chunks from trees-top.png at the forest layer's scale (0.013 cells a px), each
+  with its 30% shadow shifted (0.12, 0.16) x its width, in the game's draw order. Saddle is now 24
+  chunks, 4.7 MB. Not baked: the sun-angle shadow shift, day/night tint, swaying, burning, felling.
+- Next: roof shading from the height data, then the ground texture (grass clumps, dirt, stones,
+  riverbanks) from the game's map worker.
 
 ## Open questions
 1. Rights scope: answered for the art (see Original art above). Still open: audio and voice, and

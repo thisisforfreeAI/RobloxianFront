@@ -17,13 +17,28 @@
 	    velocity; firing = kneel facing the aim point; else kneel in cover, stand otherwise, a loose squad
 	    turning each man by a hashed amount (idleTurn 0.45 rad); headings ease at rate 10/s.
 	  * a man is drawn Ml.cells * scale = 0.42 * 1.3 cells, his frame that / art.w (0.333) wide.
+	  * crews: AT = gunner and loader, mortar = mortarman and bearer, para = three paratroopers (two-man
+	    crews use the two-man slots). A mortar that is setting up, set or packing puts its tube down
+	    (e7t): tube 0.15 man-sizes ahead of the squad point, the mortarman at (-0.3, -0.62) kneeling, the
+	    bearer at (0.1, 0.72) kneeling, turning away (duckTurn 2.3 rad) for 0.7 s after each shot; the
+	    tube shows "base" for the first half of setting up and the last half of packing, "kick" for
+	    0.16 s after a shot, "set" otherwise.
+	APPROX: the half-way point of setting up / packing is guessed from the client's own clock against
+	mortarSetupSec; the bearer's loading pose (needs the shot timer) is not shown.
 	APPROX: "speed" is the fastest the squad has been seen moving (the client has no unit table here);
 	prone shifts, flinching from blasts, bodies left behind and the AT / mortar crews are not done yet.
 ]]
 
 local SquadMen = {}
 
-SquadMen.ROSTER = { infantry = { "leader", "rifle", "rifle" } }
+SquadMen.ROSTER = {
+	infantry = { "leader", "rifle", "rifle" },
+	para = { "para", "para", "para" },
+	at = { "gunner", "loader" },
+	mortar = { "mortarman", "bearer" },
+}
+-- the mortar crew around its tube (the game's e7t), in man-sizes
+local TUBE = { tube = { 0.15, 0 }, gunner = { -0.3, -0.62 }, bearer = { 0.1, 0.72 }, baseShare = 0.5, duckSec = 0.7, duckTurn = 2.3, kickSec = 0.16 }
 SquadMen.MAN_CELLS = 0.42 * 1.3
 SquadMen.FRAME_CELLS = 0.42 * 1.3 / 0.333
 
@@ -67,12 +82,15 @@ local function wrap(a: number): number
 end
 
 export type Man = { kind: string, x: number, y: number, vx: number, vy: number, heading: number, walked: number, up: boolean, pose: string }
-export type Squad = { id: number, heading: number, men: { Man }, fresh: boolean, topSpeed: number }
+export type Tube = { x: number, y: number, heading: number, pose: string }
+export type Squad = { id: number, heading: number, men: { Man }, fresh: boolean, topSpeed: number, tube: Tube?, phase: string, phaseAt: number, clock: number }
 -- what the renderer knows this frame (cells, cells/s)
 export type Input = {
 	x: number, y: number, vx: number, vy: number,
 	hpFrac: number, firing: boolean, aimX: number, aimY: number,
 	road: boolean, contact: boolean, cover: boolean,
+	-- mortars only: "travel" | "setting" | "packing" | "set", seconds a phase takes, seconds since the last shot
+	mortar: string?, phaseSec: number?, sinceShot: number?,
 }
 
 function SquadMen.new(id: number, kind: string, inp: Input): Squad
@@ -85,7 +103,7 @@ function SquadMen.new(id: number, kind: string, inp: Input): Squad
 	for i, k in roster do
 		table.insert(men, { kind = k, x = inp.x, y = inp.y, vx = 0, vy = 0, heading = heading, walked = SquadMen.hash(id, 10 + i - 1) * STRIDE * 4, up = true, pose = "stand" })
 	end
-	return { id = id, heading = heading, men = men, fresh = true, topSpeed = 0 }
+	return { id = id, heading = heading, men = men, fresh = true, topSpeed = 0, tube = nil, phase = "travel", phaseAt = 0, clock = 0 }
 end
 
 function SquadMen.step(sq: Squad, inp: Input, dt: number)
@@ -143,6 +161,20 @@ function SquadMen.step(sq: Squad, inp: Input, dt: number)
 
 	local fresh = sq.fresh
 	sq.fresh = false
+	sq.clock += dt
+	-- mortar tube pose (nil when it travels)
+	local phase = if moving then "travel" else (inp.mortar or "travel")
+	if phase ~= sq.phase then
+		sq.phase, sq.phaseAt = phase, sq.clock
+	end
+	local tubePose: string? = nil
+	local since = inp.sinceShot or math.huge
+	if phase ~= "travel" then
+		local progress = math.clamp((sq.clock - sq.phaseAt) / math.max(0.001, inp.phaseSec or 1), 0, 1)
+		local base = if phase == "setting" then progress < TUBE.baseShare elseif phase == "packing" then progress > 1 - TUBE.baseShare else false
+		tubePose = if base then "base" elseif since >= 0 and since < TUBE.kickSec then "kick" else "set"
+	end
+	local duck = tubePose ~= nil and tubePose ~= "base" and since >= 0 and since < TUBE.duckSec
 	local face = if moving then math.atan2(inp.vy, inp.vx) elseif firing then math.atan2(inp.aimY - inp.y, inp.aimX - inp.x) else nil
 	if face then
 		sq.heading = wrap(sq.heading + wrap(face - sq.heading) * (if fresh then 1 else 1 - math.exp(-4 * dt)))
@@ -173,6 +205,10 @@ function SquadMen.step(sq: Squad, inp: Input, dt: number)
 			ky += (SquadMen.hash(sq.id, 30 + pe - 1) - 0.5) * 2 * LOOSE_JITTER
 		end
 		local tx, ty = inp.x + (T * kx - I * ky) * spacing, inp.y + (I * kx + T * ky) * spacing
+		if tubePose then
+			local at = if m.kind == "bearer" then TUBE.bearer else TUBE.gunner
+			tx, ty = inp.x + (T * at[1] - I * at[2]) * SquadMen.MAN_CELLS, inp.y + (I * at[1] + T * at[2]) * SquadMen.MAN_CELLS
+		end
 		local dx, dy = tx - m.x, ty - m.y
 		if fresh or dx * dx + dy * dy > SNAP * SNAP then
 			m.x, m.y, m.vx, m.vy = tx, ty, inp.vx, inp.vy
@@ -192,6 +228,9 @@ function SquadMen.step(sq: Squad, inp: Input, dt: number)
 		if math.sqrt(m.vx * m.vx + m.vy * m.vy) > WALK_MIN then
 			m.pose = WALK[math.floor(m.walked / STRIDE) % 4 + 1]
 			target = math.atan2(m.vy, m.vx)
+		elseif tubePose then
+			m.pose = "kneel"
+			target = sq.heading + (if m.kind == "bearer" and duck then TUBE.duckTurn else 0)
 		elseif firing then
 			m.pose = "kneel"
 			target = math.atan2(inp.aimY - m.y, inp.aimX - m.x)
@@ -204,6 +243,12 @@ function SquadMen.step(sq: Squad, inp: Input, dt: number)
 		if target then
 			m.heading = wrap(m.heading + wrap(target - m.heading) * (if fresh then 1 else turn))
 		end
+	end
+	if tubePose then
+		local k = TUBE.tube[1] * SquadMen.MAN_CELLS
+		sq.tube = { x = inp.x + T * k, y = inp.y + I * k, heading = sq.heading, pose = tubePose }
+	else
+		sq.tube = nil
 	end
 end
 
