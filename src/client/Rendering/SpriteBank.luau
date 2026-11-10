@@ -54,6 +54,8 @@ local FIGURES = {
 	rifle = "OrigMenRifle", leader = "OrigMenLeader", para = "OrigMenPara", gunner = "OrigMenGunner",
 	loader = "OrigMenLoader", mortarman = "OrigMenMortarman", bearer = "OrigMenBearer", tube = "OrigMenTube",
 }
+-- figures only seen now and then (the engineer truck's workers, crews bailing out): loaded when first wanted
+local LATE_FIGURES = { crew = "OrigMenCrew", engineer = "OrigMenEngineer", sapper = "OrigMenSapper" }
 
 -- tall: za.shadow.tall (rest 0.3 for kinds it does not list)
 local KINDS: { [string]: { module: string, body: string, turret: string?, empty: string?, cells: number, artW: number, artH: number, tall: number, wreck: string?, wreckTurret: string?, soot: string?, pivot: { number }?, radarTurns: number?, states: { string }? } } = {
@@ -162,7 +164,7 @@ function SpriteBank.figure(name: string): Figure?
 		return cached or nil
 	end
 	figures[name] = false
-	local mod = FIGURES[name]
+	local mod = FIGURES[name] or LATE_FIGURES[name]
 	local p = mod and page(mod)
 	if not p then
 		return nil

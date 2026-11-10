@@ -4238,6 +4238,8 @@ test("atlas check catches a wrong rectangle", function()
 	assert(not res.ok, "swapped frames should fail")
 end)
 
+require("./death_effects")(test, eq)
+
 print(`\n{passed} passed, {failed} failed`)
 if failed > 0 then
 	error("tests failed")

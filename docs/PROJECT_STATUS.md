@@ -1,6 +1,6 @@
 # PROJECT_STATUS: WarFront Roblox port
 
-Last updated: 2026-11-09
+Last updated: 2026-11-10
 
 ## Locations
 - Original game (read-only): `A:\SteamLibrary\steamapps\common\WarFront Demo`
@@ -682,7 +682,7 @@ Bot: bridges (2026-11-10), traced from the game's _h / v7e / kUe / nat / Yst / X
 - Stopping a unit now also ends a sabotage job.
 
 ## Next
-1. You run Studio tests B18–B89 (defences, mortar, artillery, scout) and commit.
+1. You run Studio tests B18–B90 (defences, mortar, artillery, scout) and commit.
 2. Done since: engineers' repair, vehicle steering, the bot's HQ push, shared group routes,
    separation, the 100/250/500-unit performance check (`lune run tools/perf.luau 250`) and the
    convoy rules (spacing, town/bridge/off-road pace, held and stranded trucks), airfield drops and
@@ -854,10 +854,69 @@ time a vehicle drops under 60%, so healthy units never load wreck art. Re-pack t
 docs/private/sprite_spec_fx.json; with the old modules vehicles simply stay clean.
 
 Crews running from wrecks: the game's crew count table is empty, so only "hands" bolt from a wreck, and
-hands are the engineer truck's two dismounted workers. Those workers are not drawn yet, so nothing bolts
-here yet; it comes with the engineer's workers.
+hands are the engineer truck's two dismounted workers. Now done: UnitRenderer puts out the engineer
+and sapper (the game's wMe.work: Ai.workers door, spots, paces) once the truck has stood at a repair,
+sabotage or trench job for 0.6 s; the server sends the job's position in the unit row's aim slots when
+the unit is not firing (MatchService jobAt, the game's ugt). When the truck dies they bolt (bolt /
+drawCrews: Ai.crew). Figures: tools/asset_pipeline/cut_men.py, modules OrigMenCrew/Engineer/Sapper.
 
 ## Open questions
 1. Rights scope: answered for the art (see Original art above). Still open: audio and voice, and
    public redistribution of extracted data (kept out of the public repo meanwhile).
 2. Git is run by you (`docs/GIT_SETUP.md`), since this connection can't grant narrower delete rights.
+
+## Vehicle death variants and particles (2026-11-10)
+
+Implemented the generic land-vehicle death variants in Shared.Presentation.DeathEffects and
+client Rendering.DeathRenderer, traced from the installed main bundle's variant selector and its
+separate effects bundle (death, longDeath, wreckBlast, cookOff/cookPop/cookEnd, brewUp, quietKill,
+wreckBurn, turretToss/turretThud, puff, sparks and embers). In this install the old Kv table is named
+zv. Tanks, IFVs, artillery, rocket launchers, scouts, engineers and HQ trucks now have particles.
+
+- Blast: layered fireball/flash, ring, sparks and flying debris, then an 8-second wreck burn and
+  4-second smoke tail. Cook-off: a smaller initial hit, accelerating ammunition pops with occasional
+  flying rounds, a final blast after its randomized delay, and continued wreck fire.
+- Brew-up: a short rising flame jet with sparks and high smoke, with wreck fire starting before the
+  jet ends. Quiet: dust and sparks without a blast, thinning smoke, and a chance of delayed small fire.
+- IFVs and launchers use their own source weight tables (the prior wreck-only choice treated both
+  as light). One selection and trajectory now drive both the wreck and the effects. The existing
+  turret toss gains pillar flames, a smoke trail and a landing dust ring. At most 8 simultaneous
+  cook/brew sequences; extra ones fall back to blast, as in the source.
+- Effects still play when unit/wreck sprite modules are absent. Missing effect data or a refused
+  EditableImage prints one warning and retains the earlier wreck-only fallback. No vehicle art is
+  preloaded. The particle atlas loads on the first visible supported death: one 96x96 image (36 KiB
+  raw). Quads are reused, created only for visible, on-screen particles, up to the particle cap;
+  simulation, timers and expiry continue while particles are hidden. Both spawn/current particle
+  positions are tested against fog. The existing stale-snapshot rejection prevents duplicate effects.
+
+Local generation (already run for this batch):
+
+~~~powershell
+node tools/conversion/export_death_fx.cjs "A:\SteamLibrary\steamapps\common\WarFront Demo"
+~~~
+
+The exporter requires @napi-rs/canvas to be available to Node (NODE_PATH may point at its containing
+node_modules directory). It reads app.asar directly without extracting into or changing the install,
+follows the effects bundle's imports to the literal configuration, and runs the game's own procedural
+atlas painter in a sandbox using a local Canvas. It fails on unexpected bundle structure. Outputs:
+src/shared/GameData/DeathFx.luau and src/client/DevAssets/OrigDeathFx.luau, both covered by existing
+git-ignore rules. No original source, generated tables or pixels are added to tracked files.
+This exporter is a separate step; generate_all.py does not invoke it.
+
+APPROX / still pending: Roblox flat quads and continuous transparency replace the additive light,
+screen-space dither/erosion and exact particle stepping. Physics uses bounded 0.05-second slices;
+the fireball pop curve is approximate. The Roblox cap is 512 particles rather than the game's 4000.
+Dust/debris are terrain-neutral; terrain-specific thrown clods, fragment smoke trails, scorch/crater
+painting, dynamic lighting and camera shake are not ported. Turret landing lacks its extra chunks
+and its special water splash. These are visual differences; the effects do not add gameplay damage.
+Oil convoy losses and demolition trucks use separate routines in the source, so they retain their
+existing wreck behavior here instead of receiving generic light-vehicle effects. Port those separately.
+
+Verification actually run on Windows for this batch:
+- lune run tests/run: **160 passed, 0 failed** (151 existing + 9 new checks).
+- Rojo 7.4.4 build succeeded; output was written to this chat's staging folder.
+- @lune/luau compiled DeathEffects, DeathRenderer, UnitRenderer and the new test module (syntax only).
+- The local exporter generated the configuration/atlas; an added test decoded and checked the atlas.
+- Confirmed the existing localhost:34872 server reports project RobloxianFront, version 7.4.4.
+- Studio play, Script Analysis, visual parity and renderer performance have **not** been tested here.
+  Existing B78-B90 remain unrun; new Studio checks B91-B94 are also unrun.

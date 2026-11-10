@@ -542,8 +542,40 @@ local function unitStatus(e: any): number
 	return 0
 end
 
+-- where an engineer's job is (the game's ugt), which its workers walk out toward and face: the sabotaged
+-- road cell, the road cut, the structure under repair, or the trench cell being dug or worked
+local function jobAt(e: any): (number?, number?)
+	local W = sim.roads.width
+	if e.sabotageCell then
+		return e.sabotageCell % W + 0.5, e.sabotageCell // W + 0.5
+	end
+	local rj = e.roadJob
+	if rj and rj.kind == "cut" then
+		local cut = sim.roadCuts[rj.id]
+		if cut then
+			return cut.x, cut.y
+		end
+	end
+	if e.repairId then
+		local st = sim.entities[e.repairId]
+		if st then
+			return st.x, st.y
+		end
+	end
+	local tj = e.trenchJob
+	local t = tj and sim.trenches[tj.id]
+	if t and #t.cells > 0 then
+		local c = t.cells[math.min(#t.cells, if tj.kind == "dig" then t.dug + 1 else tj.from or 1)]
+		if c then
+			return c % W + 0.5, c // W + 0.5
+		end
+	end
+	return nil, nil
+end
+
 -- what the client needs to draw a unit (the game's squad drawer and truck look): 1 firing, 2 on a road,
--- 4 in contact (firing, or hit within movement.contactSec), 8 an empty truck (driving out, or no load); then the aim point (0, 0 when not firing) and
+-- 4 in contact (firing, or hit within movement.contactSec), 8 an empty truck (driving out, or no load); then the aim point (when
+-- not firing: an engineer's job, else 0, 0) and
 -- the seconds since its last shot (capped at 9)
 local function unitLook(e: any): (number, number, number, number)
 	local flags = 0
@@ -563,6 +595,10 @@ local function unitLook(e: any): (number, number, number, number)
 	local since = if e.firedAt then math.min(9, sim.time - e.firedAt) else 9
 	if e.firing and e.aimX then
 		return flags, e.aimX, e.aimY, since
+	end
+	local jx, jy = jobAt(e)
+	if jx then
+		return flags, jx, jy, since -- not firing: the job the engineer's workers face
 	end
 	return flags, 0, 0, since
 end

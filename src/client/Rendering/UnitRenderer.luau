@@ -29,6 +29,7 @@ local SpriteBank = require(script.Parent.SpriteBank)
 local FogOverlay = require(script.Parent.FogOverlay)
 local Hash = require(Shared.Utilities.Hash)
 local SquadMen = require(script.Parent.SquadMen)
+local DeathRenderer = require(script.Parent.DeathRenderer)
 
 local UnitRenderer = {}
 
@@ -86,7 +87,12 @@ export type View = {
 	stage: number,
 	mast: number, -- the scout's mast, 0 down to 1 up, eased here as the game does
 	sooted: boolean, -- soot labels made (or tried: no art)
+	atWork: number, -- seconds an engineer has stood at its job
+	hands: { Hand }?, -- its workers, out of the truck
 }
+
+-- a worker out of an engineer truck, or a man running from a wreck (the game's hands and crews)
+export type Hand = { kind: string, x: number, y: number, heading: number, walked: number, tx: number, ty: number, at: number, there: boolean, ms: ManSprite }
 
 local views: { [number]: View } = {}
 local folder: Folder
@@ -366,7 +372,7 @@ local function create(id: number, kind: string, side: number): View
 		look = look, sprites = sprites, facing = -1,
 		squad = nil, men = men, hpFrac = 1, flags = 0, aimX = 0, aimY = 0, inTrench = false, statusCode = 0, sinceShot = 9, tube = tube, empty = false,
 		turretWant = 0, turretAt = nil, fx = fx, halo = halo, selected = false,
-		base = look, stageWant = 0, stage = 0, mast = 0, sooted = false,
+		base = look, stageWant = 0, stage = 0, mast = 0, sooted = false, atWork = 0, hands = nil,
 	}
 end
 
@@ -678,8 +684,8 @@ end
 -- hull by up to turretSlide x the unit's cells, both from a hash of the spot (the game's kc). A tank
 -- can instead lose its turret in a toss (the game picks a death look by weights per class): it flies
 -- to 1.6-2.3 cells off over 1.25-1.6 s, up 2.8-3.8 and down, turning and flipping end over end, drawn
--- at the game's 12 frames a second, and lies where it lands. Not yet: the burning, smoke, debris and
--- the crew bailing out.
+-- at the game's 12 frames a second, and lies where it lands. DeathRenderer shares the variant and
+-- trajectory for its blast, fire, smoke and landing effects; workers bail out below.
 ------------------------------------------------------------------------------------------------
 local WRECK = { holdSec = 120, fadeSec = 25, max = 48, turretSpin = 0.8, turretSlide = 0.08 } -- Ai.wreck
 local TOSS = { reach = { 1.6, 2.3 }, sec = { 1.25, 1.6 }, height = { 2.8, 3.8 }, turn = { 5, 11 }, flips = { 1.5, 2.5 }, grow = 0.12 } -- Kv.variants.toss
@@ -723,7 +729,7 @@ local function deathLook(kind: string): string
 	return "blast"
 end
 
-local function leaveWreck(kind: string, x: number, y: number, hull: number, turret: number)
+local function leaveWreck(kind: string, x: number, y: number, hull: number, turret: number, death: any?)
 	local look = SpriteBank.wreck(kind)
 	if not look then
 		return
@@ -741,13 +747,20 @@ local function leaveWreck(kind: string, x: number, y: number, hull: number, turr
 		at = os.clock(), tossSec = 0, tossHeight = 0, tossTurn = 0, tossFlips = 0,
 		model = Instance.new("Model"), quads = {}, shown = true,
 	}
-	if look.turret and deathLook(kind) == "toss" then
-		local a = math.random() * math.pi * 2
-		local reach = between(TOSS.reach)
-		w.tossTurn = between(TOSS.turn) * (if math.random() < 0.5 then -1 else 1)
-		w.turret = turret + w.tossTurn
-		w.tx, w.ty = math.cos(a) * reach / 1.3, math.sin(a) * reach / 1.3
-		w.tossSec, w.tossHeight, w.tossFlips = between(TOSS.sec), between(TOSS.height), between(TOSS.flips)
+	-- Without local effect data, retain the earlier wreck-only fallback.
+	if look.turret and (if death then death.variant else deathLook(kind)) == "toss" then
+		if death then
+			w.tossTurn, w.turret = death.turn, turret + death.turn
+			w.tx, w.ty = death.x / 1.3, death.y / 1.3
+			w.tossSec, w.tossHeight, w.tossFlips = death.sec, death.height, death.flips
+		else
+			local a = math.random() * math.pi * 2
+			local reach = between(TOSS.reach)
+			w.tossTurn = between(TOSS.turn) * (if math.random() < 0.5 then -1 else 1)
+			w.turret = turret + w.tossTurn
+			w.tx, w.ty = math.cos(a) * reach / 1.3, math.sin(a) * reach / 1.3
+			w.tossSec, w.tossHeight, w.tossFlips = between(TOSS.sec), between(TOSS.height), between(TOSS.flips)
+		end
 	end
 	w.model.Name = "Wreck"
 	local colourSheet: SpriteBank.FxSheet = { content = look.body.content, frame = look.frame, columns = look.columns, strips = {} }
@@ -877,12 +890,202 @@ local function placeWreck(w: Wreck, now: number): boolean
 	return true
 end
 
+------------------------------------------------------------------------------------------------
+-- Workers and crews, as the game's wMe.work, knockedOut, bolt and drawCrews. An engineer truck that
+-- has stood at its job (repair, sabotage, a trench) for atWorkSec puts out two men at its door, an
+-- engineer and a sapper; they walk out to their spots outCells beyond the truck's side toward the job
+-- and work there (the engineer digs, the sapper plants), facing the job. When the job ends they run
+-- back and climb in. If the truck is destroyed they bolt: each runs 1.3-2.4 cells away from the wreck,
+-- then stands, stays holdSec and fades out over fadeSec; hidden under fog. The game's crew count table
+-- is empty, so no other vehicle puts out a crew; the loop for it is kept for when it is filled.
+------------------------------------------------------------------------------------------------
+local WORKERS = { outCells = 0.75, pace = 0.6, runPace = 1.4, digHz = 1.4, inCells = 0.15, lostCells = 3, atWorkSec = 0.6, door = { 0.19, 0.18 }, spots = { 0.12, -0.28 } } -- Ai.workers
+local CREW = { count = {} :: { [string]: number }, runCells = { 1.3, 2.4 }, pace = 1.2, holdSec = 5, fadeSec = 3, max = 48, spread = 0.8, hatch = 0.12, veer = 0.6 } -- Ai.crew
+local WALKS = { "walk0", "walk1", "walk2", "walk3" } -- the game's U3e
+local STEP = 0.17 -- the game's qP: cells a walk frame lasts
+local MAX_DT = 0.1 -- Ai.maxDt
+local AT_WORK = { [5] = true, [6] = true, [10] = true, [11] = true, [12] = true } -- repair, sabotage, trench jobs
+local MAN_RISE = 0.03
+
+local crews: { Hand } = {}
+
+local function wrapAngle(a: number): number
+	return (a + math.pi) % (2 * math.pi) - math.pi
+end
+
+local function newHand(parent: Instance, kind: string, color: Color3, x: number, y: number, heading: number, walked: number): Hand?
+	local fig = SpriteBank.figure(kind)
+	if not fig then
+		return nil
+	end
+	return { kind = kind, x = x, y = y, heading = heading, walked = walked, tx = x, ty = y, at = os.clock(), there = false, ms = manQuad(parent, fig, color) }
+end
+
+local function dropHands(v: View)
+	for _, h in v.hands or {} do
+		h.ms.quad:Destroy()
+	end
+	v.hands = nil
+end
+
+-- the game's work(): x, y the truck in cells, hull its heading
+local function work(v: View, x: number, y: number, hull: number, dt: number)
+	dt = math.min(MAX_DT, math.max(0, dt))
+	local moving = (v.to - v.from).Magnitude > 1e-3 and v.t < 1
+	v.atWork = if AT_WORK[v.statusCode] and not moving then v.atWork + dt else 0
+	local d, f = math.cos(hull), math.sin(hull)
+	local p = FOOTPRINT[v.kind] or 0.8
+	local gx = x + (d * WORKERS.door[1] - f * WORKERS.door[2]) * p
+	local gy = y + (f * WORKERS.door[1] + d * WORKERS.door[2]) * p
+	local out = v.atWork >= WORKERS.atWorkSec
+	if out and not v.hands then
+		local color = SIDE_COLOR[v.side] or Color3.new(0.7, 0.7, 0.7)
+		local hands = {}
+		for i, kind in { "engineer", "sapper" } do
+			local h = newHand(v.model, kind, color, gx, gy, hull + math.pi / 2, (i - 1) * STEP * 2)
+			if h then
+				table.insert(hands, h)
+			end
+		end
+		v.hands = if #hands > 0 then hands else nil
+	end
+	local hands = v.hands
+	if not hands then
+		return
+	end
+	-- the job: the server's aim point while the truck is not firing
+	local jobX: number?, jobY: number? = nil, nil
+	if not bit32.btest(v.flags, 1) and (v.aimX ~= 0 or v.aimY ~= 0) then
+		jobX, jobY = v.aimX, v.aimY
+	end
+	local bx, by = -f, d
+	if jobX and jobY then
+		local s = math.sqrt((jobX - x) ^ 2 + (jobY - y) ^ 2)
+		if s > 0.2 and s < 4 then
+			bx, by = (jobX - x) / s, (jobY - y) / s
+		end
+	end
+	local home = 0
+	for i, h in hands do
+		local spot = WORKERS.spots[i] or 0
+		if out then
+			h.tx = x + bx * (WORKERS.outCells + p * WORKERS.door[2]) + d * spot * p
+			h.ty = y + by * (WORKERS.outCells + p * WORKERS.door[2]) + f * spot * p
+		else
+			h.tx, h.ty = gx, gy
+		end
+		local px, py = h.tx - h.x, h.ty - h.y
+		local o = math.sqrt(px * px + py * py)
+		local step = math.min(o, (if out then WORKERS.pace else WORKERS.runPace) * dt)
+		if o > 1e-4 then
+			h.x += px / o * step
+			h.y += py / o * step
+			h.walked += step
+		end
+		h.there = out and o - step < 0.03
+		local want = if h.there then (if jobX and jobY then math.atan2(jobY - h.y, jobX - h.x) else math.atan2(by, bx))
+			elseif o > 0.001 then math.atan2(py, px)
+			else h.heading
+		h.heading = wrapAngle(h.heading + wrapAngle(want - h.heading) * (1 - math.exp(-10 * dt)))
+		if not out and (o < WORKERS.inCells or o > WORKERS.lostCells) then
+			home += 1
+		end
+	end
+	if home == #hands then
+		dropHands(v)
+		return
+	end
+	local now = os.clock()
+	for _, h in hands do
+		local pose = if h.there
+			then (if h.kind == "engineer" then (if math.floor(now * WORKERS.digHz * 2 + kc(v.id, 14) * 2) % 2 == 1 then "dig1" else "dig0") else "plant")
+			else WALKS[math.floor(h.walked / STEP) % 4 + 1]
+		setFigure(h.ms, pose, h.heading, h.x, h.y, 0.4 + SPRITE_Y + MAN_RISE)
+	end
+end
+
+-- the game's bolt: a man runs off along heading (give or take veer), seed picks how far
+local function bolt(h: Hand, heading: number, seed: number)
+	if #crews >= CREW.max then
+		local old = table.remove(crews, 1) :: Hand
+		old.ms.quad:Destroy()
+	end
+	local reach = CREW.runCells[1] + kc(seed, 5) * (CREW.runCells[2] - CREW.runCells[1])
+	local a = heading + (kc(seed, 6) - 0.5) * CREW.veer
+	h.heading, h.walked = a, kc(seed, 7) * STEP * 4
+	h.tx, h.ty = h.x + math.cos(a) * reach, h.y + math.sin(a) * reach
+	h.at, h.there = os.clock(), false
+	h.ms.quad.Parent = folder
+	table.insert(crews, h)
+end
+
+-- the game's knockedOut, for the men: the dead vehicle's hands bolt from the wreck, and its crew (none
+-- by the game's table) climbs out of the hatch
+local function knockedOut(v: View?, kind: string, side: number, x: number, y: number)
+	local seed = math.floor(x * 97 + y * 131 + 0.5)
+	if v and v.hands then
+		for _, h in v.hands do
+			bolt(h, math.atan2(h.y - y, h.x - x), seed)
+		end
+		v.hands = nil
+	end
+	local n = CREW.count[kind] or 0
+	local g = kc(seed, 4) * math.pi * 2
+	for i = 0, n - 1 do
+		local w = g + (i - (n - 1) / 2) * CREW.spread
+		local r = CREW.hatch * (FOOTPRINT[kind] or 1)
+		local h = newHand(folder, "crew", SIDE_COLOR[side] or Color3.new(0.7, 0.7, 0.7), x + math.cos(w) * r, y + math.sin(w) * r, w, 0)
+		if h then
+			bolt(h, w, seed + i * 7)
+		end
+	end
+end
+
+-- the game's drawCrews
+local function stepCrews(dt: number)
+	dt = math.min(MAX_DT, math.max(0, dt))
+	local now = os.clock()
+	local drop = 0
+	while drop < #crews and now - crews[drop + 1].at > CREW.holdSec + CREW.fadeSec + CREW.runCells[2] / CREW.pace do
+		drop += 1
+	end
+	for _ = 1, drop do
+		local h = table.remove(crews, 1) :: Hand
+		h.ms.quad:Destroy()
+	end
+	for _, h in crews do
+		if not h.there then
+			local mx, my = h.tx - h.x, h.ty - h.y
+			local w = math.sqrt(mx * mx + my * my)
+			local c = math.min(w, CREW.pace * dt)
+			if w > 1e-4 then
+				h.x += mx / w * c
+				h.y += my / w * c
+				h.walked += c
+			end
+			if w - c < 0.02 then
+				h.there, h.at = true, now
+			end
+		end
+		local k = if h.there then now - h.at else 0
+		local alpha = if k <= CREW.holdSec then 1 else 1 - (k - CREW.holdSec) / CREW.fadeSec
+		local shown = alpha > 0 and not FogOverlay.hidden(h.x, h.y)
+		h.ms.gui.Enabled = shown
+		if shown then
+			h.ms.colour.ImageTransparency = 1 - alpha
+			h.ms.paint.ImageTransparency = 1 - alpha
+			setFigure(h.ms, if h.there then "stand" else WALKS[math.floor(h.walked / STEP) % 4 + 1], h.heading, h.x, h.y, 0.4 + SPRITE_Y + MAN_RISE)
+		end
+	end
+end
+
 function UnitRenderer.start()
 	folder = Instance.new("Folder")
 	folder.Name = "WarFrontUnits"
 	folder.Parent = workspace
 	SpriteBank.preload()
 	RunService.RenderStepped:Connect(function(dt)
+		DeathRenderer.step(dt)
 		for _, v in views do
 			v.t = math.min(1, v.t + dt / SNAPSHOT_SEC)
 			local pos = v.from:Lerp(v.to, v.t)
@@ -890,6 +1093,12 @@ function UnitRenderer.start()
 			if #v.men > 0 then
 				placeMen(v, pos, dt)
 			end
+			if v.kind == "engineer" then
+				work(v, pos.X / S, pos.Z / S, lerpAngle(v.fromYaw, v.toYaw, v.t), dt)
+			end
+		end
+		if #crews > 0 then
+			stepCrews(dt)
 		end
 		if #wrecks > 0 then
 			local now = os.clock()
@@ -919,12 +1128,19 @@ function UnitRenderer.apply(tick: number, units: { any }, deaths: { any }?)
 	for _, d in deaths or {} do
 		-- the game leaves the wreck at the hull and turret it was drawing
 		local v = views[d[1]]
+		if v and v.kind ~= d[2] then
+			v = nil -- a convoy's id, not this unit's
+		end
 		local hull, turret = d[5], d[6]
 		if v then
 			hull = lerpAngle(v.fromYaw, v.toYaw, v.t)
 			turret = v.turretAt or turret
 		end
-		leaveWreck(d[2], d[3], d[4], hull, turret)
+		local death = DeathRenderer.kill(d[2], d[3], d[4])
+		leaveWreck(d[2], d[3], d[4], hull, turret, death)
+		if d[2] ~= "demo" then -- Ai.wreck.none
+			knockedOut(v, d[2], v and v.side or 0, d[3], d[4])
+		end
 	end
 	lastTick = tick
 	for _, u in units do
