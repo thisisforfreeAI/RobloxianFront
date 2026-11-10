@@ -155,8 +155,8 @@ do
 		task.spawn(board.start, Vector2.new(cx + 30, cy), "ScoutCar", false) -- REQ-0001 pilot, east of the arrows
 	end
 
-	snapshot.OnClientEvent:Connect(function(tick, units, structures, vision, seeAll)
-		UnitRenderer.apply(tick, units)
+	snapshot.OnClientEvent:Connect(function(tick, units, structures, vision, seeAll, deaths)
+		UnitRenderer.apply(tick, units, deaths)
 		StructureRenderer.apply(tick, structures or {})
 		if vision then
 			FogOverlay.apply(vision, seeAll == true)

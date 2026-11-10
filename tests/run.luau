@@ -49,6 +49,15 @@ test("rng matches original for 4 seeds", function()
 		end
 	end
 end)
+test("kc hash matches the game's for the wreck seeds", function()
+	local Hash = require("../src/shared/Utilities/Hash")
+	-- values from the game's own function run in node
+	local want = { { 0, 2, 0.9814142426475883 }, { 5821, 3, 0.4126983806490898 }, { 123456, 1, 0.8793687438592315 }, { 99999, 2, 0.18589441129006445 } }
+	for _, w in want do
+		near(Hash.kc(w[1], w[2]), w[3], `kc({w[1]}, {w[2]})`)
+	end
+end)
+
 test("rng 1000th draw for seed 7121", function()
 	local g, x = Rng.new(7121), 0
 	for _ = 1, 1000 do

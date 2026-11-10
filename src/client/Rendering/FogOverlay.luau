@@ -76,4 +76,16 @@ function FogOverlay.apply(vision: { number }, seeAll: boolean)
 	image:WritePixelsBuffer(Vector2.zero, Vector2.new(width, height), pixels)
 end
 
+-- true when cell (x, y) is fogged for this player right now (false without the overlay)
+function FogOverlay.hidden(x: number, y: number): boolean
+	if not image then
+		return false
+	end
+	local cx, cy = math.floor(x), math.floor(y)
+	if cx < 0 or cy < 0 or cx >= width or cy >= height then
+		return false
+	end
+	return buffer.readu8(pixels, (cy * width + cx) * 4 + 3) > 0
+end
+
 return FogOverlay

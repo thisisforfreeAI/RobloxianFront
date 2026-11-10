@@ -26,6 +26,8 @@ local Shared = ReplicatedStorage:WaitForChild("Shared")
 local World = require(Shared.Config.World)
 local Facing = require(Shared.Assets.Facing)
 local SpriteBank = require(script.Parent.SpriteBank)
+local FogOverlay = require(script.Parent.FogOverlay)
+local Hash = require(Shared.Utilities.Hash)
 local SquadMen = require(script.Parent.SquadMen)
 
 local UnitRenderer = {}
@@ -70,7 +72,7 @@ export type View = {
 	aimX: number,
 	aimY: number,
 	inTrench: boolean,
-	status: number,
+	statusCode: number, -- the unit row's status (u[9])
 	sinceShot: number,
 	tube: ManSprite?,
 	empty: boolean,
@@ -357,7 +359,7 @@ local function create(id: number, kind: string, side: number): View
 		id = id, kind = kind, side = side, model = model, body = body, ring = ring, bar = bar, barGui = barGui, status = status,
 		from = Vector3.zero, to = Vector3.zero, fromYaw = 0, toYaw = 0, t = 1, seen = 0,
 		look = look, sprites = sprites, facing = -1,
-		squad = nil, men = men, hpFrac = 1, flags = 0, aimX = 0, aimY = 0, inTrench = false, status = 0, sinceShot = 9, tube = tube, empty = false,
+		squad = nil, men = men, hpFrac = 1, flags = 0, aimX = 0, aimY = 0, inTrench = false, statusCode = 0, sinceShot = 9, tube = tube, empty = false,
 		turretWant = 0, turretAt = nil, fx = fx, halo = halo, selected = false,
 	}
 end
@@ -392,7 +394,7 @@ local function placeFx(v: View, look: SpriteBank.Look, pos: Vector3, hull: numbe
 		local d = Facing.index(h, 16)
 		local residual = Facing.residual(h, d, 16)
 		local sheet = if f.kind == "shadow" then sheets.shade elseif f.kind == "rim" then rimSheet else sheets.rim
-		local base = if f.kind == "plain" then "turret_plain"
+		local base = if f.kind == "plain" then (look.turret :: SpriteBank.Layer).base .. "_plain"
 			elseif f.layer == "turret" then (look.turret :: SpriteBank.Layer).base
 			elseif v.empty and look.empty then look.empty.base
 			else look.body.base
@@ -495,7 +497,7 @@ local function placeMen(v: View, pos: Vector3, dt: number)
 	local vel = (v.to - v.from) / (SNAPSHOT_SEC * S)
 	local phase: string? = nil
 	if v.kind == "mortar" then
-		phase = if v.status == 3 then "setting" elseif v.status == 2 then "packing" else "set"
+		phase = if v.statusCode == 3 then "setting" elseif v.statusCode == 2 then "packing" else "set"
 	end
 	local inp: SquadMen.Input = {
 		x = pos.X / S, y = pos.Z / S, vx = vel.X, vy = vel.Z,
@@ -539,6 +541,212 @@ local function lerpAngle(a: number, b: number, t: number): number
 	return a + d * t
 end
 
+------------------------------------------------------------------------------------------------
+-- Wrecks, as the game leaves them (its wMe.leave, paintWrecks and Mke): where a vehicle dies its
+-- <kind>_wreck look stays for holdSec, then fades out over fadeSec; at most max of them (the oldest
+-- go first); hidden under fog. The turret is knocked round by up to turretSpin and slid back off the
+-- hull by up to turretSlide x the unit's cells, both from a hash of the spot (the game's kc). A tank
+-- can instead lose its turret in a toss (the game picks a death look by weights per class): it flies
+-- to 1.6-2.3 cells off over 1.25-1.6 s, up 2.8-3.8 and down, turning and flipping end over end, drawn
+-- at the game's 12 frames a second, and lies where it lands. Not yet: the burning, smoke, debris and
+-- the crew bailing out.
+------------------------------------------------------------------------------------------------
+local WRECK = { holdSec = 120, fadeSec = 25, max = 48, turretSpin = 0.8, turretSlide = 0.08 } -- Ai.wreck
+local TOSS = { reach = { 1.6, 2.3 }, sec = { 1.25, 1.6 }, height = { 2.8, 3.8 }, turn = { 5, 11 }, flips = { 1.5, 2.5 }, grow = 0.12 } -- Kv.variants.toss
+local DEATH_WEIGHTS = { -- Kv.variants.weights, by the game's class (jmt)
+	tank = { blast = 3, cook = 2, toss = 2, brew = 2, quiet = 1 },
+	gun = { blast = 3, cook = 3, toss = 0, brew = 1, quiet = 1 },
+	light = { blast = 5, cook = 0, toss = 0, brew = 1, quiet = 4 },
+}
+local DEATH_ORDER = { "blast", "cook", "toss", "brew", "quiet" }
+local DEATH_CLASS = { tank = "tank", artillery = "gun" } -- others: light
+local LIFT_COS = math.cos(math.rad(62)) -- the game's z3e: how a height shows on its tilted view
+local TOSS_FPS = 12 -- the game's Oi
+local TOSS_SHADOW_THROW = 0.35 -- za.shadow.airThrow
+
+local kc = Hash.kc
+
+type Wreck = {
+	look: SpriteBank.Look, x: number, y: number, hull: number, turret: number, tx: number, ty: number, at: number,
+	tossSec: number, tossHeight: number, tossTurn: number, tossFlips: number,
+	model: Model, quads: { Fx }, shown: boolean,
+}
+local wrecks: { Wreck } = {}
+
+local function between(r: { number }): number
+	return r[1] + math.random() * (r[2] - r[1])
+end
+
+local function deathLook(kind: string): string
+	local w = DEATH_WEIGHTS[DEATH_CLASS[kind] or "light"]
+	local total = 0
+	for _, k in DEATH_ORDER do
+		total += w[k]
+	end
+	local n = math.random() * total
+	for _, k in DEATH_ORDER do
+		n -= w[k]
+		if n < 0 and w[k] > 0 then
+			return k
+		end
+	end
+	return "blast"
+end
+
+local function leaveWreck(kind: string, x: number, y: number, hull: number, turret: number)
+	local look = SpriteBank.wreck(kind)
+	if not look then
+		return
+	end
+	if #wrecks >= WRECK.max then
+		local old = table.remove(wrecks, 1) :: Wreck
+		old.model:Destroy()
+	end
+	local h = math.floor(x * 97 + y * 131 + 0.5)
+	local spin = (kc(h, 2) - 0.5) * 2 * WRECK.turretSpin
+	local slide = kc(h, 3) * WRECK.turretSlide * look.size / 1.3
+	local w: Wreck = {
+		look = look, x = x, y = y, hull = hull, turret = turret + spin,
+		tx = math.cos(turret + spin + math.pi) * slide, ty = math.sin(turret + spin + math.pi) * slide,
+		at = os.clock(), tossSec = 0, tossHeight = 0, tossTurn = 0, tossFlips = 0,
+		model = Instance.new("Model"), quads = {}, shown = true,
+	}
+	if look.turret and deathLook(kind) == "toss" then
+		local a = math.random() * math.pi * 2
+		local reach = between(TOSS.reach)
+		w.tossTurn = between(TOSS.turn) * (if math.random() < 0.5 then -1 else 1)
+		w.turret = turret + w.tossTurn
+		w.tx, w.ty = math.cos(a) * reach / 1.3, math.sin(a) * reach / 1.3
+		w.tossSec, w.tossHeight, w.tossFlips = between(TOSS.sec), between(TOSS.height), between(TOSS.flips)
+	end
+	w.model.Name = "Wreck"
+	local colourSheet: SpriteBank.FxSheet = { content = look.body.content, frame = look.frame, columns = look.columns, strips = {} }
+	colourSheet.strips[look.body.base] = look.body.colour
+	if look.turret then
+		colourSheet.strips[look.turret.base] = look.turret.colour
+	end
+	local sheets = look.fx
+	local layers = if look.turret then { "body", "turret" } else { "body" }
+	for _, layer in layers do
+		if sheets and sheets.shade then
+			table.insert(w.quads, fxQuad(w.model, sheets.shade, "shadow", layer, true, if layer == "turret" then SHADOW.alpha * SHADOW.gun else SHADOW.alpha))
+		end
+	end
+	for _, layer in layers do
+		if sheets then
+			table.insert(w.quads, fxQuad(w.model, sheets.rim, "rim", layer, false, RIM_ALPHA))
+		end
+	end
+	table.insert(w.quads, fxQuad(w.model, colourSheet, "colour", "body", false, 1))
+	if look.turret then
+		if sheets and sheets.rim.strips[look.turret.base .. "_plain"] then
+			table.insert(w.quads, fxQuad(w.model, sheets.rim, "plain", "turret", false, TURRET_SHADOW.alpha))
+		end
+		table.insert(w.quads, fxQuad(w.model, colourSheet, "colour", "turret", false, 1))
+	end
+	for _, q in w.quads do
+		q.sheet = if q.kind == "colour" then colourSheet else nil
+		q.image:SetAttribute("alpha", 1 - q.image.ImageTransparency)
+	end
+	w.model.Parent = folder
+	table.insert(wrecks, w)
+end
+
+local RISE = { shadow = -0.03, rim = -0.01, colour = 0, plain = 0.02 }
+
+local function placeWreck(w: Wreck, now: number): boolean
+	local p = now - w.at
+	local alpha = if p <= WRECK.holdSec then 1 else 1 - (p - WRECK.holdSec) / WRECK.fadeSec
+	if alpha <= 0 then
+		w.model:Destroy()
+		return false
+	end
+	local hidden = FogOverlay.hidden(w.x, w.y)
+	if hidden == w.shown then
+		w.shown = not hidden
+		w.model.Parent = if hidden then nil else folder
+	end
+	if hidden then
+		return true
+	end
+	local look = w.look
+	local sheets = look.fx :: any
+	local pos = World.toWorld(w.x, w.y, 0.4)
+	local W = look.cells * S
+	local cam = workspace.CurrentCamera
+	local px = math.huge
+	if cam then
+		local dist = (cam.CFrame.Position - pos).Magnitude
+		px = W * cam.ViewportSize.Y / math.max(1e-3, 2 * dist * math.tan(math.rad(cam.FieldOfView) / 2))
+	end
+	local rimSheet = if sheets and px < HALF_BELOW and sheets.rimHalf then sheets.rimHalf elseif sheets then sheets.rim else nil
+	local sx, sy, stretch = shadowOf(look, w.hull)
+	-- the turret: slid or tossed off the hull
+	local tossing = w.tossSec > 0 and p < w.tossSec
+	local k, lift, flip, grow = 1, 0, 1, 1
+	local tAng = w.turret
+	if tossing then
+		k = math.min(1, math.floor(math.max(0, p) * TOSS_FPS + 1e-6) / TOSS_FPS / w.tossSec)
+		local up = 4 * w.tossHeight * k * (1 - k)
+		tAng = w.turret - w.tossTurn * (1 - k)
+		lift = up * LIFT_COS
+		flip = math.max(0.3, math.abs(math.cos(math.pi * w.tossFlips * k)))
+		grow = 1 + up * TOSS.grow
+	end
+	local tpos = pos + Vector3.new(w.tx * k * 1.3 * S, 0, w.ty * k * 1.3 * S)
+	for _, f in w.quads do
+		local turretLayer = f.layer == "turret"
+		local ang = (if turretLayer then tAng else w.hull) % (2 * math.pi)
+		local d = Facing.index(ang, 16)
+		local residual = Facing.residual(ang, d, 16)
+		local sheet: SpriteBank.FxSheet? = if f.kind == "colour" then f.sheet elseif f.kind == "shadow" then sheets.shade elseif f.kind == "rim" then rimSheet else sheets.rim
+		local base = if turretLayer then (look.turret :: SpriteBank.Layer).base else look.body.base
+		if f.kind == "plain" then
+			base ..= "_plain"
+		end
+		local y0 = sheet and sheet.strips[base]
+		if not sheet or y0 == nil or (f.kind == "plain" and tossing) then
+			f.image.Visible = false
+			continue
+		end
+		f.image.Visible = true
+		if f.kind ~= "colour" and sheet ~= f.sheet then
+			f.sheet = sheet
+			f.image.ImageContent = sheet.content
+			f.image.ImageRectSize = Vector2.new(sheet.frame, sheet.frame)
+			f.gui.CanvasSize = Vector2.new(sheet.frame, sheet.frame)
+			f.facing = -1
+		end
+		if d ~= f.facing or y0 ~= f.y0 then
+			f.facing, f.y0 = d, y0
+			f.image.ImageRectOffset = SpriteBank.offset(sheet, y0, d)
+		end
+		f.image.ImageTransparency = 1 - alpha * (f.image:GetAttribute("alpha") or 1)
+		local at = if turretLayer then tpos else pos
+		local rise = RISE[f.kind] + (if turretLayer then 0.005 else 0)
+		if turretLayer and tossing then
+			-- squashed along the barrel as it flips, grown as it rises: the quad turns with the turret and
+			-- the frame turns back inside it, so the squash runs along the barrel
+			local throw = if f.kind == "shadow" then Vector3.new(SUN.X, 0, SUN.Y) * lift * TOSS_SHADOW_THROW * S + Vector3.new(sx * S, 0, sy * S)
+				else Vector3.new(0, 0, -lift * S)
+			local g = if f.kind == "shadow" then 1 else grow -- the game grows the turret and its rim, not the shadow
+			f.quad.Size = Vector3.new(W * g, 0.05, W * g * flip)
+			f.image.Rotation = -d * 22.5
+			f.quad.CFrame = CFrame.new(at + throw + Vector3.new(0, SPRITE_Y + rise + 0.05, 0)) * CFrame.Angles(0, -(ang + GUI_YAW), 0)
+		elseif f.kind == "shadow" then
+			f.quad.Size = Vector3.new(W * stretch, 0.05, W)
+			f.image.Rotation = math.deg(residual)
+			f.quad.CFrame = CFrame.new(at + Vector3.new(sx * S, SPRITE_Y + rise, sy * S)) * CFrame.Angles(0, -GUI_YAW, 0)
+		else
+			local off = if f.kind == "plain" then Vector3.new(SUN.X, 0, SUN.Y) * look.size * TURRET_SHADOW.reach * S else Vector3.zero
+			f.quad.Size = Vector3.new(W, 0.05, W)
+			f.image.Rotation = 0
+			f.quad.CFrame = CFrame.new(at + off + Vector3.new(0, SPRITE_Y + rise, 0)) * CFrame.Angles(0, -(residual + GUI_YAW), 0)
+		end
+	end
+	return true
+end
+
 function UnitRenderer.start()
 	folder = Instance.new("Folder")
 	folder.Name = "WarFrontUnits"
@@ -553,15 +761,40 @@ function UnitRenderer.start()
 				placeMen(v, pos, dt)
 			end
 		end
+		if #wrecks > 0 then
+			local now = os.clock()
+			local keep = 0
+			for i = 1, #wrecks do
+				local w = wrecks[i]
+				if placeWreck(w, now) then
+					keep += 1
+					wrecks[keep] = w
+				end
+			end
+			for i = #wrecks, keep + 1, -1 do
+				wrecks[i] = nil
+			end
+		end
 	end)
 end
 
 local STATUS = { [1] = "RECON", [2] = "PACKING", [3] = "SETTING UP", [4] = "INSIDE", [5] = "REPAIR", [6] = "SABOTAGE", [7] = "HELD", [8] = "CUT OFF", [9] = "SETTING UP HQ", [10] = "DIGGING", [11] = "FILLING", [12] = "MENDING", [13] = "IN TRENCH" }
 
 -- units: { {id, kind, side, x, y, heading, hp, maxHp, status}, ... }
-function UnitRenderer.apply(tick: number, units: { any })
+-- deaths: vehicles destroyed since the last snapshot, { id, kind, x, y, hull, turret } (wrecks)
+function UnitRenderer.apply(tick: number, units: { any }, deaths: { any }?)
 	if tick <= lastTick then
 		return -- stale or duplicate snapshot
+	end
+	for _, d in deaths or {} do
+		-- the game leaves the wreck at the hull and turret it was drawing
+		local v = views[d[1]]
+		local hull, turret = d[5], d[6]
+		if v then
+			hull = lerpAngle(v.fromYaw, v.toYaw, v.t)
+			turret = v.turretAt or turret
+		end
+		leaveWreck(d[2], d[3], d[4], hull, turret)
 	end
 	lastTick = tick
 	for _, u in units do
@@ -592,7 +825,7 @@ function UnitRenderer.apply(tick: number, units: { any })
 		end
 		v.status.Text = table.concat(bits, " ")
 		v.hpFrac, v.flags, v.aimX, v.aimY, v.inTrench = frac, u[12] or 0, u[13] or 0, u[14] or 0, u[9] == 13
-		v.status, v.sinceShot = u[9] or 0, u[15] or 9
+		v.statusCode, v.sinceShot = u[9] or 0, u[15] or 9
 		v.turretWant = u[16] or heading
 		-- an oil truck driving out or carrying nothing shows its empty look (the game's truck_empty)
 		local empty = bit32.btest(v.flags, 8)

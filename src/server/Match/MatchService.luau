@@ -550,13 +550,23 @@ local function viewFor(side: number): ({ any }, { any }, { number }?)
 	return units, structures, if viewer then viewer.runs() else nil
 end
 
+-- vehicles destroyed since the last snapshot (the client leaves the game's wrecks for them)
+local deaths: { any } = {}
+
 local function snapshot()
 	local bySide: { [number]: any } = {}
 	for player, side in sideOf do
 		local v = bySide[side]
 		if not v then
 			local units, structures, runs = viewFor(side)
-			v = { units = units, structures = structures, runs = runs, key = if runs then table.concat(runs, ",") else "all" }
+			local seen = {}
+			local viewer = if side > 0 and sim.fogOn() then viewers[side] else nil
+			for _, d in deaths do
+				if not viewer or viewer.visibleAt(d[3], d[4]) then
+					table.insert(seen, d)
+				end
+			end
+			v = { units = units, structures = structures, runs = runs, key = if runs then table.concat(runs, ",") else "all", deaths = seen }
 			bySide[side] = v
 		end
 		local vision = nil
@@ -564,8 +574,9 @@ local function snapshot()
 			sentVision[player] = v.key
 			vision = v.runs or {}
 		end
-		Net.sendSnapshot(player, tick, v.units, v.structures, vision, side == 0 or not sim.fogOn())
+		Net.sendSnapshot(player, tick, v.units, v.structures, vision, side == 0 or not sim.fogOn(), if #v.deaths > 0 then v.deaths else nil)
 	end
+	table.clear(deaths)
 end
 
 -- Own territory as row runs { y, x0, x1, ... } (sent only when it changes): the client tints the
@@ -1182,6 +1193,11 @@ function MatchService.start(mapModule: string)
 			sim.step(step)
 			for _, ev in sim.takeEvents() do
 				alertsFor(ev)
+				if ev.type == "destroyed" and ev.x and rules:has(`units.{ev.kind}.move`) and rules:text(`units.{ev.kind}.move`) ~= "foot" then
+					table.insert(deaths, { ev.id, ev.kind, ev.x, ev.y, ev.heading or 0, ev.turret or ev.heading or 0 })
+				elseif ev.type == "convoyLost" and ev.x then
+					table.insert(deaths, { ev.id, "truck", ev.x, ev.y, ev.heading or 0, ev.heading or 0 })
+				end
 				if ev.type == "rigCaptured" or ev.type == "rigLost" or ev.type == "victory" or ev.type == "eliminated" or ev.type == "delivered" or ev.type == "convoyLost" then
 					print(`[Match] {ev.type} side {ev.side}{if ev.id then " id " .. ev.id else ""}{if ev.oil then " oil " .. math.floor(ev.oil) else ""}`)
 				elseif ev.type == "destroyed" and ev.kind == "hq" then

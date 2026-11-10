@@ -18,7 +18,8 @@
 	of their own: <module>Rim (the dark rim, plus the turret's plain shape), <module>RimHalf (the rim the
 	game swaps in when units are drawn small) and <module>Shade (the soft shadow, 1/3 size). They come
 	back as look.fx; a kind without them is drawn without rim and shadow.
-	Not drawn yet: wrecks.
+	SpriteBank.wreck(kind): the game's <kind>_wreck look (the wreck rows: colour only, no paint, as the game
+	draws them) from <module>Wreck, with its own rim and shadow modules (<module>WreckRim, ...).
 ]]
 local AssetService = game:GetService("AssetService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -52,11 +53,11 @@ local FIGURES = {
 }
 
 -- tall: za.shadow.tall (rest 0.3 for kinds it does not list)
-local KINDS: { [string]: { module: string, body: string, turret: string?, empty: string?, cells: number, artW: number, artH: number, tall: number } } = {
-	tank = { module = "OrigTank", body = "hull", turret = "turret", cells = 1, artW = 0.492, artH = 0.283, tall = 0.32 },
-	truck = { module = "OrigTruck", body = "full", empty = "empty", cells = 0.8, artW = 0.4, artH = 0.167, tall = 0.36 },
-	scout = { module = "OrigScout", body = "body", cells = 0.62, artW = 0.317, artH = 0.2, tall = 0.36 },
-	artillery = { module = "OrigArtillery", body = "body", cells = 1.4, artW = 0.683, artH = 0.267, tall = 0.24 },
+local KINDS: { [string]: { module: string, body: string, turret: string?, empty: string?, cells: number, artW: number, artH: number, tall: number, wreck: string?, wreckTurret: string? } } = {
+	tank = { module = "OrigTank", body = "hull", turret = "turret", cells = 1, artW = 0.492, artH = 0.283, tall = 0.32, wreck = "wreck_hull", wreckTurret = "wreck_turret" },
+	truck = { module = "OrigTruck", body = "full", empty = "empty", cells = 0.8, artW = 0.4, artH = 0.167, tall = 0.36, wreck = "wreck" },
+	scout = { module = "OrigScout", body = "body", cells = 0.62, artW = 0.317, artH = 0.2, tall = 0.36, wreck = "wreck" },
+	artillery = { module = "OrigArtillery", body = "body", cells = 1.4, artW = 0.683, artH = 0.267, tall = 0.24, wreck = "wreck" },
 	infantry = { module = "OrigInfantry", body = "body", cells = 0.78, artW = 0.5, artH = 0.5, tall = 0.5 },
 }
 
@@ -181,6 +182,58 @@ end
 -- top-left pixel of facing d in the strip that starts at y0
 function SpriteBank.offset(look: { frame: number, columns: number }, y0: number, d: number): Vector2
 	return Vector2.new((d % look.columns) * look.frame, y0 + (d // look.columns) * look.frame)
+end
+
+local wrecks: { [string]: Look | false } = {}
+local WRECK_TALL = 0.75 -- za.shadow.wreck: a wreck's shadow reaches this share of the unit's
+
+-- the game's <kind>_wreck look: colour rows only (paint = -1), its own rim and shadow sheets
+function SpriteBank.wreck(kind: string): Look?
+	local cached = wrecks[kind]
+	if cached ~= nil then
+		return cached or nil
+	end
+	wrecks[kind] = false
+	local k = KINDS[kind]
+	if not k or not k.wreck then
+		return nil
+	end
+	local p = page(k.module .. "Wreck")
+	if not p then
+		return nil
+	end
+	local function layer(base: string?): Layer?
+		local c = base and p.meta.strips[base .. "_colour"]
+		if c == nil then
+			return nil
+		end
+		return { content = p.content, colour = c, paint = -1, base = base :: string }
+	end
+	local body = layer(k.wreck)
+	if not body then
+		return nil
+	end
+	local function sheet(suffix: string): FxSheet?
+		local f = page(k.module .. "Wreck" .. suffix)
+		if not f then
+			return nil
+		end
+		return { content = f.content, frame = f.meta.frame, columns = f.meta.columns, strips = f.meta.strips }
+	end
+	local rim = sheet("Rim")
+	local look: Look = {
+		frame = p.meta.frame,
+		columns = p.meta.columns,
+		cells = k.cells * UNIT_SCALE / k.artW,
+		body = body,
+		turret = layer(k.wreckTurret),
+		size = k.cells * UNIT_SCALE,
+		artH = k.artH / k.artW,
+		tall = k.tall * WRECK_TALL,
+		fx = if rim then { rim = rim, rimHalf = sheet("RimHalf"), shade = sheet("Shade") } else nil,
+	}
+	wrecks[kind] = look
+	return look
 end
 
 return SpriteBank

@@ -682,7 +682,7 @@ Bot: bridges (2026-11-10), traced from the game's _h / v7e / kUe / nat / Yst / X
 - Stopping a unit now also ends a sabotage job.
 
 ## Next
-1. You run Studio tests B18–B85 (defences, mortar, artillery, scout) and commit.
+1. You run Studio tests B18–B86 (defences, mortar, artillery, scout) and commit.
 2. Done since: engineers' repair, vehicle steering, the bot's HQ push, shared group routes,
    separation, the 100/250/500-unit performance check (`lune run tools/perf.luau 250`) and the
    convoy rules (spacing, town/bridge/off-road pace, held and stranded trucks), airfield drops and
@@ -799,6 +799,25 @@ turreted unit has 3 more rows for the turret; men sheet: 48 px, same 3 rows a po
 - APPROX: the same fixed noon sun as the town bake (shadow 0.74 south); the game turns the sun and
   fades shadows at night. The stretch is applied after the facing's small leftover turn.
 - Studio: B85. Not yet: soot on damaged vehicles, wrecks, men's shadows.
+
+## Wrecks like the game (2026-11-10)
+- The sim's "destroyed" and "convoyLost" events now carry where the unit died, its hull and turret.
+  MatchService collects vehicle deaths and sends each player those it could see, with the next
+  snapshot (a new last argument). UnitRenderer leaves the game's wreck there (wMe.leave, paintWrecks,
+  Mke, traced): the <kind>_wreck rows (colour only), its rim and shadow (shadow reach x 0.75), held
+  120 s then faded over 25 s, at most 48, hidden under fog. The turret is spun by up to 0.8 rad and slid
+  back up to 0.08 x cells, from the game's kc hash of the spot (src/shared/Utilities/Hash.luau, checked
+  against the game's values in a test). A tank may lose its turret in a toss instead (weights per
+  class: tank blast 3, cook 2, toss 2, brew 2, quiet 1): it flies 1.6-2.3 cells over 1.25-1.6 s, up
+  2.8-3.8, turning 5-11 rad and flipping 1.5-2.5 times, drawn at 12 frames a second.
+- Art: Orig*Wreck, Orig*WreckRim, Orig*WreckRimHalf, Orig*WreckShade (tank, truck, scout, artillery),
+  local only, listed in docs/private/sprite_spec_fx.json.
+- Not yet: the death looks other than the toss (blast, cook-off, brew-up fire and smoke, debris),
+  soot on damaged vehicles, the crew bailing out. Studio: B86.
+- Fixed: UnitRenderer stored the unit's status number in the same field as its status label, so the
+  second snapshot after any unit appeared threw "attempt to index number with 'Text'" and stopped
+  every later unit and all buildings from updating (the HQ truck seemed never to deploy, paratroopers
+  never showed after landing).
 
 ## Open questions
 1. Rights scope: answered for the art (see Original art above). Still open: audio and voice, and

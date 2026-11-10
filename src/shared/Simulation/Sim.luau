@@ -3939,7 +3939,7 @@ function Sim.new(deps: Deps)
 			if ks and u.cat == "unit" and by ~= u.side and canAttack(by, u.side) then
 				ks.kills = (ks.kills or 0) + 1
 			end
-			event({ type = "destroyed", id = u.id, kind = u.kind, side = u.side, by = by })
+			event({ type = "destroyed", id = u.id, kind = u.kind, side = u.side, by = by, x = u.x, y = u.y, heading = u.heading, turret = u.turret })
 		end
 	end
 
@@ -3996,7 +3996,7 @@ function Sim.new(deps: Deps)
 			if rig then
 				rig.truckLostAt = self.time
 			end
-			event({ type = "convoyLost", id = t.id, side = t.side, oil = t.payload, by = by })
+			event({ type = "convoyLost", id = t.id, side = t.side, oil = t.payload, by = by, x = t.x, y = t.y, heading = t.heading })
 			if rig and rig.side == t.side and trucksOf(rig.id) == 0 then
 				rig.noTrucks = true
 				event({ type = "rigNoTrucks", id = rig.id, side = rig.side })
