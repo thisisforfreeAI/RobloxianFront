@@ -364,6 +364,17 @@ local function create(id: number, kind: string, side: number): View
 	}
 end
 
+-- where the turret turns: the hull's centre, or off it by the look's pivot (frames, along and across
+-- the hull, as the game's S9)
+local function turretAt(look: SpriteBank.Look, pos: Vector3, hull: number): Vector3
+	local p = look.pivot
+	if not p then
+		return pos
+	end
+	local f = look.cells * S
+	return pos + Vector3.new((p[1] * math.cos(hull) - p[2] * math.sin(hull)) * f, 0, (p[1] * math.sin(hull) + p[2] * math.cos(hull)) * f)
+end
+
 -- the game's Of: the shadow is pushed half its reach away from the sun and stretched along that line by
 -- (l + reach) / l, l being how long the body lies along it
 local function shadowOf(look: SpriteBank.Look, hull: number): (number, number, number)
@@ -389,7 +400,9 @@ local function placeFx(v: View, look: SpriteBank.Look, pos: Vector3, hull: numbe
 	local rimSheet = if px < HALF_BELOW and sheets.rimHalf then sheets.rimHalf else sheets.rim
 	local sx, sy, stretch = shadowOf(look, hull)
 	local W = look.cells * S
+	local tpos = turretAt(look, pos, hull)
 	for _, f in v.fx do
+		local at = if f.layer == "turret" then tpos else pos
 		local h = (if f.layer == "turret" then turret else hull) % (2 * math.pi)
 		local d = Facing.index(h, 16)
 		local residual = Facing.residual(h, d, 16)
@@ -420,7 +433,7 @@ local function placeFx(v: View, look: SpriteBank.Look, pos: Vector3, hull: numbe
 			f.quad.Size = Vector3.new(W * stretch, 0.05, W)
 			f.image.Rotation = math.deg(residual)
 			local rise = if f.layer == "turret" then -0.025 else -0.03
-			f.quad.CFrame = CFrame.new(pos + Vector3.new(sx * S, SPRITE_Y + rise, sy * S)) * CFrame.Angles(0, -GUI_YAW, 0)
+			f.quad.CFrame = CFrame.new(at + Vector3.new(sx * S, SPRITE_Y + rise, sy * S)) * CFrame.Angles(0, -GUI_YAW, 0)
 		else
 			f.quad.Size = Vector3.new(W, 0.05, W)
 			local off = Vector3.zero
@@ -429,7 +442,7 @@ local function placeFx(v: View, look: SpriteBank.Look, pos: Vector3, hull: numbe
 				off = Vector3.new(SUN.X, 0, SUN.Y) * look.size * TURRET_SHADOW.reach * S
 				rise = 0.02
 			end
-			f.quad.CFrame = CFrame.new(pos + off + Vector3.new(0, SPRITE_Y + rise, 0)) * CFrame.Angles(0, -(residual + GUI_YAW), 0)
+			f.quad.CFrame = CFrame.new(at + off + Vector3.new(0, SPRITE_Y + rise, 0)) * CFrame.Angles(0, -(residual + GUI_YAW), 0)
 		end
 	end
 end
@@ -447,8 +460,11 @@ local function place(v: View, pos: Vector3, yaw: number, dt: number)
 	if look then
 		-- hull layers face the hull; the turret layer faces the turret (the sim turns it, the drawing eases after it)
 		local tAt = v.turretAt
+		local moving = (v.to - v.from).Magnitude > 1e-3 and v.t < 1
 		if tAt == nil then
 			tAt = v.turretWant
+		elseif look.radarTurns and not moving then
+			tAt += look.radarTurns * 2 * math.pi * dt -- the HQ truck's mast turns on its own while it stands
 		else
 			local d = (v.turretWant - tAt + math.pi) % (2 * math.pi) - math.pi
 			tAt += d * (1 - math.exp(-TURRET_FOLLOW * dt))
@@ -456,6 +472,7 @@ local function place(v: View, pos: Vector3, yaw: number, dt: number)
 		v.turretAt = tAt
 		local hullH = yaw % (2 * math.pi)
 		local turretH = (tAt :: number) % (2 * math.pi)
+		local tpos = turretAt(look, pos, yaw)
 		for _, sp in v.sprites do
 			local h = if sp.turret then turretH else hullH
 			local d = Facing.index(h, 16)
@@ -465,7 +482,7 @@ local function place(v: View, pos: Vector3, yaw: number, dt: number)
 				sp.paint.ImageRectOffset = SpriteBank.offset(look, sp.y0p, d)
 			end
 			local residual = Facing.residual(h, d, 16)
-			sp.quad.CFrame = CFrame.new(pos + Vector3.new(0, SPRITE_Y + sp.rise, 0)) * CFrame.Angles(0, -(residual + GUI_YAW), 0)
+			sp.quad.CFrame = CFrame.new((if sp.turret then tpos else pos) + Vector3.new(0, SPRITE_Y + sp.rise, 0)) * CFrame.Angles(0, -(residual + GUI_YAW), 0)
 		end
 		v.facing = 0
 		local halo = v.halo

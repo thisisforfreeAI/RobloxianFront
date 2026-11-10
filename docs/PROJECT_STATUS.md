@@ -682,7 +682,7 @@ Bot: bridges (2026-11-10), traced from the game's _h / v7e / kUe / nat / Yst / X
 - Stopping a unit now also ends a sabotage job.
 
 ## Next
-1. You run Studio tests B18–B86 (defences, mortar, artillery, scout) and commit.
+1. You run Studio tests B18–B87 (defences, mortar, artillery, scout) and commit.
 2. Done since: engineers' repair, vehicle steering, the bot's HQ push, shared group routes,
    separation, the 100/250/500-unit performance check (`lune run tools/perf.luau 250`) and the
    convoy rules (spacing, town/bridge/off-road pace, held and stranded trucks), airfield drops and
@@ -818,6 +818,26 @@ turreted unit has 3 more rows for the turret; men sheet: 48 px, same 3 rows a po
   second snapshot after any unit appeared threw "attempt to index number with 'Text'" and stopped
   every later unit and all buildings from updating (the HQ truck seemed never to deploy, paratroopers
   never showed after landing).
+
+## Image memory budget (2026-11-10)
+- Studio refused the unit art ("Failed to create empty EditableImage ... memory budget limits"): the
+  24 full town chunks (896 px each, about 77 MB) were made first and used up the device's image
+  budget. Now the fog and unit art load before the map, and TownRenderer draws the towns from one
+  small overview (2 px a cell, sampled from the chunks once) with the full chunks streaming in near
+  the camera only when zoomed in (at most 9, one per 0.4 s, destroyed when off screen). If the budget
+  refuses a chunk it waits 10 s and keeps the overview. SpriteBank prints a one-line summary of the
+  art it loaded at start.
+
+## More unit sprites (2026-11-10)
+- tools/asset_pipeline/cut_units.py cuts a unit's rows out of the local units-top.png (colour, paint,
+  shape; turret rows + 3 to + 5; wreck rows; extra state rows) into the strip layout pack_original.py
+  reads. docs/private/cut_spec.json (local) lists the IFV (row 12), rocket launcher (21, raised 63 and
+  66), engineer (27), demo truck (48) and HQ truck (78, setting up 84 to 93), with their wrecks.
+- SpriteBank draws them (cells, art and shadow reach from the game's tables). The HQ truck's mast turns
+  about its pivot (-0.1278 frames along the hull) at 0.07 turns a second while it stands (za.radarTurns).
+- Vehicle looks now load when the first unit of a kind appears, to keep within the image budget.
+- Not yet: the HQ truck's setting-up frames, the rocket launcher's raised frames, the artillery's
+  set-up frames, the scout's mast.
 
 ## Open questions
 1. Rights scope: answered for the art (see Original art above). Still open: audio and voice, and

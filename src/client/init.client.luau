@@ -36,10 +36,12 @@ do
 	assert(mapModule, `no map module for {info.map}`)
 	local map = MapCodec.decode(require(mapModule) :: any)
 
-	MapRenderer.build(map)
+	-- Images share one memory budget per device: the fog and unit art first (they matter for play),
+	-- then the map, whose town art streams in by camera (TownRenderer).
 	FogOverlay.start(map.width, map.height)
-	CameraController.start(map.width, map.height, map.data.starts[info.side] or map.data.starts[1])
 	UnitRenderer.start()
+	MapRenderer.build(map)
+	CameraController.start(map.width, map.height, map.data.starts[info.side] or map.data.starts[1])
 	StructureRenderer.start()
 	CityOverlay.start((map.data :: any).settlements or {})
 	RoadOverlay.start(map.width)

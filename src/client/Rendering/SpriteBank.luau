@@ -43,6 +43,8 @@ export type Look = {
 	artH: number, -- fa art.h / art.w: the body's depth over its length
 	tall: number, -- za.shadow.tall: how far the shadow reaches, in sizes
 	fx: { rim: FxSheet, rimHalf: FxSheet?, shade: FxSheet? }?,
+	pivot: { number }?, -- where the turret turns, off the frame centre, in frames along / across the hull
+	radarTurns: number?, -- turns a second the turret makes on its own while the unit stands
 }
 
 -- kind -> module, strips, game cells and art.w (fa.units in the bundle)
@@ -53,12 +55,18 @@ local FIGURES = {
 }
 
 -- tall: za.shadow.tall (rest 0.3 for kinds it does not list)
-local KINDS: { [string]: { module: string, body: string, turret: string?, empty: string?, cells: number, artW: number, artH: number, tall: number, wreck: string?, wreckTurret: string? } } = {
+local KINDS: { [string]: { module: string, body: string, turret: string?, empty: string?, cells: number, artW: number, artH: number, tall: number, wreck: string?, wreckTurret: string?, pivot: { number }?, radarTurns: number? } } = {
 	tank = { module = "OrigTank", body = "hull", turret = "turret", cells = 1, artW = 0.492, artH = 0.283, tall = 0.32, wreck = "wreck_hull", wreckTurret = "wreck_turret" },
 	truck = { module = "OrigTruck", body = "full", empty = "empty", cells = 0.8, artW = 0.4, artH = 0.167, tall = 0.36, wreck = "wreck" },
 	scout = { module = "OrigScout", body = "body", cells = 0.62, artW = 0.317, artH = 0.2, tall = 0.36, wreck = "wreck" },
 	artillery = { module = "OrigArtillery", body = "body", cells = 1.4, artW = 0.683, artH = 0.267, tall = 0.24, wreck = "wreck" },
 	infantry = { module = "OrigInfantry", body = "body", cells = 0.78, artW = 0.5, artH = 0.5, tall = 0.5 },
+	ifv = { module = "OrigIfv", body = "hull", turret = "turret", cells = 0.95, artW = 0.467, artH = 0.267, tall = 0.34, wreck = "wreck_hull", wreckTurret = "wreck_turret" },
+	rocket = { module = "OrigRocket", body = "body", cells = 1.3, artW = 0.633, artH = 0.2, tall = 0.26, wreck = "wreck" },
+	engineer = { module = "OrigEngineer", body = "body", cells = 0.8, artW = 0.383, artH = 0.15, tall = 0.36, wreck = "wreck" },
+	demo = { module = "OrigDemo", body = "body", cells = 1.2, artW = 0.608, artH = 0.367, tall = 0.32 }, -- the game leaves no demo wreck
+	-- the HQ truck: its turret (the radar mast) sits off centre (fa pivot) and turns on its own (za.radarTurns)
+	command = { module = "OrigCommand", body = "hull", turret = "turret", cells = 1, artW = 0.517, artH = 0.217, tall = 0.34, wreck = "wreck", pivot = { -0.1278, 0 }, radarTurns = 0.07 },
 }
 
 local pages: { [string]: any } = {} -- module name -> { content, meta } or false when unavailable
@@ -136,6 +144,8 @@ function SpriteBank.look(kind: string): Look?
 		artH = k.artH / k.artW,
 		tall = k.tall,
 		fx = if rim then { rim = rim, rimHalf = sheet("RimHalf"), shade = sheet("Shade") } else nil,
+		pivot = k.pivot,
+		radarTurns = k.radarTurns,
 	}
 	looks[kind] = look
 	return look
@@ -171,12 +181,30 @@ end
 
 -- loads every page up front, so the first unit of a kind doesn't stall a frame
 function SpriteBank.preload()
-	for kind in KINDS do
-		SpriteBank.look(kind)
-	end
+	-- vehicle looks load when the first unit of the kind appears (images share one memory budget);
+	-- the infantry look and the men are wanted at once
+	SpriteBank.look("infantry")
 	for name in FIGURES do
 		SpriteBank.figure(name)
 	end
+	-- one line in Output saying what art there is, so a missing or failing art folder is easy to spot
+	local folder = script.Parent.Parent:FindFirstChild("DevAssets")
+	if not folder then
+		warn("[SpriteBank] no DevAssets folder under the client scripts: every unit draws as a placeholder block. Is Rojo connected and serving the project folder?")
+		return
+	end
+	local loaded, missing, failed = 0, {}, 0
+	for name, got in pages do
+		if got then
+			loaded += 1
+		elseif folder:FindFirstChild(name) then
+			failed += 1
+		else
+			table.insert(missing, name)
+		end
+	end
+	table.sort(missing)
+	print(`[SpriteBank] art pages: {loaded} loaded, {failed} failed (see warnings above), {#missing} missing{if #missing > 0 then ": " .. table.concat(missing, ", ") else ""}; DevAssets holds {#folder:GetChildren()} modules`)
 end
 
 -- top-left pixel of facing d in the strip that starts at y0

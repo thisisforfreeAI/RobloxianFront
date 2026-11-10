@@ -16,6 +16,7 @@
 	or being cleared round new buildings.
 ]]
 local AssetService = game:GetService("AssetService")
+local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
@@ -27,6 +28,43 @@ local TownRenderer = {}
 
 local S = World.STUDS_PER_CELL
 local HEIGHT = 0.07 -- above the ground (0), under the roads (0.15)
+local OVERVIEW_PX = 2 -- overview pixels a cell
+local TILE_PX = 14 -- chunk pixels a cell (the game's 14 px town tiles)
+local MAX_LOADED = 9 -- full chunks at once
+local DETAIL_FROM = 5 -- screen pixels a cell from which the full chunks are worth loading
+local CHECK_SEC = 0.4
+local RETRY_SEC = 10 -- after the budget refused an image
+
+-- a flat part turned like the ground (image x east, y south) carrying one image
+local function imagePart(name: string, cx: number, cy: number, cw: number, ch: number, size: Vector2, rise: number, pixelated: boolean): (Part, ImageLabel)
+	local part = Instance.new("Part")
+	part.Name = name
+	part.Anchored, part.CanCollide, part.CanQuery, part.CanTouch, part.CastShadow = true, false, false, false, false
+	part.Transparency = 1
+	part.Size = Vector3.new(ch * S, 0.05, cw * S)
+	part.CFrame = CFrame.new((cx + cw / 2) * S, World.GROUND_Y + rise, (cy + ch / 2) * S) * CFrame.Angles(0, World.TOP_GUI_YAW, 0)
+	local gui = Instance.new("SurfaceGui")
+	gui.Face = Enum.NormalId.Top
+	gui.SizingMode = Enum.SurfaceGuiSizingMode.FixedSize
+	gui.CanvasSize = size
+	gui.LightInfluence = 0
+	gui.Parent = part
+	local label = Instance.new("ImageLabel")
+	label.Size = UDim2.fromScale(1, 1)
+	label.BackgroundTransparency = 1
+	label.ResampleMode = if pixelated then Enum.ResamplerMode.Pixelated else Enum.ResamplerMode.Default
+	label.Parent = gui
+	return part, label
+end
+
+local function newImage(size: Vector2): any
+	local ok, image = pcall(function()
+		return AssetService:CreateEditableImage({ Size = size })
+	end)
+	return if ok then image else nil
+end
+
+type Chunk = { cx: number, cy: number, cw: number, ch: number, name: string, mod: ModuleScript, part: Part?, image: any }
 
 -- returns true when the town art was drawn
 function TownRenderer.build(mapId: string, parent: Instance): boolean
@@ -38,50 +76,172 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 	local meta = require(metaModule) :: any
 	local folder = Instance.new("Folder")
 	folder.Name = "Towns"
-	local drawn = 0
+	local chunks: { Chunk } = {}
+	local mapW, mapH = 0, 0
 	for _, c in meta.chunks do
-		local cx, cy, cw, ch, name = c[1], c[2], c[3], c[4], c[5]
-		local mod = assets:FindFirstChild(name)
-		if not mod or not mod:IsA("ModuleScript") then
-			warn(`[TownRenderer] {name} missing, that part of the map has no towns drawn`)
-			continue
+		local mod = assets:FindFirstChild(c[5])
+		if mod and mod:IsA("ModuleScript") then
+			table.insert(chunks, { cx = c[1], cy = c[2], cw = c[3], ch = c[4], name = c[5], mod = mod, part = nil, image = nil })
+			mapW, mapH = math.max(mapW, c[1] + c[3]), math.max(mapH, c[2] + c[4])
+		else
+			warn(`[TownRenderer] {c[5]} missing, that part of the map has no towns drawn`)
 		end
+	end
+	if #chunks == 0 then
+		return false
+	end
+	local function decode(c: Chunk): (buffer, number, number)
+		local chunk = require(c.mod) :: any
+		return Inflate.raw(MapCodec.base64Decode(chunk.deflate), chunk.width * chunk.height * 4), chunk.width, chunk.height
+	end
+
+	-- the overview: every chunk sampled down to 2 px a cell (2 x 2 samples a pixel), in one image
+	local ow, oh = mapW * OVERVIEW_PX, mapH * OVERVIEW_PX
+	local overviewPixels = buffer.create(ow * oh * 4)
+	local step = TILE_PX / OVERVIEW_PX
+	local drawn = 0
+	for i, c in chunks do
 		local ok, err = pcall(function()
-			local chunk = require(mod) :: any
-			local size = Vector2.new(chunk.width, chunk.height)
-			local pixels = Inflate.raw(MapCodec.base64Decode(chunk.deflate), chunk.width * chunk.height * 4)
-			local image = AssetService:CreateEditableImage({ Size = size })
-			image:WritePixelsBuffer(Vector2.zero, size, pixels)
-			local part = Instance.new("Part")
-			part.Name = name
-			part.Anchored, part.CanCollide, part.CanQuery, part.CanTouch, part.CastShadow = true, false, false, false, false
-			part.Transparency = 1
-			-- turned by TOP_GUI_YAW like the ground, so image x runs east and y south (local X/Z swap)
-			part.Size = Vector3.new(ch * S, 0.05, cw * S)
-			part.CFrame = CFrame.new((cx + cw / 2) * S, World.GROUND_Y + HEIGHT, (cy + ch / 2) * S) * CFrame.Angles(0, World.TOP_GUI_YAW, 0)
-			local gui = Instance.new("SurfaceGui")
-			gui.Face = Enum.NormalId.Top
-			gui.SizingMode = Enum.SurfaceGuiSizingMode.FixedSize
-			gui.CanvasSize = size
-			gui.LightInfluence = 0
-			gui.Parent = part
-			local label = Instance.new("ImageLabel")
-			label.Size = UDim2.fromScale(1, 1)
-			label.BackgroundTransparency = 1
-			label.ResampleMode = Enum.ResamplerMode.Pixelated
-			label.ImageContent = Content.fromObject(image)
-			label.Parent = gui
-			part.Parent = folder
+			local px, w, h = decode(c)
+			local x0, y0 = c.cx * OVERVIEW_PX, c.cy * OVERVIEW_PX
+			for oy = 0, c.ch * OVERVIEW_PX - 1 do
+				for ox = 0, c.cw * OVERVIEW_PX - 1 do
+					local r, g, b, a = 0, 0, 0, 0
+					for sy = 0, 1 do
+						for sx = 0, 1 do
+							local x = math.min(w - 1, math.floor((ox + 0.25 + sx * 0.5) * step))
+							local y = math.min(h - 1, math.floor((oy + 0.25 + sy * 0.5) * step))
+							local o = (y * w + x) * 4
+							local pa = buffer.readu8(px, o + 3)
+							r += buffer.readu8(px, o) * pa
+							g += buffer.readu8(px, o + 1) * pa
+							b += buffer.readu8(px, o + 2) * pa
+							a += pa
+						end
+					end
+					local o = ((y0 + oy) * ow + x0 + ox) * 4
+					if a > 0 then
+						buffer.writeu8(overviewPixels, o, math.floor(r / a + 0.5))
+						buffer.writeu8(overviewPixels, o + 1, math.floor(g / a + 0.5))
+						buffer.writeu8(overviewPixels, o + 2, math.floor(b / a + 0.5))
+						buffer.writeu8(overviewPixels, o + 3, math.floor(a / 4 + 0.5))
+					end
+				end
+			end
 		end)
 		if ok then
 			drawn += 1
 		else
-			warn(`[TownRenderer] {name} could not be drawn:`, err)
+			warn(`[TownRenderer] {c.name} could not be read:`, err)
+		end
+		if i % 4 == 0 then
+			task.wait() -- spread the decoding over a few frames
 		end
 	end
+	local overviewOk = false
+	local overview = newImage(Vector2.new(ow, oh))
+	if overview then
+		overview:WritePixelsBuffer(Vector2.zero, Vector2.new(ow, oh), overviewPixels)
+		local part, label = imagePart("TownOverview", 0, 0, mapW, mapH, Vector2.new(ow, oh), HEIGHT, false)
+		label.ImageContent = Content.fromObject(overview)
+		part.Parent = folder
+		overviewOk = true
+	else
+		warn("[TownRenderer] the image budget refused even the town overview; towns are not drawn")
+	end
 	folder.Parent = parent
-	print(`[TownRenderer] {mapId}: {drawn} of {#meta.chunks} town chunks drawn`)
-	return drawn > 0
+	print(`[TownRenderer] {mapId}: overview of {drawn} of {#chunks} chunks ({ow}x{oh} px); full chunks stream in near the camera`)
+
+	-- the full chunks, near the camera only
+	local loaded = 0
+	local holdUntil = 0
+	local function unload(c: Chunk)
+		if c.part then
+			c.part:Destroy()
+			c.part = nil
+		end
+		if c.image then
+			c.image:Destroy()
+			c.image = nil
+			loaded -= 1
+		end
+	end
+	local function load(c: Chunk): boolean
+		local ok, px, w, h = pcall(decode, c)
+		if not ok then
+			return true -- unreadable: skip it, not a budget problem
+		end
+		local size = Vector2.new(w, h)
+		local image = newImage(size)
+		if not image then
+			return false
+		end
+		image:WritePixelsBuffer(Vector2.zero, size, px)
+		local part, label = imagePart(c.name, c.cx, c.cy, c.cw, c.ch, size, HEIGHT + 0.01, true)
+		label.ImageContent = Content.fromObject(image)
+		part.Parent = folder
+		c.part, c.image = part, image
+		loaded += 1
+		return true
+	end
+	local acc = 0
+	RunService.Heartbeat:Connect(function(dt)
+		acc += dt
+		if acc < CHECK_SEC then
+			return
+		end
+		acc = 0
+		local cam = workspace.CurrentCamera
+		if not cam then
+			return
+		end
+		-- where the camera looks on the ground, and how big a cell is on screen there
+		local cf = cam.CFrame
+		local dir = cf.LookVector
+		local t = if dir.Y < -1e-3 then (World.GROUND_Y - cf.Position.Y) / dir.Y else 0
+		local focus = cf.Position + dir * math.max(0, t)
+		local dist = math.max(1, (cf.Position - focus).Magnitude)
+		local tanHalf = math.tan(math.rad(cam.FieldOfView) / 2)
+		local cellPx = S * cam.ViewportSize.Y / (2 * dist * tanHalf)
+		local fx, fy = focus.X / S, focus.Z / S
+		local reach = dist * tanHalf * math.max(1, cam.ViewportSize.X / math.max(1, cam.ViewportSize.Y)) / S * 1.4
+		local want: { Chunk } = {}
+		if cellPx >= DETAIL_FROM or not overviewOk then
+			for _, c in chunks do
+				local nx = math.clamp(fx, c.cx, c.cx + c.cw)
+				local ny = math.clamp(fy, c.cy, c.cy + c.ch)
+				if (nx - fx) ^ 2 + (ny - fy) ^ 2 <= reach * reach then
+					table.insert(want, c)
+				end
+			end
+			table.sort(want, function(a, b)
+				return (a.cx + a.cw / 2 - fx) ^ 2 + (a.cy + a.ch / 2 - fy) ^ 2 < (b.cx + b.cw / 2 - fx) ^ 2 + (b.cy + b.ch / 2 - fy) ^ 2
+			end)
+		end
+		local keep: { [Chunk]: boolean } = {}
+		for i = 1, math.min(#want, MAX_LOADED) do
+			keep[want[i]] = true
+		end
+		for _, c in chunks do
+			if c.image and not keep[c] then
+				unload(c)
+			end
+		end
+		if os.clock() < holdUntil then
+			return
+		end
+		for c in keep do
+			if not c.image then
+				if not load(c) then
+					holdUntil = os.clock() + RETRY_SEC
+					warn("[TownRenderer] the image budget is full; close-up town art waits (the overview stays)")
+					break
+				end
+				break -- one chunk a check, so loading never stalls a frame for long
+			end
+		end
+	end)
+	return overviewOk
 end
 
 return TownRenderer
