@@ -21,6 +21,8 @@ local BuildController = require(script.Input.BuildController)
 local DropController = require(script.Input.DropController)
 local Hud = require(script.UI.Hud)
 local RigCard = require(script.UI.RigCard)
+local AdminPanel = require(script.UI.AdminPanel)
+local Atmosphere = require(script.Rendering.Atmosphere)
 local Rules = require(Shared.Config.Rules)
 local DevFlags = require(script.Dev.DevFlags)
 
@@ -76,8 +78,14 @@ do
 		tank = rigRules:number("rigs.upgrades.tank.cost"), pumpMult = rigRules:number("rigs.upgrades.pump.mult"),
 		tankMult = rigRules:number("rigs.upgrades.tank.mult"), baseTank = rigRules:number("rigs.tank"),
 	})
+	AdminPanel.start(send) -- the owner's test panel; stays hidden unless the server says admin
+	Atmosphere.start()
 	stateEvent.OnClientEvent:Connect(function(state)
 		Hud.update(state, info.side)
+		AdminPanel.update(state)
+		if state.day or state.weather then
+			Atmosphere.apply(state.day, state.weather)
+		end
 		if state.rigs then
 			rigCard.update(state.rigs, state.oil, state.trucksIdle)
 		end

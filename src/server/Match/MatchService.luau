@@ -23,9 +23,11 @@ local ValueNoise = require(Shared.Utilities.ValueNoise)
 local Rng = require(Shared.Utilities.Rng)
 local Roads = require(Shared.Simulation.Roads)
 local Sim = require(Shared.Simulation.Sim)
+local UnitStages = require(Shared.Presentation.UnitStages)
 local Bot = require(Shared.Simulation.Bot)
 local Protocol = require(Shared.Protocol.Protocol)
 local Net = require(script.Parent.Parent.Networking.Net)
+local Admin = require(script.Parent.Admin)
 local GameData = Shared:WaitForChild("GameData", 10)
 assert(GameData, "src/shared/GameData missing: run tools/conversion/generate_all.py (see README)")
 local Locked = require(GameData.Locked)
@@ -70,6 +72,10 @@ end
 local function onIntent(player: Player, raw: any)
 	local side = sideOf[player]
 	if not side or side == 0 then
+		return
+	end
+	if type(raw) == "table" and raw.kind == "admin" then -- the owner's test panel (checked in Admin)
+		Net.sendState(player, { notice = Admin.handle(sim, player, side, raw) })
 		return
 	end
 	local intent, err = Protocol.parse(raw, map.width, map.height)
@@ -491,8 +497,12 @@ local function raisedOf(e: any): number? -- the game's tI, raised share only
 	end
 	return math.min(1, still / math.max(1e-6, sim.rules:number(if mortar then "mortar.setupSec" else "artillery.setupSec")))
 end
+-- Missile artillery uses codes 3 loaded, 4/5 raised, 6 empty; the row shape is unchanged.
 local function unitStage(e: any): number
-	if e.kind == "artillery" or e.kind == "rocket" then
+	if e.kind == "artillery" then
+		local missile = sim.rules:has(sim.unitKey(e) .. ".missile.splash")
+		return UnitStages.artillery(missile, e.firedAt, e.shotTimer, raisedOf(e))
+	elseif e.kind == "rocket" then
 		local r = raisedOf(e)
 		return if r then stageOf(r, STAGES[e.kind]) else 0
 	elseif e.kind == "command" and e.deployAt then
@@ -901,6 +911,10 @@ local function privateState()
 		local s = sim.sides[side]
 		local payload: { [string]: any } = { winner = sim.winner }
 		payload.alerts = pendingAlerts[side]
+		-- time of day and weather, for the client's lighting; admin: show the test panel
+		payload.day = { math.floor(Admin.phaseOf(sim) * 1000) / 1000, math.floor(sim.nightAmount() * 100) / 100 }
+		payload.weather = Admin.weather()
+		payload.admin = Admin.isAdmin(player)
 		if s then
 			local hq = sim.hqOf(side)
 			payload.oil = math.floor(s.oil)
@@ -1282,6 +1296,7 @@ function MatchService.start(mapModule: string)
 			for _, bot in bots do
 				bot.step(step)
 			end
+			Admin.step(sim)
 			sim.step(step)
 			for _, ev in sim.takeEvents() do
 				alertsFor(ev)

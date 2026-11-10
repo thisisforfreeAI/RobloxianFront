@@ -2199,6 +2199,14 @@ if fs.isFile(matchPath) then
 		end
 		assert(hp0 - hp1 > 100, `the missile hurt all three: {hp0 - hp1}`)
 		assert(tbm.shotTimer > 25, `reloading 40 s: {tbm.shotTimer}`)
+		local Stages = require("../src/shared/Presentation/UnitStages")
+		eq(Stages.artillery(true, tbm.firedAt, tbm.shotTimer, 1), Stages.MISSILE_EMPTY)
+		-- Movement must not refill the rack; the same authoritative timer still runs.
+		sim.orderMove(1, { tbm.id }, 35.5, 38.5)
+		run(sim, 1)
+		eq(Stages.artillery(true, tbm.firedAt, tbm.shotTimer, 0), Stages.MISSILE_EMPTY)
+		run(sim, math.max(0, tbm.shotTimer) + 0.1)
+		eq(Stages.artillery(true, tbm.firedAt, tbm.shotTimer, 0), Stages.MISSILE_LOADED, "reload completes from the sim timer")
 	end)
 	test("bot: an idle reloaded rocket launcher fires at the best enemy building in reach", function()
 		local sim = newSim()
@@ -4241,6 +4249,10 @@ end)
 require("./death_effects")(test, eq)
 
 require("./men_shadows")(test, eq)
+
+require("./unit_stages")(test, eq)
+
+require("./image_budget")(test, eq)
 
 print(`\n{passed} passed, {failed} failed`)
 if failed > 0 then

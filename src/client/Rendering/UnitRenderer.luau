@@ -17,7 +17,7 @@
 	at night); the shadow's stretch is applied after the facing's small leftover turn rather than
 	between two turns (within 11 degrees, a hair of shear).
 ]]
-local AssetService = game:GetService("AssetService")
+local ImageMemory = require(script.Parent.ImageMemory)
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
@@ -196,7 +196,8 @@ local function haloContent(): Content
 			buffer.writeu8(buf, o + 3, math.floor(a1 * a2 * 255 + 0.5))
 		end
 	end
-	local image = AssetService:CreateEditableImage({ Size = Vector2.new(n, n) })
+	local image = ImageMemory.create(Vector2.new(n, n))
+	assert(image, "EditableImage memory unavailable for optional halo")
 	image:WritePixelsBuffer(Vector2.zero, Vector2.new(n, n), buf)
 	haloImage = Content.fromObject(image)
 	return haloImage :: Content
@@ -318,7 +319,8 @@ local function create(id: number, kind: string, side: number): View
 		for _, name in roster do
 			local fig = SpriteBank.figure(name)
 			if not fig then
-				table.clear(men)
+				for _, ms in men do ms.quad:Destroy() end
+			table.clear(men)
 				break
 			end
 			table.insert(men, manQuad(model, fig, color, name))
@@ -404,6 +406,11 @@ end
 
 local function placeFx(v: View, look: SpriteBank.Look, pos: Vector3, hull: number, turret: number)
 	local sheets = look.fx :: any
+	-- State-body art may fit while an optional mask is refused by the device image budget.
+	if not sheets then
+		for _, f in v.fx do f.image.Visible = false end
+		return
+	end
 	-- how big the unit is on screen: the game swaps in the thicker half-size rim under 0.6 x the frame
 	local cam = workspace.CurrentCamera
 	local px = math.huge
@@ -429,7 +436,7 @@ local function placeFx(v: View, look: SpriteBank.Look, pos: Vector3, hull: numbe
 			elseif f.layer == "turret" then (look.turret :: SpriteBank.Layer).base
 			elseif v.empty and look.empty then look.empty.base
 			else look.body.base
-		local y0 = sheet.strips[base]
+		local y0 = sheet and sheet.strips[base]
 		if y0 == nil then
 			f.image.Visible = false
 			continue
@@ -479,12 +486,17 @@ local function setLook(v: View, look: SpriteBank.Look)
 		body.facing = -1
 	end
 	for _, sp in v.sprites do
+		sp.quad.Size = Vector3.new(look.cells * S, 0.05, look.cells * S)
 		if sp.turret then
 			local gui = sp.quad:FindFirstChildOfClass("SurfaceGui")
 			if gui then
 				gui.Enabled = look.turret ~= nil
 			end
 		end
+	end
+	if v.halo then
+		local d = look.size * HALO.share * S
+		v.halo.Size = Vector3.new(d * HALO.flat, 0.05, d)
 	end
 	v.facing = -1
 end
@@ -1082,10 +1094,38 @@ local function stepCrews(dt: number)
 	end
 end
 
+local function activeImageContent(): any
+	local protected = {}
+	local function mark(content: any) if content then protected[content] = true end end
+	local function look(l: any)
+		if not l then return end
+		mark(l.body.content)
+		if l.turret then mark(l.turret.content) end
+		if l.empty then mark(l.empty.content) end
+		if l.fx then for _, sheet in l.fx do if sheet then mark(sheet.content) end end end
+	end
+	local function man(ms: any)
+		mark(ms.fig.content)
+		if ms.effects then mark(ms.effects.atlas.content) end
+	end
+	for _, v in views do
+		look(v.base); look(v.look)
+		for _, sp in v.sprites do if sp.sootSheet then mark(sp.sootSheet.content) end end
+		for _, f in v.fx do if f.sheet then mark(f.sheet.content) end end
+		for _, ms in v.men do man(ms) end
+		if v.tube then man(v.tube) end
+		for _, h in v.hands or {} do man(h.ms) end
+	end
+	for _, w in wrecks do look(w.look) end -- includes wrecks currently hidden under fog
+	for _, h in crews do man(h.ms) end
+	return protected
+end
+
 function UnitRenderer.start()
 	folder = Instance.new("Folder")
 	folder.Name = "WarFrontUnits"
 	folder.Parent = workspace
+	ImageMemory.setGuard(activeImageContent)
 	SpriteBank.preload()
 	RunService.RenderStepped:Connect(function(dt)
 		DeathRenderer.step(dt)

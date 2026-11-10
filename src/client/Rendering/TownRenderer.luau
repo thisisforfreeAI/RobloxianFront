@@ -15,7 +15,7 @@
 	Not yet: the roof shading (the file's aux data drives the game's lighting), trees swaying, burning
 	or being cleared round new buildings.
 ]]
-local AssetService = game:GetService("AssetService")
+local ImageMemory = require(script.Parent.ImageMemory)
 local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
@@ -23,6 +23,7 @@ local Shared = ReplicatedStorage:WaitForChild("Shared")
 local World = require(Shared.Config.World)
 local MapCodec = require(Shared.Maps.MapCodec)
 local Inflate = require(Shared.Utilities.Inflate)
+local ImagePixels = require(Shared.Presentation.ImagePixels)
 
 local TownRenderer = {}
 
@@ -37,7 +38,7 @@ local RETRY_SEC = 1.5 -- after the budget refused an image
 local KEEP_REACH = 1.6 -- shown chunks stay until this far past the view (so panning back is instant)
 local PIXEL_CACHE = 6 -- chunk pixels kept in memory for chunks not shown (3.2 MB each)
 local SHOW_MS = 6 -- per check, time spent showing chunks whose pixels are ready
-local POOL_MAX = 2 -- spare images kept for reuse instead of asking the budget again
+local POOL_MAX = 1 -- spare images kept for reuse instead of asking the budget again
 
 -- a flat part turned like the ground (image x east, y south) carrying one image
 local function imagePart(name: string, cx: number, cy: number, cw: number, ch: number, size: Vector2, rise: number, pixelated: boolean): (Part, ImageLabel)
@@ -61,14 +62,11 @@ local function imagePart(name: string, cx: number, cy: number, cw: number, ch: n
 	return part, label
 end
 
-local function newImage(size: Vector2): any
-	local ok, image = pcall(function()
-		return AssetService:CreateEditableImage({ Size = size })
-	end)
-	return if ok then image else nil
+local function newImage(size: Vector2, kind: string?): any
+	return ImageMemory.create(size, kind or "detail")
 end
 
-type Chunk = { cx: number, cy: number, cw: number, ch: number, name: string, mod: ModuleScript, part: Part?, image: any, packed: buffer?, px: buffer?, w: number, h: number, used: number }
+type Chunk = { cx: number, cy: number, cw: number, ch: number, name: string, mod: ModuleScript, part: Part?, image: any, packed: buffer?, px: buffer?, w: number, h: number, iw: number, ih: number, distance: number, used: number }
 
 -- returns true when the town art was drawn
 function TownRenderer.build(mapId: string, parent: Instance): boolean
@@ -85,7 +83,7 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 	for _, c in meta.chunks do
 		local mod = assets:FindFirstChild(c[5])
 		if mod and mod:IsA("ModuleScript") then
-			table.insert(chunks, { cx = c[1], cy = c[2], cw = c[3], ch = c[4], name = c[5], mod = mod, part = nil, image = nil, packed = nil, px = nil, w = 0, h = 0, used = 0 })
+			table.insert(chunks, { cx = c[1], cy = c[2], cw = c[3], ch = c[4], name = c[5], mod = mod, part = nil, image = nil, packed = nil, px = nil, w = 0, h = 0, iw = 0, ih = 0, distance = math.huge, used = 0 })
 			mapW, mapH = math.max(mapW, c[1] + c[3]), math.max(mapH, c[2] + c[4])
 		else
 			warn(`[TownRenderer] {c[5]} missing, that part of the map has no towns drawn`)
@@ -148,7 +146,7 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 		end
 	end
 	local overviewOk = false
-	local overview = newImage(Vector2.new(ow, oh))
+	local overview = newImage(Vector2.new(ow, oh), "core")
 	if overview then
 		overview:WritePixelsBuffer(Vector2.zero, Vector2.new(ow, oh), overviewPixels)
 		local part, label = imagePart("TownOverview", 0, 0, mapW, mapH, Vector2.new(ow, oh), HEIGHT, false)
@@ -178,19 +176,15 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 			c.part = nil
 		end
 		if c.image then
-			-- keep its pixels (a quick copy back out of the image) so it can come back without inflating
-			local okRead, px = pcall(function()
-				return c.image:ReadPixelsBuffer(Vector2.zero, Vector2.new(c.w, c.h))
-			end)
-			c.px = if okRead then px else nil
+			-- Full source pixels stay in the bounded CPU cache; native images may be half-size.
 			c.used = clock
-			local k = sizeKey(c.w, c.h)
+			local k = sizeKey(c.iw, c.ih)
 			if pooled < POOL_MAX then
 				pool[k] = pool[k] or {}
 				table.insert(pool[k], c.image)
 				pooled += 1
 			else
-				c.image:Destroy()
+				ImageMemory.release(c.image)
 			end
 			c.image = nil
 			loaded -= 1
@@ -207,7 +201,7 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 			-- spare images of another size: give them back and ask again
 			for _, l in pool do
 				for _, im in l do
-					im:Destroy()
+					ImageMemory.release(im)
 				end
 				table.clear(l)
 			end
@@ -235,24 +229,61 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 		end
 	end
 	-- returns false when the budget refused the image
-	local function show(c: Chunk): boolean
+	local function show(c: Chunk, half: boolean): boolean
 		local px = c.px :: buffer
-		local image = takeImage(c.w, c.h)
-		if not image then
-			return false
+		local iw, ih = if half then math.ceil(c.w / 2) else c.w, if half then math.ceil(c.h / 2) else c.h
+		local image = takeImage(iw, ih)
+		if not image and not half then
+			half = true
+			iw, ih = math.ceil(c.w / 2), math.ceil(c.h / 2)
+			image = takeImage(iw, ih)
 		end
-		local size = Vector2.new(c.w, c.h)
-		image:WritePixelsBuffer(Vector2.zero, size, px)
+		if not image then return false end
+		local size = Vector2.new(iw, ih)
+		local ok = pcall(function()
+			if half then px = ImagePixels.half(px, c.w, c.h) end
+			image:WritePixelsBuffer(Vector2.zero, size, px)
+		end)
+		if not ok then ImageMemory.release(image); return false end
 		local part, label = imagePart(c.name, c.cx, c.cy, c.cw, c.ch, size, HEIGHT + 0.01, true)
 		label.ImageContent = Content.fromObject(image)
 		part.Parent = folder
-		c.part, c.image = part, image
-		c.px = nil -- the image holds them now
+		c.part, c.image, c.iw, c.ih = part, image, iw, ih
 		loaded += 1
 		return true
 	end
+	local function drainPool()
+		for _, list in pool do
+			for _, image in list do ImageMemory.release(image) end
+			table.clear(list)
+		end
+		pooled = 0
+	end
+	local unregister = ImageMemory.register(10, function(needed: number, _protected: any)
+		local before = ImageMemory.stats()
+		drainPool()
+		local used = ImageMemory.stats()
+		if before - used >= needed then return end
+		local shown = {}
+		for _, c in chunks do if c.image then table.insert(shown, c) end end
+		table.sort(shown, function(a, b) return a.distance > b.distance end)
+		for _, c in shown do
+			unload(c); drainPool()
+			used = ImageMemory.stats()
+			if before - used >= needed then break end
+		end
+		trimPixels()
+	end)
+	local connection: RBXScriptConnection? = nil
+	folder.Destroying:Connect(function()
+		if connection then connection:Disconnect() end
+		unregister()
+		for _, c in chunks do if c.image then unload(c) end end
+		drainPool(); ImageMemory.release(overview)
+	end)
+	local warnedPressure = false
 	local acc = 0
-	RunService.Heartbeat:Connect(function(dt)
+	connection = RunService.Heartbeat:Connect(function(dt)
 		acc += dt
 		if acc < CHECK_SEC then
 			return
@@ -278,6 +309,8 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 			local ny = math.clamp(fy, c.cy, c.cy + c.ch)
 			return math.sqrt((nx - fx) ^ 2 + (ny - fy) ^ 2)
 		end
+		for _, c in chunks do c.distance = far(c) end
+		local preferHalf = cellPx <= TILE_PX / 2
 		local detail = cellPx >= DETAIL_FROM or not overviewOk
 		local want: { Chunk } = {}
 		local keep: { [Chunk]: boolean } = {}
@@ -313,7 +346,11 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 		for _, c in want do
 			c.used = clock
 			if c.image then
-				continue
+				if not preferHalf and c.iw < c.w and ImageMemory.canDetail(Vector2.new(c.w, c.h)) then
+					unload(c) -- upgrade when there is real headroom, not every tick under pressure
+				else
+					continue
+				end
 			end
 			if not c.px then
 				if inflated then
@@ -326,9 +363,12 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 				end
 				c.px, c.w, c.h = px, w, h
 			end
-			if not show(c) then
+			if not show(c, preferHalf) then
 				holdUntil = os.clock() + RETRY_SEC
-				warn("[TownRenderer] the image budget is full; close-up town art waits (the overview stays)")
+				if not warnedPressure then
+					warnedPressure = true
+					warn("[TownRenderer] detail is limited by image memory; unit art takes priority, overview stays")
+				end
 				break
 			end
 			if (os.clock() - t0) * 1000 > SHOW_MS then

@@ -984,3 +984,139 @@ Verification actually run on Windows:
 - Studio visuals, Script Analysis and device image-budget/performance checks are **not run**.
   New manual tests: B96-B98. The owner's earlier "looking good" was informal feedback on the death
   effects; no individual Studio result row was marked passed on that basis.
+
+## Admin panel (2026-11-10)
+
+An owner-only test panel (not part of WarFront). Server: `src/server/Match/Admin.luau`. It allows
+Studio, the place owner (game.CreatorId, or rank 255 in the owning group) and user ids listed in EXTRA,
+and checks every command. Commands arrive as `{kind = "admin"}` intents, which MatchService handles
+before Protocol.parse. `time` sets `sim.dayOffset`, which the sim's day/night (nightAmount, and so
+sight at night) already used, and can freeze it. `weather` stores the weather name. `oil` sets or adds
+to the sender's oil. The private state now carries `day = {phase, night}`, `weather` and `admin`.
+Client: `UI/AdminPanel.luau` (Admin button or F2) and `Rendering/Atmosphere.luau`. Atmosphere darkens
+and cools the view at night (a ColorCorrectionEffect; strengths picked by eye, APPROX) and draws weather
+haze and streaks. Weather only changes the look: its gameplay effects (sight, reach, pace) aren't
+ported. The clock face puts 06:00 at the game's day phase 0. Studio test B99.
+
+## Republic empty missile rack (2026-11-10)
+
+The source's mte/gte uses rep_artillery_empty for a missile-equipped artillery unit that has a defined
+firedAt and a positive shotTimer. This overrides its raised/packing appearance, even while moving;
+the loaded appearance returns when the authoritative timer reaches zero. A never-fired launcher is
+not empty merely because its shot timer is positive. This applies to the Republic single-missile
+artillery, not the Coalition rocket launcher. The existing reload jitter/veterancy timing is preserved;
+there is no new client timer or fixed 40-second visual countdown.
+
+Shared.Presentation.UnitStages computes the presentation code. MatchService uses the current unit
+definition's missile.splash field, as the sim does for the missile weapon, and places the result in
+the existing snapshot unit[17]: artillery 0/1/2 keep their old meaning, 3 is Republic loaded, 4/5 its
+raised looks, 6 empty. Rocket, scout and HQ-truck stages retain their existing behavior and codes.
+No gameplay rules, prices, damage or reload mechanics were changed.
+
+tools/asset_pipeline/pack_missile_rack.py reads the source unit metadata and units-top-republic.png
+directly from the read-only app.asar. It generates the four original looks (loaded, set1, set2, empty),
+with paint, full/half rims and shadows, using the existing unit packer. The local modules are named
+OrigArtillery_rep_loaded / rep_set1 / rep_set2 / rep_empty and their Rim/RimHalf/Shade counterparts.
+The source-derived cells/size/artH metadata travels with each body atlas; SpriteBank.state reads it,
+and UnitRenderer resizes body quads and halo when changing looks so the raised state is not stretched
+to the generic howitzer's dimensions. Every state still loads only when first needed.
+
+Missing state art retains the existing base look. If a state body fits but its optional rim/shadow
+does not fit the device image budget (or its local module is missing), placeFx now hides that layer
+instead of indexing a missing sheet; the body continues drawing and masks can return with a later
+state that has them. Studio/device verification of those fallback paths is still required.
+
+Generation (already run; needs Python with Pillow/numpy and Node):
+
+~~~powershell
+python tools/asset_pipeline/pack_missile_rack.py "A:\SteamLibrary\steamapps\common\WarFront Demo"
+~~~
+
+Generated art remains under git-ignored DevAssets and assets/sprites/source/original/unit_rep_artillery;
+source metadata and the local packing spec are under docs/private/missile_rack_source.json and
+sprite_spec_missile.json. No original rows, extracted tables or pixels are added to tracked files.
+This generator is a separate step; generate_all.py does not invoke it.
+
+Scope / APPROX inherited from earlier renderer work: other Republic unit sprites and faction-specific
+wreck/soot selection are not migrated in this batch (those still use generic kind banks). Fixed-noon
+shadows and the existing unit rim/half/shadow resampling approximations remain. The empty-rack
+selection and its reset condition are confirmed in the source, not approximated.
+
+Claude's concurrent Admin.luau, AdminPanel, Atmosphere, MatchService admin hooks, town streaming and
+Studio test B99 are preserved. No admin permission, clock, weather or oil behavior was changed here.
+The owner's report of an admin panel is context; its permission/security behavior was not tested here.
+
+Verification actually run on Windows:
+- Full lune run tests/run: **169 passed, 0 failed** (3 new presentation/atlas tests). The existing
+  Republic missile sim test also now checks empty-after-firing, empty-while-moving and loaded-after-
+  reload against the real simulation timer.
+- Rojo build succeeded, including the current admin-panel files and final optional-mask guard.
+- @lune/luau syntax compilation passed for UnitStages, MatchService, SpriteBank, UnitRenderer, new
+  tests, and the current Admin/AdminPanel/Atmosphere modules. This is not Studio type checking.
+- The local generator ran and all 16 generated state/mask atlases decoded in the test.
+- Studio tests **B100-B102 remain not run**; no admin or visual Studio result was marked passed.
+
+## Shared EditableImage memory budget (2026-11-10)
+
+Owner reported a repeated EditableImage memory-budget warning loop and SpriteBank's subsequent
+attempt to index nil with WritePixelsBuffer. The nil image is the documented result of a refused
+device allocation, not a missing source PNG. Reference:
+https://create.roblox.com/docs/reference/engine/classes/AssetService#CreateEditableImage
+
+Two existing policies compounded the extra sprite/mask pages: SpriteBank preloaded every soldier
+role plus an infantry icon even when separate men were used, and town detail could retain nine
+896px images plus two pooled images (about 35 MB raw for full-sized chunks). Cached vehicle/state,
+wreck and figure pages also held their native images indefinitely after nobody used them.
+
+New Shared.Presentation.ImageBudget (pure, injected allocator) and Rendering.ImageMemory coordinate
+the rendering consumers. Each created native image is accounted for and explicitly released through
+Destroy. Unit art, fog, ground and the small particle/halo images have priority over town detail.
+The initial streaming policy is a 48 MiB tracked working target, 16 MiB detail allowance including
+pooled images, and 8 MiB of headroom before admitting detail. These are conservative PORT POLICIES,
+not claimed Roblox/device limits or original-game constants. Active core images can exceed the soft
+working target; a real native refusal learns a lower conservative ceiling and prevents repeated
+identical futile native calls. On a core refusal the manager reclaims all eligible detail/unused
+pages and retries once only if storage was actually released.
+
+Town reclamation drains the spare image pool first, then releases farthest detail images while
+keeping the overview. SpriteBank and ManEffects can then release unused cached pages. UnitRenderer
+supplies an active-Content guard covering current/base looks, masks, soot, men, mortar tube, engineer
+workers, fleeing workers and wrecks including fog-hidden wrecks. Pages being retrieved for a new
+view also get a one-second construction grace period. Evicting an unused page invalidates cached
+wrappers so a later request reloads it safely; failed look caches may retry after storage is freed.
+The guard is conservative: it does not evict a page merely because its unit is off screen.
+
+Startup now warms just leader/rifle figures. Other crew/vehicle pages and the infantry icon fallback
+load on first use. Allocation failure is checked before WritePixelsBuffer; partial failed ground
+bakes and sprite loads release their allocated images rather than leaking them. Repeated SpriteBank
+and figure warnings are rate-limited per asset. A client already using old cached modules/images
+must be stopped and started again after Rojo sync; respawning alone does not clear those caches.
+
+The fast town-streaming work remains: 0.1 s checks, nearest-first loading, compressed-byte and decoded
+pixel caches, pre-inflation, view-distance hysteresis and image reuse. The spare native image pool
+is reduced to one and counts toward the detail allowance. Detail can use 7 px/cell half-size images
+when that meets the on-screen density or full-size allocation does not fit. Each half-size image uses
+one quarter of the native pixel storage of its 14 px/cell source. Full source pixels are retained in
+the bounded CPU cache for later upgrades; alpha-weighted filtering avoids dark transparent fringes.
+Full detail upgrades when zoom/headroom allow. Unused art can also be reclaimed for those upgrades,
+without evicting one visible town chunk to allocate another. Budget refusal no longer triggers a
+warning every 1.5 seconds: admission suppresses known failures, with one town pressure notice.
+Map teardown unregisters its reclaimer, disconnects streaming and releases overview/detail/pool images.
+
+APPROX / limits: resolution fallback and all memory thresholds are display policies, not traced game
+behavior. Raw RGBA accounting does not measure native GPU overhead. Actual limits vary by device;
+one initial native warning can still occur when discovering an unknown device ceiling. A device
+that cannot hold even the currently required art must keep the existing safe fallback. This fixes
+allocation handling and avoidable retention; it does not raise Roblox's limit. The synthetic atlas
+test board and DevFlags.ATLAS_TEST_BOARD were left untouched (reserved headroom covers unmanaged work).
+No original art/data was generated or changed. Admin, clock, weather, gameplay, source install and
+Git were not changed. Day/night parity remains the next feature after this memory retest.
+
+Verification actually run on Windows:
+- Final full lune run tests/run: **181 passed, 0 failed**, including 12 new allocation/reclamation,
+  retry suppression, priority, cleanup, upgrade-recovery and alpha-filter tests with simulated limits.
+- Rojo build succeeded after the final policy change.
+- @lune/luau syntax compilation passed for all changed Luau modules and tests; not Studio type checking.
+- Real-device memory pressure, live-Content retention, visual quality and camera responsiveness still
+  require the owner's fresh Studio/client pass: **B103-B105 not run**. No screenshot issue is marked
+  Studio-verified from unit tests alone.

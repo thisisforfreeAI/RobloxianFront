@@ -3,7 +3,7 @@
 -- using one 96px EditableImage; vehicle art stays lazy. DeathFx/OrigDeathFx are generated privately.
 -- APPROX: flat projected quads replace Pixi's additive/dithered passes. See PROJECT_STATUS.
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local AssetService = game:GetService("AssetService")
+local ImageMemory = require(script.Parent.ImageMemory)
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local DeathEffects = require(Shared.Presentation.DeathEffects)
 local MapCodec = require(Shared.Maps.MapCodec)
@@ -37,7 +37,7 @@ local function load(): boolean
 	end
 	local ok, err = pcall(function()
 		local meta = require(pixels :: ModuleScript) :: any
-		local image = AssetService:CreateEditableImage({ Size = Vector2.new(meta.width, meta.height) })
+		local image = ImageMemory.create(Vector2.new(meta.width, meta.height))
 		assert(image, "EditableImage budget refused particle atlas")
 		atlasImage = image
 		image:WritePixelsBuffer(Vector2.zero, Vector2.new(meta.width, meta.height), PixelCodec.decode(MapCodec.base64Decode(meta.rle), meta.width, meta.height))
@@ -45,7 +45,7 @@ local function load(): boolean
 		engine = DeathEffects.new(require(config :: ModuleScript))
 	end)
 	if not ok then
-		if atlasImage then atlasImage:Destroy(); atlasImage = nil end
+		if atlasImage then ImageMemory.release(atlasImage); atlasImage = nil end
 		content, engine = nil, nil
 		warn("[DeathRenderer] Death effects unavailable; wrecks still draw:", err)
 	end

@@ -6,7 +6,7 @@
 	still hidden, since the server never sends them). PLACEHOLDER look (TEMP-003).
 ]]
 
-local AssetService = game:GetService("AssetService")
+local ImageMemory = require(script.Parent.ImageMemory)
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local World = require(ReplicatedStorage:WaitForChild("Shared").Config.World)
@@ -22,7 +22,7 @@ local pixels: buffer
 function FogOverlay.start(mapWidth: number, mapHeight: number)
 	width, height = mapWidth, mapHeight
 	local ok, img = pcall(function()
-		return AssetService:CreateEditableImage({ Size = Vector2.new(mapWidth, mapHeight) })
+		return ImageMemory.create(Vector2.new(mapWidth, mapHeight))
 	end)
 	if not ok or not img then
 		warn("[FogOverlay] EditableImage unavailable, no fog overlay:", img)
@@ -50,6 +50,10 @@ function FogOverlay.start(mapWidth: number, mapHeight: number)
 	label.ImageContent = Content.fromObject(image)
 	label.Parent = gui
 	gui.Parent = part
+	part.Destroying:Connect(function()
+		ImageMemory.release(img)
+		if image == img then image = nil end
+	end)
 	part.Parent = workspace
 	FogOverlay.apply({}, false)
 end

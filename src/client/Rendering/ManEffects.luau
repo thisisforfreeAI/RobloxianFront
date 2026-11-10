@@ -3,7 +3,7 @@
 -- Separate from SpriteBank so this does not change its preload/lazy-loading policy.
 -- One cropped atlas per figure is loaded only when that figure is first drawn.
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local AssetService = game:GetService("AssetService")
+local ImageMemory = require(script.Parent.ImageMemory)
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local MenShadows = require(Shared.Presentation.MenShadows)
 local MapCodec = require(Shared.Maps.MapCodec)
@@ -11,12 +11,16 @@ local PixelCodec = require(Shared.Assets.PixelCodec)
 local Facing = require(Shared.Assets.Facing)
 local World = require(Shared.Config.World)
 local ManEffects = {}
+local warned: { [string]: boolean } = {}
 local pages: { [string]: any } = {}
 local config: any = nil
 local tried = false
 
 local function page(kind: string): any
-	if pages[kind] ~= nil then return pages[kind] or nil end
+	if pages[kind] ~= nil then
+		if pages[kind] then pages[kind].at = os.clock() end
+		return pages[kind] or nil
+	end
 	pages[kind] = false
 	if not tried then
 		tried = true
@@ -36,15 +40,15 @@ local function page(kind: string): any
 	local ok, value = pcall(function()
 		local meta = require(mod :: ModuleScript) :: any
 		local size = Vector2.new(meta.width, meta.height)
-		local created = AssetService:CreateEditableImage({ Size = size })
+		local created = ImageMemory.create(size)
 		assert(created, "EditableImage budget refused figure masks")
 		image = created
 		created:WritePixelsBuffer(Vector2.zero, size, PixelCodec.decode(MapCodec.base64Decode(meta.rle), meta.width, meta.height))
-		return { image = created, content = Content.fromObject(created), meta = meta }
+		return { image = created, content = Content.fromObject(created), meta = meta, at = os.clock() }
 	end)
 	if not ok then
-		if image then image:Destroy() end
-		warn(`[ManEffects] {kind} masks unavailable; its body still draws:`, value)
+		ImageMemory.release(image)
+		if not warned[kind] then warned[kind] = true; warn(`[ManEffects] {kind} masks unavailable; its body still draws:`, value) end
 		return nil
 	end
 	pages[kind] = value
@@ -137,5 +141,20 @@ function ManEffects.place(handle: any, pose: string, heading: number, facing: nu
 	handle.turn.Rotation = math.deg(Facing.residual(heading, facing, config.facings) - axis)
 	handle.ready, handle.gui.Enabled = true, true
 end
+
+ImageMemory.register(20, function(needed: number, protected: any)
+	local before = ImageMemory.stats()
+	for kind, p in pages do
+		if p and not protected[p.content] and os.clock() - p.at >= 1 then
+			pages[kind] = nil
+			ImageMemory.release(p.image)
+			local used = ImageMemory.stats()
+			if before - used >= needed then break end
+		end
+	end
+end)
+ImageMemory.onRelease(function()
+	for kind, value in pages do if value == false then pages[kind] = nil end end
+end)
 
 return ManEffects

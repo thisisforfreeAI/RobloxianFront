@@ -8,7 +8,7 @@
 	All colours are PLACEHOLDER (TEMP-003). Gameplay never reads anything drawn here.
 ]]
 
-local AssetService = game:GetService("AssetService")
+local ImageMemory = require(script.Parent.ImageMemory)
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
@@ -53,24 +53,28 @@ local function newPart(props: { [string]: any }): Part
 end
 
 -- the game's baked ground as image strips, or nil when the local module is missing or fails
-local function bakedGround(map: MapCodec.DecodedMap): { { content: Content, x: number, width: number } }?
+local function bakedGround(map: MapCodec.DecodedMap): { { content: Content, x: number, width: number, image: EditableImage } }?
 	local assets = script.Parent.Parent:FindFirstChild("DevAssets")
 	local mod = assets and assets:FindFirstChild("Ground_" .. map.data.id)
 	if not mod or not mod:IsA("ModuleScript") then
 		return nil
 	end
+	local allocated = {}
 	local ok, result = pcall(function()
 		local g = require(mod) :: any
 		local out = {}
 		for _, piece in g.pieces do
 			local size = Vector2.new(piece.width, g.height)
-			local image = AssetService:CreateEditableImage({ Size = size })
+			local image = ImageMemory.create(size)
+			assert(image, "EditableImage memory unavailable for ground strip")
+			table.insert(allocated, image)
 			image:WritePixelsBuffer(Vector2.zero, size, Inflate.raw(MapCodec.base64Decode(piece.deflate), piece.width * g.height * 4))
-			table.insert(out, { content = Content.fromObject(image), x = piece.x / g.width, width = piece.width / g.width })
+			table.insert(out, { content = Content.fromObject(image), x = piece.x / g.width, width = piece.width / g.width, image = image })
 		end
 		return out
 	end)
 	if not ok then
+		for _, image in allocated do ImageMemory.release(image) end
 		warn("[MapRenderer] baked ground could not be loaded, placeholder colours instead:", result)
 		return nil
 	end
@@ -80,6 +84,7 @@ end
 local function buildImageGround(map: MapCodec.DecodedMap, ground: Part): boolean
 	local baked = bakedGround(map)
 	if baked then
+		ground.Destroying:Connect(function() for _, piece in baked do ImageMemory.release(piece.image) end end)
 		local gui = Instance.new("SurfaceGui")
 		gui.Face = Enum.NormalId.Top
 		gui.SizingMode = Enum.SurfaceGuiSizingMode.FixedSize
@@ -100,12 +105,13 @@ local function buildImageGround(map: MapCodec.DecodedMap, ground: Part): boolean
 		return true
 	end
 	local ok, image = pcall(function()
-		return AssetService:CreateEditableImage({ Size = Vector2.new(map.width, map.height) })
+		return ImageMemory.create(Vector2.new(map.width, map.height))
 	end)
 	if not ok or not image then
 		warn("[MapRenderer] EditableImage unavailable, using Part fallback:", image)
 		return false
 	end
+	ground.Destroying:Connect(function() ImageMemory.release(image) end)
 	local cells = map.width * map.height
 	local pixels = buffer.create(cells * 4)
 	for i = 0, cells - 1 do

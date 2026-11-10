@@ -22,7 +22,7 @@
 	draws them) from <module>Wreck, with its own rim and shadow modules (<module>WreckRim, ...).
 	SpriteBank.soot(kind): the paint rows of the same module, which the game lays over a damaged vehicle.
 ]]
-local AssetService = game:GetService("AssetService")
+local ImageMemory = require(script.Parent.ImageMemory)
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
@@ -62,7 +62,7 @@ local KINDS: { [string]: { module: string, body: string, turret: string?, empty:
 	tank = { module = "OrigTank", body = "hull", turret = "turret", cells = 1, artW = 0.492, artH = 0.283, tall = 0.32, wreck = "wreck_hull", wreckTurret = "wreck_turret" },
 	truck = { module = "OrigTruck", body = "full", empty = "empty", cells = 0.8, artW = 0.4, artH = 0.167, tall = 0.36, wreck = "wreck" },
 	scout = { module = "OrigScout", body = "body", cells = 0.62, artW = 0.317, artH = 0.2, tall = 0.36, wreck = "wreck", states = { "mast1", "mast2" } },
-	artillery = { module = "OrigArtillery", body = "body", cells = 1.4, artW = 0.683, artH = 0.267, tall = 0.24, wreck = "wreck", states = { "set1", "set2" } },
+	artillery = { module = "OrigArtillery", body = "body", cells = 1.4, artW = 0.683, artH = 0.267, tall = 0.24, wreck = "wreck", states = { "set1", "set2", "rep_loaded", "rep_set1", "rep_set2", "rep_empty" } },
 	infantry = { module = "OrigInfantry", body = "body", cells = 0.78, artW = 0.5, artH = 0.5, tall = 0.5 },
 	ifv = { module = "OrigIfv", body = "hull", turret = "turret", cells = 0.95, artW = 0.467, artH = 0.267, tall = 0.34, wreck = "wreck_hull", wreckTurret = "wreck_turret" },
 	rocket = { module = "OrigRocket", body = "body", cells = 1.3, artW = 0.633, artH = 0.2, tall = 0.26, wreck = "wreck", states = { "up1", "up2", "up3" } },
@@ -72,12 +72,14 @@ local KINDS: { [string]: { module: string, body: string, turret: string?, empty:
 	command = { module = "OrigCommand", body = "hull", turret = "turret", cells = 1, artW = 0.517, artH = 0.217, tall = 0.34, wreck = "wreck", pivot = { -0.1278, 0 }, radarTurns = 0.07, states = { "set1", "set2", "set3", "set4" } },
 }
 
+local warned: { [string]: boolean } = {}
 local pages: { [string]: any } = {} -- module name -> { content, meta } or false when unavailable
 local looks: { [string]: Look | false } = {}
 
 local function page(name: string): any
 	local got = pages[name]
 	if got ~= nil then
+		if got then got.at = os.clock() end
 		return got
 	end
 	pages[name] = false
@@ -86,25 +88,43 @@ local function page(name: string): any
 	if not mod or not mod:IsA("ModuleScript") then
 		return false
 	end
+	local allocated: EditableImage? = nil
 	local ok, result = pcall(function()
 		local meta = require(mod) :: any
 		local pixels = PixelCodec.decode(MapCodec.base64Decode(meta.rle), meta.width, meta.height)
 		local size = Vector2.new(meta.width, meta.height)
-		local image = AssetService:CreateEditableImage({ Size = size })
+		local image = ImageMemory.create(size)
+		assert(image, "EditableImage memory unavailable after reclaiming unused art")
+		allocated = image
 		image:WritePixelsBuffer(Vector2.zero, size, pixels)
-		return { content = Content.fromObject(image), meta = meta }
+		return { image = image, content = Content.fromObject(image), meta = meta, at = os.clock() }
 	end)
 	if not ok then
-		warn(`[SpriteBank] {name} could not be loaded, placeholder shapes stay:`, result)
+		ImageMemory.release(allocated)
+		if not warned[name] then
+			warned[name] = true
+			warn(`[SpriteBank] {name} unavailable; existing fallback stays:`, result)
+		end
 		return false
 	end
 	pages[name] = result
 	return result
 end
 
+local function touchCached(value: any)
+	local contents = {}
+	if value.content then contents[value.content] = true end
+	if type(value.body) == "table" then contents[value.body.content] = true end
+	if value.turret and type(value.turret) == "table" then contents[value.turret.content] = true end
+	if type(value.empty) == "table" then contents[value.empty.content] = true end
+	if value.fx then for _, sheet in value.fx do if sheet then contents[sheet.content] = true end end end
+	for _, p in pages do if p and contents[p.content] then p.at = os.clock() end end
+end
+
 function SpriteBank.look(kind: string): Look?
 	local cached = looks[kind]
 	if cached ~= nil then
+		if cached then touchCached(cached) end
 		return cached or nil
 	end
 	looks[kind] = false
@@ -161,6 +181,7 @@ local figures: { [string]: Figure | false } = {}
 function SpriteBank.figure(name: string): Figure?
 	local cached = figures[name]
 	if cached ~= nil then
+		if cached then touchCached(cached) end
 		return cached or nil
 	end
 	figures[name] = false
@@ -182,12 +203,10 @@ function SpriteBank.figure(name: string): Figure?
 	return fig
 end
 
--- loads every page up front, so the first unit of a kind doesn't stall a frame
+-- Warm only the opening squad. Other figures/vehicles load on first use.
 function SpriteBank.preload()
-	-- vehicle looks load when the first unit of the kind appears (images share one memory budget);
-	-- the infantry look and the men are wanted at once
-	SpriteBank.look("infantry")
-	for name in FIGURES do
+	-- Loading every crew and the unused infantry icon here consumed unit-art headroom.
+	for _, name in { "leader", "rifle" } do
 		SpriteBank.figure(name)
 	end
 	-- one line in Output saying what art there is, so a missing or failing art folder is easy to spot
@@ -222,6 +241,7 @@ local WRECK_TALL = 0.75 -- za.shadow.wreck: a wreck's shadow reaches this share 
 function SpriteBank.wreck(kind: string): Look?
 	local cached = wrecks[kind]
 	if cached ~= nil then
+		if cached then touchCached(cached) end
 		return cached or nil
 	end
 	wrecks[kind] = false
@@ -275,6 +295,7 @@ local soots: { [string]: Soot | false } = {}
 function SpriteBank.soot(kind: string): Soot?
 	local cached = soots[kind]
 	if cached ~= nil then
+		if cached then touchCached(cached) end
 		return cached or nil
 	end
 	soots[kind] = false
@@ -304,6 +325,8 @@ local states: { [string]: Look | false } = {}
 -- the game's other looks of a kind (artillery_set1, rocket_up2, scout_mast1, command_3: its fa rows,
 -- "like" the base kind): state n of the kind's list, from <module>_<state> and its own rim and shadow
 -- modules. No turret (none of these looks has one). nil when the art is missing: keep the base look.
+-- State metadata may supply source-derived geometry (the Republic launcher has different bounds).
+-- APPROX inherited from the faction-agnostic renderer: wreck/soot still use the generic kind bank.
 function SpriteBank.state(kind: string, n: number): Look?
 	local k = KINDS[kind]
 	local name = k and k.states and k.states[n]
@@ -313,6 +336,7 @@ function SpriteBank.state(kind: string, n: number): Look?
 	local id = kind .. "_" .. name
 	local cached = states[id]
 	if cached ~= nil then
+		if cached then touchCached(cached) end
 		return cached or nil
 	end
 	states[id] = false
@@ -336,15 +360,41 @@ function SpriteBank.state(kind: string, n: number): Look?
 	local look: Look = {
 		frame = p.meta.frame,
 		columns = p.meta.columns,
-		cells = k.cells * UNIT_SCALE / k.artW,
+		cells = p.meta.cells or k.cells * UNIT_SCALE / k.artW,
 		body = { content = p.content, colour = c, paint = q, base = name },
-		size = k.cells * UNIT_SCALE,
-		artH = k.artH / k.artW,
+		size = p.meta.size or k.cells * UNIT_SCALE,
+		artH = p.meta.artH or k.artH / k.artW,
 		tall = k.tall,
 		fx = if rim then { rim = rim, rimHalf = sheet("RimHalf"), shade = sheet("Shade") } else nil,
 	}
 	states[id] = look
 	return look
 end
+
+-- Active views/wrecks supply their exact Content objects through ImageMemory's guard. Cached looks
+-- can be reconstructed, but native images bound to living figures or persistent wrecks stay pinned.
+local function clearLookCaches()
+	table.clear(looks); table.clear(figures); table.clear(wrecks); table.clear(soots); table.clear(states)
+end
+ImageMemory.register(20, function(needed: number, protected: any)
+	local before = ImageMemory.stats()
+	local candidates = {}
+	for name, p in pages do
+		if p and not protected[p.content] and os.clock() - p.at >= 1 then table.insert(candidates, { name = name, page = p }) end
+	end
+	table.sort(candidates, function(a, b) return a.page.at < b.page.at end)
+	for _, candidate in candidates do
+		pages[candidate.name] = nil
+		ImageMemory.release(candidate.page.image)
+		clearLookCaches()
+		local used = ImageMemory.stats()
+		if before - used >= needed then break end
+	end
+end)
+ImageMemory.onRelease(function()
+	-- A refusal is not permanent: future units/states may retry after storage was reclaimed.
+	local caches: { any } = { pages, looks, figures, wrecks, soots, states }
+	for _, cache in caches do for key, value in cache do if value == false then cache[key] = nil end end end
+end)
 
 return SpriteBank
