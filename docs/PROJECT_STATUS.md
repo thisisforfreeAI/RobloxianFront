@@ -2,6 +2,9 @@
 
 Last updated: 2026-11-10
 
+Latest feature and verification results are in the dated entries at the end. The early phase and
+validation sections below are historical checkpoints.
+
 ## Locations
 - Original game (read-only): `A:\SteamLibrary\steamapps\common\WarFront Demo`
 - Project / local repo: `C:\Users\thato\OneDrive\Desktop\RobloxianFront`
@@ -1784,4 +1787,105 @@ weather, visibility and Claude's water preparation were preserved.
 Regeneration uses the same pack_night_lights.py command from the night-lighting entry; local
 source city/map/profile inputs and the generated module remain ignored. No original-install or
 Git operations were performed.
+
+## Refugee road columns (2026-11-10)
+
+The separate long-distance refugee-column system is now integrated. Shared.Simulation.Refugees
+ports the source tAt eight-neighbour road search, zN per-town cooldown, WN moving head/tail span,
+expiry/linger and i2t truck-crawl footprint. Shelling a live town records an attempt, finds its
+nearest road and chooses an outward endpoint among distant reachable road cells. A failed route
+still consumes the original cooldown. A fatal hit can launch a column before the town is marked
+destroyed; existing columns keep travelling independently afterward. Old columns expire on war
+time. This is separate from the short local evacuation groups already implemented.
+
+RefugeeColumn ports original Dtt/tQt formation sampling: walkers, hand carts with their accompanying
+person, and occasional cars/pickups, using source appearance settings and deterministic ambient
+hashes. Source counts/spread/stride and all original procedural sprite looks come from local
+generation. The cart is one extra row in the existing pedestrian body/shadow pair, not new images
+per cart or person. Full people/cart sheets are now 832x520 (about 3.30 MiB for both), with the
+416x260 fallback (about 0.83 MiB); the existing car sheets are reused unchanged. Local walking,
+vehicle lanes/queues, facade window lights and other ambient visuals remain.
+
+OWNER-REQUESTED / APPROX adaptation: original skirmish RulesMatch has events.on=false. Public
+Config.WorldLife.REFUGEE_COLUMNS defaults true to enable the lively-world visuals on shelling
+without enabling all random map events. The original truck penalty remains gated by events.on,
+so current skirmish columns do NOT slow oil trucks or change economy/combat. Visual-only path
+selection uses a separate seeded stream, preserving combat RNG. With original map events enabled,
+the source truckShare/width rule is implemented and tested. This is not an implementation of the
+other random blowout/gusher/washout/airdrop event systems.
+
+Networking deliberately sends only currently visible actors, not full routes, hidden town origins
+or destinations. A fog-enabled viewer with no visibility object receives no actors. The actor
+animation phase is wrapped, rather than transmitting its full route progress. Each client also
+checks current fog before drawing. Visible actor rows are capped at 256 per private packet
+(port policy). No client command can spawn a column. Short tangent prediction, bounded at half a
+second, animates between private packets; stopped/lingering columns have zero prediction velocity.
+The separate war clock pauses them during deployment/victory and keeps admin day freeze independent.
+Stale actor packets stop displaying after two seconds (port policy). Near-zoom population uses a
+client alpha fade instead of the source renderer's zoom-dependent re-spacing/count calculation;
+this is another APPROX adapter. Model/position formation at full detail matches the source.
+
+Local generation uses the existing two civilian export commands. export_civilian_input now includes
+match refugee rules. export_civilian_traffic also writes private RefugeeLook/RefugeeVectors and the
+cart row. Art, settings and route/pose references stay ignored; the original install was read only.
+Simulation hooks use fields on self rather than new constructor locals, preserving the register
+limit. Existing unrelated files and Claude's water preparation were preserved.
+
+Verification actually run: full Lune suite **252 passed, 0 failed**; changed Luau compiled and Rojo
+build passed. Eight new tests cover cooldown/no-route/disabled/ruined cases, span/linger/expiry,
+visual-only truck gating, 15 original road-search reference cases, original person/cart/car poses,
+original truck-crawl footprints, fog-safe actor data and prediction after route completion. A
+simulation integration test shells a town and verifies a column appears while combat entity HP,
+positions, shot timers and oil remain identical to a run without visual columns. Source pose
+agreement uses 1e-9 tolerance. Cart art and full/half rectangles decode through the existing atlas
+test. These are CPU/data checks, not Studio rendering or Script Analysis. B138-B140 remain unrun;
+restart Play after Rojo sync for updated client/server modules and local art.
+
+Parallel-work suggestion given to the owner: Claude can implement lamp posts/traffic lights in a
+new StreetFurnitureRenderer with separate packing tools/tests and integration notes, leaving the
+shared entry point, civilian renderers, Sim, MatchService and shared status docs alone until merge.
+
+## Ambient town chimney smoke (2026-11-10)
+
+Added original procedural puff art and chimney layout as another living-world layer. The local
+exporter evaluates the installed game's pQt and fQt.draw/smoke rather than embedding original
+functions or tables in tracked files. Saddle has 56 source chimney sites across 23 settlements.
+Source placement chooses seeded urban cells off the road raster; it does not identify a chimney
+pixel in the roof art. Roof/chimney alignment beyond that source placement remains UNCONFIRMED
+until the owner compares it in Studio. No new roof geometry is claimed.
+
+Puffs follow the source wind, staggered lifetime, sideways variation, size growth, thinning,
+rotation, opacity and 12 fps animation clock. Health band and garrison reduce active chimneys;
+destroyed or unknown towns emit none. Recent shelling does not suppress smoke during the street
+population's calm period, matching the original draw path. Daylight fade is also source-based;
+this ambient smoke disappears at night. Burning buildings and forest-fire smoke are separate,
+still-pending systems. No combat, economy, collision or simulation rules changed here.
+
+The renderer shares the civilian war clock, including deployment/victory pause and independence
+from admin day freeze. It uses one 704x44 RGBA atlas (123,904 bytes, about 0.118 MiB), allocated
+through ImageMemory only when visible near-zoom smoke needs it. All puffs share that image.
+Allocation refusal is nil-safe with a retry delay; missing/corrupt local art skips this layer.
+Native storage releases at far zoom/full night, after idle, and on map cleanup. There are no
+per-puff EditableImages. APPROX adapters: flat layer above town art/below troops and fog, global
+grading instead of separate source day/dusk tint sheets, checking fog at both chimney and drifting
+puff centres, minimum native part size, and the existing five-second retry/three-second idle policy.
+
+Regenerate locally from the project root:
+```
+lune run tools/conversion/export_smoke_input
+node tools/conversion/export_chimney_smoke.cjs "A:\SteamLibrary\steamapps\common\WarFront Demo" docs/private/smoke-input_saddle.json
+```
+The input, chimney settings/layout, original art and original pose vectors remain in ignored
+docs/private, GameData and DevAssets. The install was read only. Only two integration lines were
+added to CivilianRenderer; existing traffic/refugee/people behaviour and Claude's separate street
+furniture/water work were preserved.
+
+Verification: changed Luau compiles, the focused five smoke tests pass, and Rojo build passes.
+Full Lune suite actually run: **257 passed, 0 failed** (five new smoke tests).
+The independent source comparison covers 210 cases across day/dusk/night, healthy/damaged/critical
+towns, garrison state, lifetime wraps and long-running time, with 1e-9 pose tolerance. Other checks
+cover origin/puff fog, unknown/destroyed towns, off-screen culling, frozen quantized time, no state
+mutation, all source sites off road in urban cells, and every atlas facing's decoded transparency.
+These are CPU/data checks, not a Studio rendering or Script Analysis pass. New B141-B143 are not
+run; B138-B140 also remain pending. Restart Play after Rojo sync to load the new modules and art.
 

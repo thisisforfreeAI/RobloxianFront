@@ -18,7 +18,10 @@ for _,r in map.data.roads do if r.rank>=1 then
 	end
 end end
 if not fs.isDir("docs/private") then fs.writeDir("docs/private") end
+local refugeeRules={}
+for key,value in rules do local name=string.match(key,"^events%.refugees%.(.+)$");if name then refugeeRules[name]=value end end
 fs.writeFile("docs/private/civilian-input_saddle.json",serde.encode("json",{
 	w=map.width,h=map.height,settlements=settlements,roadLines=lines,road=road,
 	criticalBelow=rules["settlements.criticalBelow"],damagedBelow=rules["settlements.damagedBelow"],
+	refugeeRules=refugeeRules,
 }))

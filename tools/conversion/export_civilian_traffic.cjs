@@ -29,6 +29,8 @@ if(start<0||end<start)throw Error('ambient sprite declarations missing');
 const cls=s.indexOf('class fQt');if(cls<0)throw Error('ambient towns missing');
 const fleeClass=s.indexOf('class oQt'),fleeLooks=s.indexOf('const eQt=');
 if(fleeClass<0||fleeLooks<0)throw Error('fleeing civilian declarations missing');
+const columnClass=s.indexOf('class tQt'),columnLooks=s.indexOf('const QJt=');
+if(columnClass<0||columnLooks<0)throw Error('refugee renderer declarations missing');
 const hashDecl=s.indexOf('const Do='),modelDecl=s.indexOf('const Bx=[');
 if(hashDecl<0||modelDecl<0)throw Error('ambient seed/model declarations missing');
 const source='const sn='+object('sn')+';'+s.slice(start,end)+fn('dQt')+fn('cQt')+fn('To')+
@@ -38,7 +40,9 @@ const source='const sn='+object('sn')+';'+s.slice(start,end)+fn('dQt')+fn('cQt')
  'const pQt=()=>[];'+fn('su')+
  s.slice(cls,s.indexOf('{',cls))+block(s.indexOf('{',cls))+
 	 s.slice(fleeLooks,s.indexOf(';',fleeLooks)+1)+s.slice(fleeClass,s.indexOf('{',fleeClass))+block(s.indexOf('{',fleeClass))+
-	 ';globalThis.original={sn,zc,u$,cQt,fQt,oQt,ZJt,To,Do};';
+	 s.slice(columnLooks,s.indexOf(';',columnLooks)+1)+fn('Dtt')+fn('WN')+fn('tAt')+fn('i2t')+
+	 s.slice(columnClass,s.indexOf('{',columnClass))+block(s.indexOf('{',columnClass))+
+	 ';globalThis.original={sn,zc,u$,cQt,fQt,oQt,tQt,ZJt,To,Do,Ett,tAt,WN,i2t};';
 vm.runInContext(source,context,{timeout:10000});
 const original=context.original;
 const layout=new original.fQt();layout.build(game,{lines:original.ZJt(game)},context.city);
@@ -52,7 +56,7 @@ for(let n=0;n<names.length;n++){
  Buffer.from(baked.image.data).copy(body,n*frame*width*4);Buffer.from(baked.shade.data).copy(shade,n*frame*width*4);rects[names[n]]=n*frame;
 }
 const data={width,height,frame,facings:original.zc.facings,px:original.zc.px,rects,
- config:{from:original.sn.from,full:original.sn.full,jumpSec:original.sn.jumpSec,peopleFrom:original.sn.peopleFrom,people:original.sn.people,fleeing:original.sn.fleeing,shadow:original.sn.shadow,towns:original.sn.towns,cars:original.sn.cars,criticalBelow:game.criticalBelow,damagedBelow:game.damagedBelow},
+ config:{from:original.sn.from,full:original.sn.full,jumpSec:original.sn.jumpSec,peopleFrom:original.sn.peopleFrom,people:original.sn.people,refugees:original.sn.refugees,fleeing:original.sn.fleeing,shadow:original.sn.shadow,towns:original.sn.towns,cars:original.sn.cars,criticalBelow:game.criticalBelow,damagedBelow:game.damagedBelow},
  lines:layout.lines.map(l=>({pts:Array.from(l.pts),cum:Array.from(l.cum),len:l.len})),
  towns:layout.towns.map((t,i)=>({id:i+1,seedId:i,kind:t.st.kind,x:t.x,y:t.y,radius:t.radius,cars:t.cars.map(c=>({...c,line:c.line+1})),parked:t.parked,
  walkers:t.walkers.map(w=>({...w,line:w.line<0?-1:w.line+1})),exits:(fleeing.places.find(p=>p.st.id===i)?.exits||[]).map(e=>({...e,line:e.line+1}))})),
@@ -62,7 +66,7 @@ const target=path.join(root,'src/client/DevAssets/OrigCivilianTraffic_saddle.lua
 fs.writeFileSync(target,'--!strict\n-- GENERATED local-only original ambient car sprites and layout.\nreturn '+lua(data)+'\n');
 // Original pedestrian poses, with an offline alpha-weighted half-size budget fallback.
 function half(rgba,w,h){const out=Buffer.alloc(w/2*h/2*4);for(let y=0;y<h;y+=2)for(let x=0;x<w;x+=2){let a=0,r=0,g=0,b=0;for(let dy=0;dy<2;dy++)for(let dx=0;dx<2;dx++){const at=((y+dy)*w+x+dx)*4,v=rgba[at+3];a+=v;r+=rgba[at]*v;g+=rgba[at+1]*v;b+=rgba[at+2]*v;}const at=(y/2*w/2+x/2)*4;if(a){out[at]=Math.round(r/a);out[at+1]=Math.round(g/a);out[at+2]=Math.round(b/a);out[at+3]=Math.round(a/4);}}return out;}
-const peopleNames=Object.keys(original.u$).filter(n=>/^person[A-C][0-2]$/.test(n));
+const peopleNames=Object.keys(original.u$).filter(n=>/^person[A-C][0-2]$/.test(n)||n==='cart');
 const pf=Math.ceil(original.u$[peopleNames[0]].span*original.zc.px/2)*2,pw=pf*original.zc.facings,ph=pf*peopleNames.length;
 const pb=Buffer.alloc(pw*ph*4),ps=Buffer.alloc(pb.length),pr={};
 for(let i=0;i<peopleNames.length;i++){const baked=original.cQt(peopleNames[i],pf);Buffer.from(baked.image.data).copy(pb,i*pw*pf*4);Buffer.from(baked.shade.data).copy(ps,i*pw*pf*4);pr[peopleNames[i]]=i*pf;}
@@ -109,5 +113,30 @@ for(const mode of ['hit','fight','ruined']){
  reference.flee.push({mode,seedId:5,x:15,y:0,radius:3,kind:'town',exits:sample.places[0].exits.map(e=>({...e,line:e.line+1})),vectors});
 }
 const refPath=path.join(root,'src/shared/GameData/CivilianVectors.luau');fs.mkdirSync(path.dirname(refPath),{recursive:true});fs.writeFileSync(refPath,'-- GENERATED private original reference vectors.\nreturn '+lua(reference)+'\n');
+const refugeeLook={refugees:original.sn.refugees,people:original.sn.people,cars:original.sn.cars,models:Array.from(original.Ett)};
+fs.writeFileSync(path.join(root,'src/shared/GameData/RefugeeLook.luau'),'-- GENERATED private original refugee appearance settings.\nreturn '+lua(refugeeLook)+'\n');
+if(!game.refugeeRules)throw Error('regenerate civilian input to include refugee rules');
+const routeGame={w:game.w,h:game.h,road:game.road,cfg:{events:{refugees:game.refugeeRules}},cellX:c=>c%game.w,cellY:c=>Math.floor(c/game.w),rand:()=>.25};
+const routes=[];
+for(const town of game.settlements.slice(0,5))for(const random of [0,.25,.999]){
+ routeGame.rand=()=>random;routes.push({town,random,path:original.tAt(routeGame,town)});
+}
+const pathForColumn=routes[0].path;
+const column={id:41,t:10,path:pathForColumn,speed:game.refugeeRules.speed,length:game.refugeeRules.length};
+column.until=column.t+(column.path.length-1)/column.speed+game.refugeeRules.lingerSec;
+const columnVectors=[];
+const renderColumn=new original.tQt();
+for(const time of [10,10.1,12,20,35,60,100,column.until-1]){
+ const span=original.WN({time},column),draws=[];
+ renderColumn.column({time,k:20,share:1,tx:0,ty:0,tint:0,game:routeGame,c:null,sprites:{shadow(){},draw(...args){draws.push(args)}}},column.id,column.path,span.head,span.tail,column.length);
+ columnVectors.push({time,head:span.head,tail:span.tail,poses:draws.map(d=>({model:d[1],x:d[2]/20,y:d[3]/20,cells:d[4]/20,heading:d[5]}))});
+}
+routeGame.events={refugees:[column]};routeGame.time=35;
+const factors=[];
+for(const cell of [column.path[0],column.path[10],column.path[20],column.path.at(-1)]){
+ const point={x:routeGame.cellX(cell)+.5,y:routeGame.cellY(cell)+.5};factors.push({...point,value:original.i2t(routeGame,point)});
+}
+const refugeeRefs={rules:game.refugeeRules,width:game.w,height:game.h,road:game.road,routes,column:{...column,untilTime:column.until},columnVectors,factors};
+fs.writeFileSync(path.join(root,'src/shared/GameData/RefugeeVectors.luau'),'-- GENERATED private original route, span, pose and truck-crawl vectors.\nreturn '+lua(refugeeRefs)+'\n');
 console.log('Original civilian traffic:',data.towns.length,'towns,',data.towns.reduce((n,t)=>n+t.cars.length,0),'moving cars,',data.towns.reduce((n,t)=>n+t.parked.length,0),'parked cars;',width+'x'+height,'shared sheets');
 console.log('Original pedestrians:',data.towns.reduce((n,t)=>n+t.walkers.length,0),'town walkers;',pf+' px,',peopleNames.length,'poses,',fleeing.places.length,'evacuation sites');

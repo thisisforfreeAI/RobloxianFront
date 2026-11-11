@@ -8,6 +8,7 @@ local Codec=require(Shared.Maps.MapCodec)
 local Inflate=require(Shared.Utilities.Inflate)
 local Traffic=require(Shared.Presentation.CivilianTraffic)
 local People=require(Shared.Presentation.CivilianPeople)
+local RefugeeColumn=require(Shared.Presentation.RefugeeColumn)
 local Hash=require(Shared.Utilities.Hash)
 local Memory=require(script.Parent.ImageMemory)
 local Fog=require(script.Parent.FogOverlay)
@@ -84,14 +85,24 @@ function Renderer.start(world:any,clock:any,assets:Instance,parent:Instance,mapI
 		local ry=distance*math.tan(math.rad(camera.FieldOfView/2))/World.STUDS_PER_CELL
 		local rx=ry*camera.ViewportSize.X/math.max(1,camera.ViewportSize.Y)
 		local pixels=camera.ViewportSize.Y/(2*ry)
-		if pixels<world.data.config.peopleFrom then if body then clear() end;state.lastTime=nil;return end
+		if pixels<world.data.config.from then if body then clear() end;state.lastTime=nil;return end
 		local time=clock.clock+(if clock.running then math.min(.5,os.clock()-clock.at) else 0)
 		local delta=if state.lastTime then time-state.lastTime else 0
 		local reset=state.lastTime==nil or delta<0 or delta>world.data.config.jumpSec
 		local light=Daylight.get()
 		local cx,cy=camera.CFrame.Position.X/World.STUDS_PER_CELL,camera.CFrame.Position.Z/World.STUDS_PER_CELL
 		local share=math.clamp((pixels-world.data.config.from)/(world.data.config.full-world.data.config.from),0,1)
-		local poses=People.step(state,time,if reset then 0 else delta,share,light.night,clock.fighters or {},time-(clock.fightersAt or time),{x0=cx-rx-2,x1=cx+rx+2,y0=cy-ry-2,y1=cy+ry+2},visible,reset)
+		local poses={}
+		if pixels>=world.data.config.peopleFrom then
+			poses=People.step(state,time,if reset then 0 else delta,share,light.night,clock.fighters or {},time-(clock.fightersAt or time),{x0=cx-rx-2,x1=cx+rx+2,y0=cy-ry-2,y1=cy+ry+2},visible,reset)
+		else state.lastTime=nil end
+		if os.clock()-(clock.refugeesAt or -math.huge)<2 then
+			for _,row in clock.refugees or {} do
+				if row.group=="people" and (row.coarse or pixels>=world.data.config.peopleFrom) then
+					local p=RefugeeColumn.predict(row,time,world.data.config.people.stride);p.alpha*=share;table.insert(poses,p)
+				end
+			end
+		end
 		local wanted={}
 		local sun=light.shadow;local length=math.sqrt(sun[1]^2+sun[2]^2);local factor=if length>2 then 2/length else 1
 		for _,p in poses do

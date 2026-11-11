@@ -4285,6 +4285,8 @@ require("./night_lights")(test, eq)
 require("./civilian_traffic")(test, eq)
 require("./civilian_driving")(test, eq)
 require("./civilian_people")(test, eq)
+require("./refugees")(test, eq)
+require("./chimney_smoke")(test, eq)
 
 print(`\n{passed} passed, {failed} failed`)
 if failed > 0 then

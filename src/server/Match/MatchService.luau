@@ -25,6 +25,10 @@ local ValueNoise = require(Shared.Utilities.ValueNoise)
 local Rng = require(Shared.Utilities.Rng)
 local Roads = require(Shared.Simulation.Roads)
 local Sim = require(Shared.Simulation.Sim)
+local Refugees = require(Shared.Simulation.Refugees)
+local RefugeeColumn = require(Shared.Presentation.RefugeeColumn)
+local WorldLife = require(Shared.Config.WorldLife)
+local Hash = require(Shared.Utilities.Hash)
 local UnitStages = require(Shared.Presentation.UnitStages)
 local TerritoryPixels = require(Shared.Presentation.TerritoryPixels)
 local Bot = require(Shared.Simulation.Bot)
@@ -920,6 +924,24 @@ local function privateState()
 		payload.day = { Admin.phaseOf(sim), sim.nightAmount() } -- preserve clock precision for sun/colour changes
 		-- Ambient motion follows the war clock, which pauses during opening picks/flight and victory.
 		payload.civilianTime = { sim.time, not sim.winner and (not sim.drop or sim.drop.phase=="done") }
+		-- Send current visible actors only. Hidden origins, complete routes and destinations stay server-side.
+		payload.refugees={}
+		if sim.refugees then
+			local lookModule=GameData:FindFirstChild("RefugeeLook")
+			if lookModule then
+				local look=require(lookModule :: ModuleScript)
+				local fogged=side>0 and sim.fogOn()
+				local sight=if fogged then viewers[side] else nil
+				local function visible(x:number,y:number):boolean return not fogged or (sight~=nil and sight.visibleAt(x,y)) end
+				for _,column in sim.refugees.list do
+					for _,p in RefugeeColumn.poses(column,sim.time,map.width,look,Hash.ambient,visible) do
+						p.time=sim.time;table.insert(payload.refugees,p)
+						if #payload.refugees>=WorldLife.REFUGEE_PACKET_ACTORS then break end
+					end
+					if #payload.refugees>=WorldLife.REFUGEE_PACKET_ACTORS then break end
+				end
+			end
+		end
 		payload.weather = Admin.weather()
 		payload.admin = Admin.isAdmin(player)
 		if s then
@@ -1254,6 +1276,8 @@ function MatchService.start(mapModule: string)
 	else warn("[Match] Generate local visibility footprints with export_visibility.py; open sight fallback stays") end
 	sim = Sim.new({
 		visibilityLib = Visibility,
+		refugeesLib = Refugees,
+		refugeesEnabled = WorldLife.REFUGEE_COLUMNS,
 		drop = OPENING_DROP,
 		armies = ARMIES,
 		rules = rules :: any,

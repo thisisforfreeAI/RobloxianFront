@@ -148,6 +148,8 @@ export type Deps = {
 	settlements: { { name: string?, x: number, y: number, kind: string } }?, -- map order
 	seed: number?,
 	visibilityLib: any?,
+	refugeesLib: any?,
+	refugeesEnabled: boolean?,
 	drop: boolean?, -- start with the game's opening drop instead of HQs on the start points
 	armies: { string }?, -- per side: "coalition" (the default) or "republic"
 	deckSeed: number?, -- the match's own seed for the opening deck (the game draws one per match); else seed
@@ -654,6 +656,17 @@ function Sim.new(deps: Deps)
 		})
 	end
 	self.settlements = settlements
+	if deps.refugeesLib then
+		self.refugees = deps.refugeesLib.new({
+			width=W,height=H,onRoad=roads.isRoad,
+			enabled=deps.refugeesEnabled==true or (r:has("events.on") and r:flag("events.on")),
+			gameplay=r:has("events.on") and r:flag("events.on"),
+			-- APPROX: visual-only skirmish columns use an independent stream, preserving combat RNG.
+			random=if r:has("events.on") and r:flag("events.on") then rand else deps.rng.new(deps.seed or 1),
+			rules={reach=num("events.refugees.reach"),pathCells=num("events.refugees.pathCells"),speed=num("events.refugees.speed"),length=num("events.refugees.length"),
+				lingerSec=num("events.refugees.lingerSec"),widthCells=num("events.refugees.widthCells"),truckShare=num("events.refugees.truckShare"),cooldownSec=num("events.refugees.cooldownSec")},
+		})
+	end
 	self.citySightCells = {}
 	if #settlements > 0 and map.urbanAt then
 		local counts = {}
@@ -3555,6 +3568,7 @@ function Sim.new(deps: Deps)
 		end
 		st.integrity = math.max(0, st.integrity - damage * num("settlements.collateral"))
 		st.lastHitAt = self.time
+		if not st.destroyed and self.refugees then self.refugees.onShelled(st,self.time) end
 		if not st.destroyed and st.integrity <= 0 then
 			st.destroyed, st.integrity = true, 0
 			event({ type = "settlementDestroyed", id = st.id, side = st.owner, by = by })
@@ -5526,6 +5540,7 @@ function Sim.new(deps: Deps)
 					end
 				end
 				-- the game's kme checks: every 10 ticks (every tick while waiting) look for a cut on
+				if self.refugees then pace*=self.refugees.truckFactor(t.x,t.y,self.time) end
 				-- the way, else for armed enemies ahead (MZe)
 				local stopAt = math.huge -- distance along the path it may still drive (the game's w)
 				local checkNow = (t.waiting or 0) > 0 or #path == 0 or t.reroute or (self.ticks + t.id) % 10 == 0
@@ -9533,6 +9548,7 @@ function Sim.new(deps: Deps)
 			return
 		end
 		self.time += dt
+		if self.refugees then self.refugees.step(self.time) end
 		self.ticks += 1
 		if self.ticks % 10 == 0 then
 			updateConnections()

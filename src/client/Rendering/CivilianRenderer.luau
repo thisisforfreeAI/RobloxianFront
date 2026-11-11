@@ -9,11 +9,13 @@ local Codec=require(Shared.Maps.MapCodec)
 local Inflate=require(Shared.Utilities.Inflate)
 local Traffic=require(Shared.Presentation.CivilianTraffic)
 local Driving=require(Shared.Presentation.CivilianDriving)
+local RefugeeColumn=require(Shared.Presentation.RefugeeColumn)
 local Roads=require(Shared.Simulation.Roads)
 local Memory=require(script.Parent.ImageMemory)
 local Fog=require(script.Parent.FogOverlay)
 local Daylight=require(script.Parent.DaylightController)
 local PeopleRenderer=require(script.Parent.CivilianPeopleRenderer)
+local SmokeRenderer=require(script.Parent.ChimneySmokeRenderer)
 local Renderer={}
 local current:any=nil
 function Renderer.destroy() if current then current.folder:Destroy() end end
@@ -33,6 +35,7 @@ function Renderer.start(map:any,parent:Instance)
 	local session:any={folder=folder,state=state,movers={},cuts={},clock=nil,at=os.clock()}
 	current=session
 	PeopleRenderer.start(state,session,assets :: Instance,folder,map.data.id)
+	SmokeRenderer.start(state,session,assets :: Instance,folder,map.data.id)
 	local road=buffer.create(map.width*map.height)
 	for _,r in map.data.roads do if r.rank>=1 then
 		for i=3,#r.pts-1,2 do for _,c in Roads.line(map.width,map.height,r.pts[i-2],r.pts[i-1],r.pts[i],r.pts[i+1]) do buffer.writeu8(road,c,1) end end
@@ -108,6 +111,11 @@ function Renderer.start(map:any,parent:Instance)
 		if flow then Driving.plan(flow,time,if snap then 0 else delta,share,light.night,snap,session.movers) end
 		local poses=Traffic.step(state,time,if snap then 0 else delta,share,light.night,session.movers,onRoad,snap)
 		if flow then Driving.finish(flow) end
+		if os.clock()-(session.refugeesAt or -math.huge)<2 then
+			for _,row in session.refugees or {} do if row.group=="cars" then
+				local p=RefugeeColumn.predict(row,time,data.config.people.stride);p.alpha*=share;table.insert(poses,p)
+			end end
+		end
 		local wanted={}
 		local cx,cy=camera.CFrame.Position.X/World.STUDS_PER_CELL,camera.CFrame.Position.Z/World.STUDS_PER_CELL
 		local sun=light.shadow;local length=math.sqrt(sun[1]^2+sun[2]^2)
@@ -137,6 +145,9 @@ function Renderer.applyCities(rows:{any},time:number?)
 	if current then Traffic.applyCities(current.state,rows,time or current.clock or 0) end
 end
 function Renderer.applyCuts(rows:{any}) if current then current.cuts=rows end end
+function Renderer.applyRefugees(rows:{any})
+	if current then current.refugees=rows;current.refugeesAt=os.clock() end
+end
 function Renderer.syncClock(time:number,running:boolean)
 	if current then current.clock=time;current.running=running;current.at=os.clock() end
 end

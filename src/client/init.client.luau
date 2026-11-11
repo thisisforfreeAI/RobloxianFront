@@ -94,6 +94,7 @@ do
 		Hud.update(state, info.side)
 		AdminPanel.update(state)
 		if state.civilianTime then CivilianRenderer.syncClock(state.civilianTime[1],state.civilianTime[2]==true) end
+		if state.refugees then CivilianRenderer.applyRefugees(state.refugees) end
 		if state.day or state.weather then
 			Atmosphere.apply(state.day, state.weather)
 		end

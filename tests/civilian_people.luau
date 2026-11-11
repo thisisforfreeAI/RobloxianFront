@@ -93,7 +93,7 @@ return function(test:any,eq:any)
 			eq(buffer.len(Inflate.raw(Codec.base64Decode(variant.shade),size)),size)
 			local count=0
 			for _,y in variant.rects do count+=1;assert(y+variant.frame<=variant.height) end
-			eq(count,9);eq(variant.width,variant.frame*variant.facings)
+			eq(count,10);assert(variant.rects.cart~=nil);eq(variant.width,variant.frame*variant.facings)
 			assert(variant.width<=1024 and variant.height<=1024)
 		end
 	end)
