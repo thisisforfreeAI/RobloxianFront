@@ -1,8 +1,9 @@
 // Evaluate local original placement, puff art and animation references; emit only ignored data.
-// node export_chimney_smoke.cjs <install> <private input.json> [output root]
+// node export_chimney_smoke.cjs <install> <private input.json> <city> [output root]
 const fs=require('fs'),path=require('path'),vm=require('vm'),zlib=require('zlib');
-const [installArg,input,rootArg]=process.argv.slice(2);
-if(!installArg||!input)throw Error('usage: export_chimney_smoke.cjs <install> <input.json> [output root]');
+const {readRoofMap,anchorTowns}=require('./chimney_roofs.cjs');
+const [installArg,input,city,rootArg]=process.argv.slice(2);
+if(!installArg||!input||!city)throw Error('usage: export_chimney_smoke.cjs <install> <input.json> <city> [output root]');
 const install=path.resolve(installArg),root=path.resolve(rootArg||path.join(__dirname,'../..'));
 const rel=path.relative(install,root);
 if(!rel||(!rel.startsWith('..'+path.sep)&&rel!=='..'&&!path.isAbsolute(rel)))throw Error('output must stay outside original install');
@@ -32,12 +33,17 @@ const original=context.original;
 const config={from:original.sn.from,full:original.sn.full,smoke:original.sn.smoke,towns:original.sn.towns,
  wind:{x:original.As.windX,y:original.As.windY},criticalBelow:game.criticalBelow,damagedBelow:game.damagedBelow};
 const towns=game.settlements.map(t=>({id:t.id+1,x:t.x,y:t.y,radius:t.radius,kind:t.kind,chimneys:original.pQt(game,t,config.towns.chimneys[t.kind]||0)}));
+// APPROX owner correction: the original urban-cell guesses can miss the visible building art.
+const roofMap=readRoofMap(city,game.w,game.h),anchored=anchorTowns(towns,roofMap,game);
 const frame=Math.ceil(original.u$.puff.span*original.zc.px/2)*2,baked=original.cQt('puff',frame);
-const data={width:baked.image.width,height:baked.image.height,frame,facings:original.zc.facings,px:original.zc.px,config,towns,
+const data={width:baked.image.width,height:baked.image.height,frame,facings:original.zc.facings,px:original.zc.px,config,towns:anchored.towns,
  deflate:zlib.deflateRawSync(Buffer.from(baked.image.data)).toString('base64')};
 function lua(v){if(v===null)return'nil';if(Array.isArray(v))return'{'+v.map(lua).join(',')+'}';if(typeof v==='object')return'{'+Object.entries(v).map(([k,v])=>'['+JSON.stringify(k)+']='+lua(v)).join(',')+'}';return JSON.stringify(v);}
 function write(rel,value,comment){const target=path.join(root,rel);fs.mkdirSync(path.dirname(target),{recursive:true});fs.writeFileSync(target,'-- GENERATED local-only original '+comment+'.\nreturn '+lua(value)+'\n');}
 write('src/client/DevAssets/OrigChimneySmoke_saddle.luau',data,'chimney layout, puff art and settings');
+write('src/shared/GameData/ChimneyRoofAudit.luau',{cellPx:roofMap.size,sites:anchored.audit},'roof anchor audit');
+const auditPath=path.join(root,'docs/private/chimney-roof-audit_saddle.json');
+fs.mkdirSync(path.dirname(auditPath),{recursive:true});fs.writeFileSync(auditPath,JSON.stringify(anchored.audit));
 // Reference the original class's draw/smoke, including density before its smoke method.
 const cases=[];
 for(const band of ['healthy','damaged','critical'])for(const garrison of [0,2])for(const night of [0,.3,.6,.625,1])for(const time of [0,.041,1.75,5.499,5.5,18.25,300]){
@@ -50,3 +56,4 @@ for(const band of ['healthy','damaged','critical'])for(const garrison of [0,2])f
 }
 write('src/shared/GameData/ChimneySmokeVectors.luau',{config,town:towns[0],cases},'smoke reference poses');
 console.log('Original chimney smoke:',towns.length,'towns,',towns.reduce((n,t)=>n+t.chimneys.length,0),'chimneys;',data.width+'x'+data.height,'shared puff atlas;',cases.length,'reference cases');
+console.log('Roof anchors:',anchored.audit.filter(a=>!a.sourceOnRoof).length,'source guesses off roof;',anchored.audit.filter(a=>a.anchor).length,'anchored,',anchored.audit.filter(a=>!a.anchor).length,'suppressed (no eligible roof nearby)');

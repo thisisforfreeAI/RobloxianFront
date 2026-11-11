@@ -1873,7 +1873,7 @@ puff centres, minimum native part size, and the existing five-second retry/three
 Regenerate locally from the project root:
 ```
 lune run tools/conversion/export_smoke_input
-node tools/conversion/export_chimney_smoke.cjs "A:\SteamLibrary\steamapps\common\WarFront Demo" docs/private/smoke-input_saddle.json
+node tools/conversion/export_chimney_smoke.cjs "A:\SteamLibrary\steamapps\common\WarFront Demo" docs/private/smoke-input_saddle.json "assets/original/warfront-demo-assets-20261110-104215/dist/cities/saddle.city"
 ```
 The input, chimney settings/layout, original art and original pose vectors remain in ignored
 docs/private, GameData and DevAssets. The install was read only. Only two integration lines were
@@ -1888,4 +1888,46 @@ cover origin/puff fog, unknown/destroyed towns, off-screen culling, frozen quant
 mutation, all source sites off road in urban cells, and every atlas facing's decoded transparency.
 These are CPU/data checks, not a Studio rendering or Script Analysis pass. New B141-B143 are not
 run; B138-B140 also remain pending. Restart Play after Rojo sync to load the new modules and art.
+
+## Smoke roof placement correction and lamp-post integration (2026-11-10)
+
+Owner reported smoke coming from the wrong place. The earlier source urban-cell placement was
+not enough: 48 of 56 guesses fail a one-texel raised-roof-interior margin in the actual Saddle
+town art. APPROX owner correction: the exporter now reads the matching .city material atlas and
+index, then anchors each guess to the nearest eligible roof-texel centre within three cells.
+Eligible roofs have a full 3x3 patch of raised-roof material (226+), are urban/off-road, remain
+inside the settlement's radius-plus-one box, and keep at least 0.75 cell from other emitters.
+The search is deterministic. A site with no eligible position is omitted, with no empty-ground
+fallback. The resulting Saddle layout has 48 roof anchors and eight omitted sites. This is a
+port placement correction, not a claim that the original game has those exact chimney pixels.
+Animation, art, wind, war clock and image allocation are unchanged. The independent original
+draw/smoke reference still uses the original sites, so it continues to test the puff algorithm
+without treating our corrected positions as original placement.
+
+New chimney_roofs.cjs and its synthetic tests keep the placement policy separate from original
+runtime extraction. The exporter now requires the .city path (see updated command above). The
+roof audit and its JSON diagnostics remain ignored in GameData/docs/private, and the corrected
+sprite/layout module remains ignored in DevAssets. An independent Python assembly of the city
+materials checked all 48 retained origins and their full 3x3 raised-roof patch. Before/after
+diagnostic crops were also inspected locally; actual Studio appearance still needs owner review.
+
+Connected Claude's StreetFurnitureRenderer with its require/start lines in init.client and its
+test module in tests/run. It uses the existing generated lamp lists for all nine maps; Saddle has
+36 posts. This adds visible posts at original lamp texels. Post geometry, orientation, height,
+shadow and zoom treatment are port additions. It does not add traffic signals or intersection
+furniture. Existing NightLightRenderer supplies the lamp lights. Map-folder destruction handles
+cleanup. No server or civilian code changes were needed for this integration.
+
+Review also corrected the post renderer's idle allocation: it now requests its shared detail
+image only for an in-view, non-fogged post and updates its idle timer only while posts are drawn.
+Previously any close-zoom camera reset idle and allocated the atlas, even when no posts were in
+view. The existing reclaimer, refusal retry and three-second release policy remain. Claude's
+scratch files and unrelated work were preserved; nothing was committed or pushed.
+
+Verification actually run: full Lune suite **267 passed, 0 failed** (includes all nine furniture
+tests and six smoke tests); five Node synthetic roof-placement tests passed; eight existing Python
+street-furniture packer tests passed. Python's initial run hit a sandbox temp-folder write denial;
+rerunning with a writable staging temp directory passed. The changed Luau compiles (syntax only)
+and Rojo build passes. Source smoke pose references still match to 1e-9. New B144-B146 are not run
+in Studio. B141's misplaced-origin feedback is recorded as corrected pending recheck, not a pass.
 

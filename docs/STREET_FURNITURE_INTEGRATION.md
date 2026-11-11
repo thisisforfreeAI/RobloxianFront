@@ -1,8 +1,14 @@
 # Street lamp posts: what was built and how to wire it in
 
-Status: built and unit-tested, **not wired in yet**. That is on purpose: init.client.luau, Civilian*,
-Sim.luau, MatchService.luau and the shared status docs were being edited by another session. Nothing
-has been committed. Not yet run in Studio.
+Status: **wired in on 2026-11-10**. The require/start calls are in init.client.luau and its tests
+are included in tests/run.luau. Full combined suite: 267 passed, 0 failed; Rojo build passed.
+Eight packer tests also passed. B145-B146 cover the new integration and remain unrun in Studio.
+Nothing has been committed or pushed. The original handoff instructions/results below are retained
+for reference; the wiring steps have already been applied.
+
+Integration review also moved native-image allocation inside the visible-post loop and updates
+the idle timer only while posts are drawn. An empty/fogged close-zoom view now releases the atlas
+after three seconds instead of continually resetting idle. Other post art/layout rules are intact.
 
 ## What the game does, and what this adds
 

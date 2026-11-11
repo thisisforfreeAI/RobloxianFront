@@ -213,10 +213,6 @@ function Renderer.start(map: any, parent: Instance?): boolean
 			end
 			return
 		end
-		idle = os.clock()
-		if not image() then
-			return
-		end
 		local sdx, sdy, alpha = SF.shadow(Daylight.get())
 		local stamp = string.format("%.3f,%.3f,%.3f,%.3f", sdx, sdy, alpha, share)
 		local changed = stamp ~= lastShadow
@@ -230,6 +226,10 @@ function Renderer.start(map: any, parent: Instance?): boolean
 			end
 			if Fog.hidden(lamps[i], lamps[i + 1]) then
 				continue
+			end
+			-- Allocate only for an in-view, visible post; an empty/fogged camera must stay idle.
+			if not image() then
+				break
 			end
 			count += 1
 			wanted[i] = true
@@ -247,6 +247,11 @@ function Renderer.start(map: any, parent: Instance?): boolean
 				v.part:Destroy()
 				views[i] = nil
 			end
+		end
+		if next(views) then
+			idle = os.clock()
+		elseif atlas and os.clock() - idle > 3 then
+			clear()
 		end
 	end)
 

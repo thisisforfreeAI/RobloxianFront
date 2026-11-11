@@ -44,7 +44,7 @@ return function(test:any,eq:any)
 		eq(#Smoke.poses(t,refs.town.chimneys,refs.config,1,0,0,Hash.ambient),0)
 		eq(#Smoke.poses(t,refs.town.chimneys,refs.config,1,1,1,Hash.ambient),0)
 	end)
-	test("local chimney sites stay in their source urban cells and clear the road raster",function()
+	test("roof-anchored chimney sites stay urban and clear the road raster",function()
 		local input=require("@lune/serde").decode("json",fs.readFile("docs/private/smoke-input_saddle.json"))
 		local count=0
 		for _,t in data.towns do
@@ -56,6 +56,24 @@ return function(test:any,eq:any)
 			end
 		end
 		assert(count>0)
+	end)
+	test("packed smoke origins match the roof audit without restoring rejected ground emitters",function()
+		local audit=require("../src/shared/GameData/ChimneyRoofAudit") ::any
+		local accepted,rejected=0,0
+		local perTown={}
+		for _,entry in audit.sites do
+			if not entry.anchor then rejected+=1;continue end
+			local index=(perTown[entry.town] or 0)+1;perTown[entry.town]=index
+			local p=data.towns[entry.town].chimneys[index];local anchor=entry.anchor
+			close(p.x,anchor.x);close(p.y,anchor.y);close(p.seed,anchor.seed)
+			close(entry.shift,math.sqrt((p.x-entry.sourceX)^2+(p.y-entry.sourceY)^2))
+			assert(entry.shift<=3)
+			-- The emitter is centred on the art texel, not a rounded map-cell centre.
+			close((p.x*audit.cellPx)%1,.5);close((p.y*audit.cellPx)%1,.5)
+			accepted+=1
+		end
+		local count=0;for id,t in data.towns do eq(#t.chimneys,perTown[id] or 0);count+=#t.chimneys end
+		eq(count,accepted);assert(accepted>0 and rejected>0,"Saddle regression must cover rejected empty-ground guesses")
 	end)
 	test("all original puff facings decode in one small transparent atlas",function()
 		local Codec=require("../src/shared/Maps/MapCodec")
