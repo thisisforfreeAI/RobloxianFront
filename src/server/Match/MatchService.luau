@@ -32,6 +32,8 @@ local FireMap = require(Shared.Simulation.FireMap)
 local HouseWorld = require(Shared.Simulation.HouseWorld)
 local ForestMap = require(Shared.Simulation.ForestMap)
 local ForestWorld = require(Shared.Simulation.ForestWorld)
+local GroundScorchWorld = require(Shared.Simulation.GroundScorchWorld)
+local WorldFireImpacts = require(Shared.Simulation.WorldFireImpacts)
 local Hash = require(Shared.Utilities.Hash)
 local UnitStages = require(Shared.Presentation.UnitStages)
 local TerritoryPixels = require(Shared.Presentation.TerritoryPixels)
@@ -60,6 +62,7 @@ local bots: { [number]: any } = {}
 local tick = 0
 local sentFires: {[Player]:any} = {}
 local sentForest: {[Player]:any} = {}
+local sentScorch: {[Player]:any} = {}
 local readyView: {[Player]:boolean} = {}
 
 local OPENING_DROP = true -- the game's opening drop: pick a landing spot, the truck sets up the HQ
@@ -951,6 +954,12 @@ local function privateState()
 				return not fogged or (sight~=nil and sight.visibleAt(x,y))
 			end)
 		end
+		if readyView[player] and sim.groundScorch then
+			local fogged=side>0 and sim.fogOn();local sight=if fogged then viewers[side] else nil
+			payload.groundScorch,sentScorch[player]=sim.groundScorch.view(sentScorch[player],function(x,y)
+				return not fogged or (sight~=nil and sight.visibleAt(x,y))
+			end)
+		end
 		-- Send current visible actors only. Hidden origins, complete routes and destinations stay server-side.
 		payload.refugees={}
 		if sim.refugees then
@@ -1283,6 +1292,7 @@ end
 function MatchService.resetView(player:Player)
 	-- Only this player's visual caches; readiness grants no gameplay command or extra visibility.
 	sentFires[player],sentForest[player]=nil,nil
+	sentScorch[player]=nil
 	sentVision[player],sentCities[player]=nil,nil
 	sentTerritory[player],sentTerritoryView[player]=nil,nil
 	sentWear[player],wearSentAt[player]=nil,nil
@@ -1341,6 +1351,16 @@ function MatchService.start(mapModule: string)
 		-- the game starts each match with a fresh seed (0 to 999999); here it only draws the opening deck
 		deckSeed = Random.new():NextInteger(0, 999999),
 	})
+	if WorldLife.HOUSE_FIRES or WorldLife.FOREST_FIRES then
+		local settings=GameData:FindFirstChild("GroundScorchRules")
+		if settings then
+			local ok,world=pcall(function()
+				return GroundScorchWorld.new(require(settings),map,{time=function() return sim.time end,towns=sim.settlements,
+					quietSec=rules:number("settlements.rebuild.quietSec")})
+			end)
+			if ok then sim.groundScorch=world else warn("[Match] Ground scorch unavailable:",world) end
+		end
+	end
 	if WorldLife.HOUSE_FIRES then
 		local source=GameData:FindFirstChild("FireMap_"..map.data.id)
 		local settings=GameData:FindFirstChild("FireRules")
@@ -1352,6 +1372,7 @@ function MatchService.start(mapModule: string)
 					local page=GameData:FindFirstChild(name);assert(page,"missing fire atlas page");return require(page)
 				end)
 				return HouseWorld.new(require(settings),sampler,{time=function() return sim.time end,weather=Admin.weather,
+					onScar=function(...) if sim.groundScorch then sim.groundScorch.scar(...) end end,
 					random=Rng.new(map.data.seed),towns=sim.settlements,
 					rebuildRules={quietSec=rules:number("settlements.rebuild.quietSec"),fullSec=rules:number("settlements.rebuild.fullSec")}})
 			end)
@@ -1370,6 +1391,7 @@ function MatchService.start(mapModule: string)
 				local breaks=ForestMap.firebreaks(map.width,map.height,map.data.roads,config.forest.firebreakRank)
 				local water={};for _,name in config.forest.water do water[name]=true end
 				return ForestWorld.new(config,forest,{time=function() return sim.time end,weather=Admin.weather,
+					onScar=function(...) if sim.groundScorch then sim.groundScorch.scar(...) end end,
 					random=Rng.new(map.data.seed),waterAt=function(cell) return water[MapCodec.terrainName(map,cell%w,math.floor(cell/w))]==true end,
 					firebreakAt=function(cell) return cell>=0 and cell<map.width*map.height and buffer.readu8(breaks,cell)>0 end})
 			end)
@@ -1377,11 +1399,26 @@ function MatchService.start(mapModule: string)
 		end
 	end
 	if sim.houseFires or sim.forestFires then
-		sim.worldBlast=function(x,y,weapon,size)
-			if not x or not y then return end
-			if sim.houseFires then sim.houseFires.blast(x,y,weapon,size) end
-			if sim.forestFires then sim.forestFires.blast(x,y,weapon,size) end
+		local config:any=nil;local source=GameData:FindFirstChild("FireImpactRules")
+		if source then
+			local ok,value=pcall(require,source)
+			if ok then config=value else warn("[Match] Extra fire-impact settings unavailable:",value) end
 		end
+		sim.fireImpacts=WorldFireImpacts.new(config,map.width,map.height,{
+			time=function() return sim.time end,random=Rng.new(map.data.seed),
+			water=function(x,y)
+				-- Source effects' be: a road/bridge over water receives a ground impact.
+				local cell=math.floor(y)*map.width+math.floor(x)
+				if sim.roads.isRoad(cell) then return false end
+				local kind=MapCodec.terrainName(map,x,y);return kind=="deep" or kind=="shallow" or kind=="river"
+			end,
+			emit=function(x,y,weapon,size)
+				if sim.houseFires then sim.houseFires.blast(x,y,weapon,size) end
+				if sim.forestFires then sim.forestFires.blast(x,y,weapon,size) end
+			end,
+		})
+		sim.worldBlast=sim.fireImpacts.fire
+		if config and not sim.fireImpacts.hasEvents then warn("[Match] Regenerate FireImpactRules with export_fire_impacts.cjs") end
 	end
 	for _, rig in sim.rigs do
 		if rig.rich > 1 then
@@ -1411,6 +1448,7 @@ function MatchService.start(mapModule: string)
 		sentVision[p] = nil
 		sentFires[p] = nil
 		sentForest[p] = nil
+		sentScorch[p] = nil
 		readyView[p] = nil
 		updateBots()
 	end)
@@ -1427,10 +1465,13 @@ function MatchService.start(mapModule: string)
 			end
 			Admin.step(sim)
 			sim.step(step)
+			if sim.fireImpacts then sim.fireImpacts.advance(sim.time) end
 			if sim.houseFires then sim.houseFires.advance(sim.time) end
 			if sim.forestFires then sim.forestFires.advance(sim.time) end
+			if sim.groundScorch then sim.groundScorch.advance(sim.time) end
 			for _, ev in sim.takeEvents() do
 				alertsFor(ev)
+				if sim.fireImpacts then sim.fireImpacts.event(ev) end
 				if ev.type == "destroyed" and ev.x and rules:has(`units.{ev.kind}.move`) and rules:text(`units.{ev.kind}.move`) ~= "foot" then
 					table.insert(deaths, { ev.id, ev.kind, ev.x, ev.y, ev.heading or 0, ev.turret or ev.heading or 0 })
 					-- APPROX: wreck heat begins on death; the original visual death sequence can delay it.

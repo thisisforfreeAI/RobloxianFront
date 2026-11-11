@@ -8,7 +8,7 @@ return function(test:any,eq:any)
 	local data=require("../src/client/DevAssets/OrigPowerLines_saddle") ::any
 	local function make(plan:any?):any
 		plan=plan or data
-		local h:any={time=0,hidden=false,failFull=false,created=0,released=0,writes=0,attempts=0,instances={},listeners={}}
+		local h:any={time=0,hidden=false,fogChecks=0,failFull=false,created=0,released=0,writes=0,attempts=0,instances={},listeners={}}
 		local function signal():any
 			local s:any={items={}}
 			function s:Connect(fn:any):any local item={fn=fn,on=true};table.insert(self.items,item);return{Disconnect=function() item.on=false end} end
@@ -23,7 +23,7 @@ return function(test:any,eq:any)
 			end
 			table.insert(h.instances,obj);return obj
 		end
-		h.parent=instance("Folder");h.heartbeat=signal()
+		h.parent=instance("Folder");h.heartbeat=signal();h.render=signal()
 		local memory:any={}
 		function memory.create(size:any):any
 			h.attempts+=1;if h.failAll or (h.failFull and size.X==plan.width) then return nil end
@@ -42,17 +42,18 @@ return function(test:any,eq:any)
 		local shared={Config={World="world"},Maps={MapCodec="codec"},Utilities={Inflate="inflate"},Presentation={PowerLines="power"}}
 		local modules:any={world={STUDS_PER_CELL=4,GROUND_Y=0,TOP_GUI_YAW=-math.pi/2,toWorld=function(x,y,z) return vec(x*4,z,y*4) end},
 			codec={base64Decode=function() return buffer.create(0) end},inflate={raw=function(_b:any,size:number) return buffer.create(size) end},power=Power,
-			memory=memory,fog={hidden=function(x,y) return h.hidden or (h.fog and h.fog(x,y)) or false end},light={get=function() return {shadow={0,1},shadowAlpha=1,night=0} end},
+			memory=memory,fog={hidden=function(x,y) h.fogChecks+=1;return h.hidden or (h.fog and h.fog(x,y)) or false end},light={get=function() return {shadow={0,1},shadowAlpha=1,night=0} end},
 			worldlight={view=function() local v=table.clone(h.view);v.time=h.time;return v end},data=plan}
 		local assets={FindFirstChild=function() return "data" end}
-		local env:any=setmetatable({game={GetService=function(_s:any,name:string) return if name=="RunService" then {Heartbeat=h.heartbeat} else {WaitForChild=function() return shared end} end},
+		h.camera={CFrame={Position=vec(target.x*4,60,target.y*4)}}
+		local env:any=setmetatable({game={GetService=function(_s:any,name:string) return if name=="RunService" then {Heartbeat=h.heartbeat,RenderStepped=h.render} else {WaitForChild=function() return shared end} end},
 			script={Parent={ImageMemory="memory",FogOverlay="fog",DaylightController="light",WorldLight="worldlight",Parent={FindFirstChild=function() return assets end}}},
 			require=function(name:any) assert(modules[name],tostring(name));return modules[name] end,
 			Instance={new=instance},Vector2={new=vec},Vector3={new=vec},UDim2={fromScale=udim,fromOffset=udim},CFrame=cf,
 			Color3={new=vec,fromRGB=vec},Content={fromObject=function(image:any) assert(image and not image.dead);return image end},
-			Enum={NormalId={Top=0},SurfaceGuiSizingMode={FixedSize=0},ResamplerMode={Default=0}},workspace={CurrentCamera={}},os={clock=function() return h.time end}}, {__index=getfenv()})
+			Enum={NormalId={Top=0},SurfaceGuiSizingMode={FixedSize=0},ResamplerMode={Default=0}},workspace={CurrentCamera=h.camera},os={clock=function() return h.time end}}, {__index=getfenv()})
 		h.renderer=luau.load(fs.readFile("src/client/Rendering/PowerLineRenderer.luau"),{environment=env,debugName="PowerLineRenderer_runtime_test"})()
-		function h.paint() h.heartbeat:fire(.11) end
+		function h.paint() h.heartbeat:fire(.11);h.render:fire() end
 		function h.parts():number local count=0;for _,obj in h.instances do if obj.ClassName=="Part" and not obj.dead then count+=1;assert(obj.CanCollide==false and obj.CanQuery==false) end end;return count end
 		function h.wires():{any}
 			local out={}
@@ -65,17 +66,22 @@ return function(test:any,eq:any)
 		end
 		function h.signature():string
 			local out={}
-			for _,f in h.wires() do table.insert(out,string.format("%s:%.8f:%.8f:%.8f:%.8f",f.Parent.Parent.Name,f.Position.X.Scale,f.Position.Y.Scale,f.Size.X.Scale,f.Rotation)) end
+			for _,f in h.wires() do table.insert(out,string.format("%s:%.8f:%.8f:%.8f:%.8f",string.gsub(f.Parent.Parent.Name,"_Fog$",""),f.Position.X.Scale,f.Position.Y.Scale,f.Size.X.Scale,f.Rotation)) end
 			table.sort(out);return table.concat(out,"|")
 		end
 		return h
 	end
-	test("actual power renderer shares its atlas, clears fogged views and releases idle storage",function()
+	test("actual power renderer preserves the network through fog and releases storage outside the camera view",function()
 		local h=make();h.renderer.start({data={id="saddle"}},h.parent);h.paint()
 		assert(h.parts()>0);eq(h.created,1);eq(h.writes,1)
 		local contents={};for _,obj in h.instances do if obj.ImageContent then contents[obj.ImageContent]=true end end
 		local count=0;for _ in contents do count+=1 end;eq(count,1)
-		h.hidden=true;h.time=4;h.paint();eq(h.parts(),0);eq(h.released,1)
+		local parts,wires,signature=h.parts(),#h.wires(),h.signature();assert(wires>0)
+		h.hidden=true;h.time=4;h.paint();eq(h.parts(),parts);eq(#h.wires(),wires);eq(h.signature(),signature);eq(h.released,0)
+		for _,obj in h.instances do if obj.ClassName=="Part" and not obj.dead then assert(obj.CFrame[1].Y>.4,"fogged power art must sit above the fog") end end
+		h.hidden=false;h.paint();eq(h.parts(),parts);eq(h.signature(),signature)
+		for _,obj in h.instances do if obj.ClassName=="Part" and not obj.dead then assert(obj.CFrame[1].Y<.3,"revealed power art must return below unit sprites") end end
+		h.view.cx=-10000;h.view.cy=-10000;h.time=8;h.paint();eq(h.parts(),0);eq(h.released,1)
 		h.parent:Destroy();eq(h.reclaim,nil)
 	end)
 	test("actual power renderer uses half atlas after refusal and tears down reclaimed views",function()
@@ -91,6 +97,7 @@ return function(test:any,eq:any)
 		local h=make();h.view.rx=1000;h.view.ry=1000;h.renderer.start({data={id="saddle"}},h.parent);h.paint()
 		local anchors=0;local tiles={};local lines={}
 		for _,obj in h.instances do if obj.ClassName=="Part" and not obj.dead then
+			local height=obj.CFrame[1].Y;assert(height<.3,"revealed power art must retain its usual depth")
 			local tx,ty=string.match(obj.Name,"^PowerWireTile_(-?%d+):(-?%d+)$")
 			if tx then
 				assert(not tiles[obj.Name]);tiles[obj.Name]=true
@@ -139,17 +146,65 @@ return function(test:any,eq:any)
 		elseif obj.ClassName=="Frame" and obj.Visible and obj.Parent.ClassName=="SurfaceGui" and not string.find(obj.Parent.Parent.Name,"PowerWireTile_",1,true) then visibleDots+=1 end end
 		assert(visibleDots>0);h.time=1;h.paint();eq(h.attempts,2);h.parent:Destroy();eq(h.parts(),0)
 	end)
-	test("actual renderer clips fogged cells without losing a visible midspan between hidden anchors",function()
+	test("actual renderer draws full spans and their anchors across mixed fog cells",function()
 		local plan=table.clone(data)
 		plan.nodes={{id=1,x=0,y=4.5,ax=1,ay=0,plant=true},{id=2,x=20,y=4.5,ax=1,ay=0,steel=true,phase=0},{id=3,x=25,y=4.5,ax=1,ay=0,steel=true,phase=0}}
 		plan.links={{a=2,b=1}}
 		local h=make(plan);h.view.cx=10;h.view.cy=4.5;h.view.rx=30
 		h.fog=function(x) return x<8 or x>=16 end
 		h.renderer.start({data={id="saddle"}},h.parent);h.paint();assert(#h.wires()>0)
+		local tiles={};local anchors=0
 		for _,f in h.wires() do
-			local tx=tonumber(string.match(f.Parent.Parent.Name,"^PowerWireTile_(-?%d+):"));eq(tx,1)
+			local tx=tonumber(string.match(f.Parent.Parent.Name,"^PowerWireTile_(-?%d+):"));tiles[tx]=true
 			eq(f.Parent.ClipsDescendants,true)
 		end
+		assert(tiles[0] and tiles[1] and tiles[2],"fog must not cut out the hidden ends")
+		for _,obj in h.instances do if obj.ClassName=="Part" and not obj.dead and not string.find(obj.Name,"PowerWireTile_",1,true) then anchors+=1 end end
+		eq(anchors,#plan.nodes)
+		for _,obj in h.instances do if obj.ClassName=="Part" and not obj.dead then
+			local isWire=string.find(obj.Name,"PowerWireTile_",1,true)~=nil
+			local fogged=not isWire or string.match(obj.Name,"_Fog$")~=nil
+			if fogged then assert(obj.CFrame[1].Y>.4) else assert(obj.CFrame[1].Y<.3) end
+		end end
+		-- Alternating cells also put both layers inside the same tile, rather than only tile edges.
+		h.fog=function(x) return math.floor(x)%2==0 end;h.paint()
+		local segments={}
+		for _,f in h.wires() do
+			local tx,ty=string.match(f.Parent.Parent.Name,"^PowerWireTile_(-?%d+):(-?%d+)")
+			table.insert(segments,{x=tonumber(tx)*8+f.Position.X.Scale/h.view.cellPixels,y=tonumber(ty)*8+f.Position.Y.Scale/h.view.cellPixels,
+				half=f.Size.X.Scale/h.view.cellPixels/2,angle=math.rad(f.Rotation)})
+		end
+		for _,path in Power.curves(plan,plan.links[1],0,h.view.cellPixels,0,4) do for j=2,#path do
+			local a,b=path[j-1],path[j];local steps=math.max(1,math.ceil(math.sqrt((b.x-a.x)^2+(b.y-a.y)^2)*4))
+			for n=0,steps-1 do
+				local t=(n+.5)/steps;local x,y=a.x+(b.x-a.x)*t,a.y+(b.y-a.y)*t;local found=false
+				for _,f in segments do
+					local dx,dy=x-f.x,y-f.y;local c,s=math.cos(f.angle),math.sin(f.angle)
+					if math.abs(dx*c+dy*s)<=f.half+1e-8 and math.abs(-dx*s+dy*c)<1e-7 then found=true;break end
+				end
+				assert(found,"wire gap at an internal fog boundary")
+			end
+		end end
 		h.parent:Destroy()
+	end)
+	test("raised fog wire canvases stay on the same camera rays through pan and zoom and disconnect on teardown",function()
+		local h=make();h.hidden=true;h.renderer.start({data={id="saddle"}},h.parent);h.paint()
+		for _,camera in {{X=0,Y=16,Z=0},{X=300,Y=120,Z=150},{X=-25,Y=40,Z=900}} do
+			h.camera.CFrame.Position=camera;h.render:fire()
+			local count=0
+			for _,obj in h.instances do if obj.ClassName=="Part" and not obj.dead then
+				local tx,ty=string.match(obj.Name,"^PowerWireTile_(-?%d+):(-?%d+)_Fog$")
+				if tx then
+					count+=1;local pos=obj.CFrame[1];local ratio=(camera.Y-pos.Y-.005)/(camera.Y-.22-.005)
+					local x=(tonumber(tx)*8+4)*4;local y=(tonumber(ty)*8+4)*4
+					assert(math.abs((pos.X-camera.X)/(camera.Y-pos.Y-.005)-(x-camera.X)/(camera.Y-.22-.005))<1e-9)
+					assert(math.abs((pos.Z-camera.Z)/(camera.Y-pos.Y-.005)-(y-camera.Z)/(camera.Y-.22-.005))<1e-9)
+					assert(math.abs(obj.Size.X-32*ratio)<1e-9);assert(math.abs(obj.Size.Z-32*ratio)<1e-9)
+				end
+			end end
+			assert(count>0)
+		end
+		h.parent:Destroy();for _,listener in h.render.items do eq(listener.on,false) end
+		h.camera.CFrame.Position={X=0,Y=80,Z=0};h.render:fire();eq(h.parts(),0)
 	end)
 end

@@ -17,6 +17,9 @@ local current:any=nil
 function Renderer.destroy()
 	if current then current.folder:Destroy() end
 end
+function Renderer.setFireMask(mask:any?)
+	if current then current.fireMask=mask;current.maskVersion=(current.maskVersion or 0)+1 end
+end
 function Renderer.start(map:any,parent:Instance?)
 	Renderer.destroy()
 	local assets=script.Parent.Parent:FindFirstChild("DevAssets")
@@ -59,7 +62,11 @@ function Renderer.start(map:any,parent:Instance?)
 			if not session.alive then return end
 			if ok then
 				session.cache=result
-				session.windows=WindowRenderer.start(session.meta.windows,profile,folder,session.born)
+				session.windows=WindowRenderer.start(session.meta.windows,profile,folder,session.born,{
+					blocked=function(x,y) return session.fireMask~=nil and session.fireMask.blocked(x,y) end,
+					any=function() return session.fireMask~=nil and session.fireMask.any() end,
+					version=function() return (session.maskVersion or 0)..":"..(if session.fireMask then session.fireMask.revision else 0) end,
+				})
 			else session.disabled=true;warn("[NightLights] Local fields unavailable:",result) end
 		end)
 	end

@@ -327,6 +327,14 @@ if fs.isFile(matchPath) then
 			{kind="rocket",at=0,target=-1,key="artyBase.barrage",x=75,y=20,by=1,damage=0}}
 		sim.step(.05);eq(#impacts,2);eq(impacts[1][1],70);eq(impacts[1][3],"salvo");eq(impacts[2][1],75);eq(impacts[2][3],"barrage")
 	end)
+	test("structure destruction retains its fire origin after dead entities are compacted",function()
+		local sim=newSim();local target=sim.hqOf(2);local id,cell=target.id,target.cell
+		sim.takeEvents();sim.strikes={{kind="structure",at=0,target=id,key="units.tank",damage=target.hp+1,aimX=target.x,aimY=target.y,by=1}}
+		sim.step(.05);eq(sim.entities[id],nil)
+		local found=0;for _,ev in sim.takeEvents() do if ev.type=="destroyed" and ev.id==id then
+			found+=1;eq(ev.cat,"structure");eq(ev.kind,"hq");eq(ev.x,cell%W+.5);eq(ev.y,math.floor(cell/W)+.5)
+		end end;eq(found,1)
+	end)
 
 	test("setup: 600 oil, 3 idle trucks, 3 infantry 6.2 cells round the HQ, HQ 3000 hp", function()
 		local sim = newSim()
@@ -4323,6 +4331,17 @@ require("./admin_fire")(test, eq)
 require("./forest_world")(test, eq)
 require("./forest_raster")(test, eq)
 require("./forest_town_renderer")(test, eq)
+require("./fire_lights")(test, eq)
+require("./fire_light_renderer")(test, eq)
+require("./ground_scorch")(test, eq)
+require("./ground_scorch_renderer")(test, eq)
+require("./ground_scorch_integration")(test, eq)
+require("./building_fire_windows")(test, eq)
+require("./fire_window_renderer")(test, eq)
+require("./roof_canopy")(test, eq)
+require("./urban_scorch")(test, eq)
+require("./fire_impact_events")(test, eq)
+require("./demo_secondary_fire")(test, eq)
 
 print(`\n{passed} passed, {failed} failed`)
 if failed > 0 then

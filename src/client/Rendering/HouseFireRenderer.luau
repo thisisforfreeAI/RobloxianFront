@@ -7,11 +7,14 @@ local Shared=ReplicatedStorage:WaitForChild("Shared")
 local Effects=require(Shared.Presentation.FireEffects)
 local View=require(Shared.Presentation.HouseFireView)
 local ForestView=require(Shared.Presentation.ForestFireView)
+local BuildingMask=require(Shared.Presentation.BuildingFireMask)
 local Scorch=require(script.Parent.FireScorchRenderer)
 local Death=require(script.Parent.DeathRenderer)
 local Fog=require(script.Parent.FogOverlay)
 local WorldLight=require(script.Parent.WorldLight)
 local Town=require(script.Parent.TownRenderer)
+local FireLight=require(script.Parent.FireLightRenderer)
+local NightLight=require(script.Parent.NightLightRenderer)
 local Renderer={}
 local current:any=nil
 function Renderer.destroy() if current then current.folder:Destroy() end end
@@ -28,12 +31,15 @@ function Renderer.start(map:any,parent:Instance):boolean
 	local folder=Instance.new("Folder");folder.Name="WorldFireEffects";folder.Parent=parent
 	local rng=Random.new();local random=function() return rng:NextNumber() end
 	local st:any={folder=folder,clock=nil,at=os.clock(),running=false,nv=false,dead=false};current=st
+	st.mask=BuildingMask.new(map.width,map.height,config.tileSize);NightLight.setFireMask(st.mask)
+	st.glow=FireLight.start(map,folder)
+	local function clearGlow() if st.glow then st.glow.reset() end end
 	local view=View.new(map.width,map.height,config.tileSize,settings.houses.house.maxPx,{
-		random=random,pixels=function(rows) Scorch.apply(rows) end,
-		clear=function() Death.clearTag(folder);Scorch.apply({},true) end})
+		random=random,pixels=function(rows) Scorch.apply(rows);st.mask.apply(rows) end,
+		clear=function() Death.clearTag(folder);Scorch.apply({},true);clearGlow();st.mask.reset() end})
 	st.view=view
 	if forest then st.forest=ForestView.new(forest,settings,{random=random,
-		clear=function() Death.clearTag(folder) end,fates=Town.setForestFates}) end
+		clear=function() Death.clearTag(folder);clearGlow() end,fates=Town.setForestFates}) end
 	local bounds:any=nil
 	local effects=Effects.new(config,{random=random,
 		visible=function(x,y,cell)
@@ -54,11 +60,14 @@ function Renderer.start(map:any,parent:Instance):boolean
 		for _,a in actors do a.baseAge=a.age;a.age=a.drawAge end
 		for _,a in trees do a.baseAge=a.age;a.age=a.drawAge end
 		effects.frame(trees,actors,dt,bounds.cellPixels)
+		if st.glow then st.glow.advance(trees,actors,dt) end
 		for _,a in actors do a.age=a.baseAge end
 		for _,a in trees do a.age=a.baseAge end
 	end)
 	folder.Destroying:Connect(function()
 		st.dead=true;connection:Disconnect();Death.clearTag(folder);Scorch.destroy()
+		if st.glow then st.glow.destroy() end
+		NightLight.setFireMask(nil)
 		if current==st then current=nil end
 	end)
 	return true
@@ -67,10 +76,12 @@ function Renderer.syncClock(time:number,running:boolean)
 	if current then current.clock=time;current.running=running;current.at=os.clock() end
 end
 function Renderer.apply(packet:any)
-	if current then current.view.apply(packet) end
+	if current and current.view.apply(packet) then current.mask.actors(current.view.actors) end
 end
 function Renderer.applyForest(packet:any)
 	if current and current.forest then current.forest.apply(packet) end
 end
-function Renderer.setNightVision(on:boolean) if current then current.nv=on end end
+function Renderer.setNightVision(on:boolean)
+	if current then current.nv=on;if current.glow then current.glow.setNightVision(on) end end
+end
 return Renderer

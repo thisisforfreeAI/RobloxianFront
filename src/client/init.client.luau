@@ -29,10 +29,10 @@ local FortRenderer = require(script.Rendering.FortRenderer)
 local NightLightRenderer = require(script.Rendering.NightLightRenderer)
 local StreetFurnitureRenderer = require(script.Rendering.StreetFurnitureRenderer)
 local CloudRenderer = require(script.Rendering.CloudRenderer)
-local PowerLineRenderer = require(script.Rendering.PowerLineRenderer)
 local WaterRenderer = require(script.Rendering.WaterRenderer)
 local CivilianRenderer = require(script.Rendering.CivilianRenderer)
 local HouseFireRenderer = require(script.Rendering.HouseFireRenderer)
+local GroundScorchRenderer = require(script.Rendering.GroundScorchRenderer)
 local Rules = require(Shared.Config.Rules)
 local DevFlags = require(script.Dev.DevFlags)
 
@@ -57,9 +57,9 @@ do
 	NightLightRenderer.start(map,mapFolder)
 	StreetFurnitureRenderer.start(map,mapFolder)
 	CloudRenderer.start(mapFolder)
-	PowerLineRenderer.start(map,mapFolder)
 	CivilianRenderer.start(map,mapFolder)
 	HouseFireRenderer.start(map,mapFolder)
+	GroundScorchRenderer.start(map,mapFolder)
 	TerritoryRenderer.start(map.width,map.height,map.data.id)
 	WeatherGround.start(map)
 	FortRenderer.start(map.data.id)
@@ -109,11 +109,11 @@ do
 		end
 		if state.houseFires then HouseFireRenderer.apply(state.houseFires) end
 		if state.forestFires then HouseFireRenderer.applyForest(state.forestFires) end
+		if state.groundScorch then GroundScorchRenderer.apply(state.groundScorch) end
 		HouseFireRenderer.setNightVision(Hud.nightVisionOn())
 		if state.refugees then CivilianRenderer.applyRefugees(state.refugees) end
 		if state.day or state.weather then
 			Atmosphere.apply(state.day, state.weather)
-			PowerLineRenderer.setWeather(state.weather)
 		end
 		if state.rigs then
 			rigCard.update(state.rigs, state.oil, state.trucksIdle)

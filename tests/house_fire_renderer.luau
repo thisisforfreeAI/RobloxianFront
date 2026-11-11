@@ -18,13 +18,16 @@ return function(test:any,eq:any)
 		h.render=signal()
 		local scorch={start=function() h.scorchStarts+=1;return true end,destroy=function() h.scorchEnds+=1 end,apply=function(rows,reset) h.painted=rows;h.reset=reset end}
 		local death={request=function(kind,p,tag) table.insert(h.requests,{kind,p,tag}) end,clearTag=function() h.clears+=1 end}
-		local modules:any={view=View,forestview=ForestView,effects=Effects,rules=rules,profile=profile,scorch=scorch,death=death,
+		local glow={start=function() return {advance=function(trees,houses,dt) h.glowTrees=trees;h.glowHouses=houses;h.glowTime=(h.glowTime or 0)+dt end,
+			reset=function() h.glowResets=(h.glowResets or 0)+1 end,destroy=function() h.glowDead=true end,setNightVision=function(on) h.glowNV=on end} end}
+		local modules:any={view=View,forestview=ForestView,effects=Effects,rules=rules,profile=profile,scorch=scorch,death=death,glow=glow,
+			mask=require("../src/shared/Presentation/BuildingFireMask"),nightlight={setFireMask=function(mask) h.mask=mask end},
 			town={getForestMap=function() return h.forest end,setForestFates=function(rows,reset) h.treeRows=rows;h.treeReset=reset end},
 			fog={hidden=function() return h.hidden==true end},bounds={view=function() return {cx=1,cy=1,rx=10,ry=10,cellPixels=30} end}}
 		local data={FindFirstChild=function(_,key) return if h.missing then nil elseif key=="FireRules" then "rules" else "profile" end}
-		local shared:any={Presentation={FireEffects="effects",HouseFireView="view",ForestFireView="forestview"},FindFirstChild=function() return data end}
+		local shared:any={Presentation={FireEffects="effects",HouseFireView="view",ForestFireView="forestview",BuildingFireMask="mask"},FindFirstChild=function() return data end}
 		local env:any=setmetatable({game={GetService=function(_,key) return if key=="RunService" then {RenderStepped=h.render} else {WaitForChild=function() return shared end} end},
-			script={Parent={FireScorchRenderer="scorch",DeathRenderer="death",FogOverlay="fog",WorldLight="bounds",TownRenderer="town"}},
+			script={Parent={FireScorchRenderer="scorch",DeathRenderer="death",FogOverlay="fog",WorldLight="bounds",TownRenderer="town",FireLightRenderer="glow",NightLightRenderer="nightlight"}},
 			require=function(key) return assert(modules[key],key) end,
 			Instance={new=function() local f:any={Destroying=signal()};function f:Destroy() self.Destroying:fire() end;table.insert(h.folders,f);return f end},
 			Random={new=function() return {NextNumber=function() return .5 end} end},
@@ -37,10 +40,15 @@ return function(test:any,eq:any)
 		h.renderer.syncClock(0,true)
 		h.renderer.apply({epoch=1,reset=true,time=0,pixels=Packets.pixels({{141,1}}),actors={{id=1,x=1,y=1,cell=11,r=.3,age=20,life=100,rate=1,points=Packets.points({141})}}})
 		eq(h.painted[1][1],141);h.time=.1;h.render:fire();h.time=.4;h.render:fire();assert(#h.requests>0)
+		assert(h.mask.blocked(1,1));assert(not h.mask.blocked(2,1))
 		local flames=0;for _,r in h.requests do if r[1]=="spawn" then flames+=1;eq(r[2].x,1.5/14);eq(r[2].y,1.5/14) end end;assert(flames>0)
 		h.hidden=true;local before=#h.requests;h.renderer.syncClock(.4,true);h.time=.6;h.render:fire();eq(#h.requests,before)
 		h.hidden=false;h.renderer.syncClock(.6,false);h.render:fire();before=#h.requests;h.time=2;h.render:fire();eq(#h.requests,before)
+		local glowTime=h.glowTime;h.time=2.5;h.render:fire();eq(h.glowTime,glowTime);eq(#h.glowHouses,1)
+		h.renderer.setNightVision(true);eq(h.glowNV,true);assert(h.glowResets>0)
 		h.renderer.destroy();eq(h.scorchEnds,1);local clears=h.clears;h.time=3;h.render:fire();eq(h.clears,clears);eq(#h.requests,before)
+		eq(h.glowDead,true)
+		eq(h.mask,nil)
 	end)
 	test("house fire renderer skips missing local data and replaces old map sessions without duplicate callbacks",function()
 		local h=make();h.missing=true;eq(h.renderer.start({width=10,height=10,data={id="x"}},{}),false);eq(#h.folders,0);eq(h.scorchStarts,0)
@@ -54,7 +62,16 @@ return function(test:any,eq:any)
 		h.renderer.applyForest({epoch=1,reset=true,time=0,fates=Packets.trees({{17,{kind="burning",char=1}}}),actors={{key=17,age=20,life=100,rate=1}}})
 		eq(h.treeRows[1][1],17);eq(h.treeRows[1][2].char,1);eq(h.treeReset,true)
 		h.time=.1;h.render:fire();h.time=.4;h.render:fire();assert(#h.requests>0)
+		eq(#h.glowTrees,1);eq(h.glowTrees[1].x,1)
 		local n=0;for _,r in h.requests do if r[1]=="spawn" then n+=1;eq(r[2].x,1);eq(r[2].y,1) end end;assert(n>0)
+		h.renderer.destroy()
+	end)
+	test("actual house-fire epochs preserve window damage until restoration and reject stale lights",function()
+		local h=make();h.renderer.start({width=10,height=10,data={id="saddle"}},{});
+		h.renderer.apply({epoch=1,reset=true,time=0,pixels=Packets.pixels({{141,3}}),actors={}});assert(h.mask.blocked(1,1))
+		h.renderer.apply({epoch=1,time=1,pixels=Packets.pixels({}),actors={}});assert(h.mask.blocked(1,1))
+		h.renderer.apply({epoch=2,reset=true,time=2,pixels=Packets.pixels({}),actors={}});eq(h.mask.blocked(1,1),false)
+		h.renderer.apply({epoch=1,time=1,pixels=Packets.pixels({{141,3}}),actors={}});eq(h.mask.blocked(1,1),false)
 		h.renderer.destroy()
 	end)
 end

@@ -14,12 +14,13 @@ local Memory=require(script.Parent.ImageMemory)
 local Daylight=require(script.Parent.DaylightController)
 local Renderer={}
 local EMISSION_GAIN=2.4 -- APPROX owner request: more noticeable window/lamp glow.
-function Renderer.start(data:any,profile:any,parent:Instance,born:number):any
+function Renderer.start(data:any,profile:any,parent:Instance,born:number,damage:any?):any
 	local state:any={ready=false,fade=0}
 	if not data or not profile.city then return state end
 	local folder=Instance.new("Folder");folder.Name="BuildingWindows";folder.Parent=parent
 	local items=Windows.prepare(data.points,profile,Noise.hash21)
 	local views:{[number]:any}={}
+	local damageCache:any={}
 	local image:EditableImage?=nil
 	local imageDivisor=1
 	local preferHalf=false
@@ -81,7 +82,18 @@ function Renderer.start(data:any,profile:any,parent:Instance,born:number):any
 			state.ready=true
 		end
 		local wanted={}
-		local selected=Windows.visible(items,data.pixelsPerCell,camera.CFrame.Position.X/World.STUDS_PER_CELL,camera.CFrame.Position.Z/World.STUDS_PER_CELL,rx,ry)
+		local eligible:any=nil
+		if damage and damage.any() then
+			local version=damage.version()
+			eligible=function(item)
+				local cached=damageCache[item.id]
+				if not cached or cached.version~=version then
+					cached={version=version,blocked=Windows.damaged(item,data.pixelsPerCell,profile.fine,damage.blocked)};damageCache[item.id]=cached
+				end
+				return not cached.blocked
+			end
+		end
+		local selected=Windows.visible(items,data.pixelsPerCell,camera.CFrame.Position.X/World.STUDS_PER_CELL,camera.CFrame.Position.Z/World.STUDS_PER_CELL,rx,ry,eligible)
 		local began=os.clock()
 		for _,entry in selected do
 			local item=entry.item;wanted[item.id]=true
@@ -101,7 +113,7 @@ function Renderer.start(data:any,profile:any,parent:Instance,born:number):any
 		for _,entry in selected do if not views[entry.item.id] then complete=false;break end end
 		state.fade=if complete then fade else 0
 	end)
-	folder.Destroying:Connect(function() connection:Disconnect();release() end)
+	folder.Destroying:Connect(function() connection:Disconnect();release();table.clear(damageCache) end)
 	return state
 end
 return Renderer

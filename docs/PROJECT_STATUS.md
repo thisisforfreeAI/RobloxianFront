@@ -2522,3 +2522,267 @@ phase/age; canopy removal/overlap/regrowth; original tree records/poses/road bar
 bake parity; actual combined emitter; admin authority; and actual TownRenderer repaint, overview,
 lighting, image reuse/refusal, missing-art isolation and teardown. Roblox services/images are mocked
 in native-renderer tests. **Studio B169-B173 have not been run.**
+
+## Power network visible through fog of war (2026-11-11)
+
+Owner-requested APPROX override: the static power-line network, including its poles/pylons and
+neutral plant anchors, now remains visible in both unexplored and currently fogged cells. Fog no
+longer removes nodes or conductor sections. Its mask selects rendering depth only: revealed art
+keeps its original .22/.225 map-layer heights below unit sprites, while fogged art draws above the
+fog overlay's .40 top face. Per-cell runs still use disjoint tiled GUI canvases, including mixed
+fog/revealed cells inside one tile. The existing camera/zoom culling and image-budget fallbacks stay.
+
+Lifted art is reprojected along the same camera rays as its original plane, so its screen placement
+and scale match the revealed portions. A camera-position render callback updates only raised
+surfaces and disconnects with the map. This prevents a new perspective offset at fog boundaries
+and keeps the network attached to map locations during pan/zoom. It adds no EditableImages. Wires
+still sway only in Rain/Storm; this visual change does not reveal enemy units or other hidden state.
+Earlier power fog-clipping expectations in B156/B160 are superseded by B174.
+
+Verified on installed files: **371 Lune tests passed, 0 failed**; changed Luau compiles (syntax only);
+Rojo build passes. Actual renderer tests now cover wholly fogged networks, fog/reveal transitions,
+full spans through mixed/alternating cells, ordinary unit-layer ordering, shared atlas refusal/
+reclamation/idle release, existing weather behavior, camera-ray alignment through pan/zoom, and
+projection cleanup. Native services are mocked. **Studio B174 has not been run.**
+
+## Visual power network removed at owner's request (2026-11-11)
+
+Removed PowerLineRenderer from client initialization: its require, map-start call and weather hook
+are no longer present. New Play sessions therefore create no power wires, poles, pylons or neutral
+power-station models, and allocate no power atlas or power-renderer update callbacks. This removal
+supersedes the previous power visibility/fog-color requests and B155-B160/B174's enabled-network
+expectations. Existing renderer/converter files and ignored source data are dormant; they were not
+deleted. Lamp posts, city lights and the other world layers keep their existing startup hooks.
+
+Verification actually run: the changed client entry point compiles (syntax only), startup-source
+inspection finds no power renderer references, and Rojo build succeeds. No new tests were added or
+full-suite pass claimed for this three-line wiring removal. **Studio B175 has not been run.** A new
+Play session is required to discard power objects created by the previous running client.
+
+## Live forest and house fire glow (2026-11-11)
+
+Burning trees and roofs now feed the original grouped ground-light behavior through the existing
+combined fire controller. Nearby actors share light pools. Group selection, stable tie order, caps,
+refresh timers, height attenuation, timed rise/flicker/fade, Bayer distance lookup, overlap, soft knee
+and night-vision gains are traced from the original forest/house models and effect/light layers.
+The new exporter evaluates those functions from the owner's installed game at runtime and writes
+only git-ignored FireLightRules/FireLightVectors; it embeds no original functions or tables publicly.
+Generated coefficients/reference data are local only. Regenerate from the project root with:
+`node tools/conversion/export_fire_lighting.cjs "A:\SteamLibrary\steamapps\common\WarFront Demo" .`
+
+Native FireLightRenderer paints the combined pools on disjoint world-aligned 16-cell tiles below
+fog and units, with source adaptive texel resolution/zoom cutoff. Sources and illuminated texels
+are visibility-filtered; hidden source removal also hides the previous cached texture immediately.
+Images use the shared detail budget, admit at most two per 0.1-second check, yield under pressure,
+and back off five seconds after refusal/reclaim. No visible fire/night glow means no native images.
+Missing local light settings skip glow alone. Epoch reset/rebuild/map teardown clear light state,
+images and callbacks. Night vision is forwarded from the existing controller. Fire light ages use
+the paused/running war-clock delta rather than wall time; no second death-particle step was added.
+
+APPROX: native HDR alpha and inverse post-effect compensation replace the original CSS color-dodge
+blend, so exact native color/intensity still requires Studio comparison. Rendering uses tiled
+images, a 3ms repaint budget and progressive admission instead of the original full-canvas draw;
+dense fire views may take longer to refresh. The quarter-second grouping check is client frame-
+sampled from the existing replicated actor views, with independent cosmetic RNG and previously
+documented bounded interpolation. Light centers plus texels are fog-filtered, stricter than the
+original center-only light admission. Source daylight suppression/refresh behavior remains: changing
+to night can wait for the next group refresh rather than instantly creating every light. This adds
+fire glow only; ground burn scorch, ruined-window suppression and remaining fire paths are pending.
+The owner-requested power-network removal remains in place.
+
+Verified on installed files: **381 Lune tests passed, 0 failed**; changed/new Luau compiles (syntax
+only); exporter syntax and generation pass; Rojo build passes. New tests compare original grouping,
+refresh schedules, burn envelopes and six complete raster frames, and cover tile phase/seams,
+fog clipping, actual native-controller wiring, anchored views, zoom/NV, war pause, reset, image
+refusal/reclaim/retry, optional settings and cleanup. Native services/images are mocked; no native
+frame-rate or visual parity result is claimed. **Studio B176-B177 have not been run.**
+
+## Ground scorch after roof and forest fires (2026-11-11)
+
+Actual roof/tree burnout now feeds a shared authoritative ground-scar model through the existing
+once-per-source-cell callbacks. The original burn raster's wind direction, stretched/wobbled shape,
+overlapping stain accumulation, float32 state, fade-to-settle behavior and quiet-town recovery are
+ported. Rural stains remain at their settled strength; no automatic rural ground regrowth is
+invented. Settlement catchments use the original normalized-distance rule and live last-hit quiet
+time. Admin Rebuild fire damage resets the shared ground epoch along with roofs/trees; it grants no
+HP repair. New source settings/references are generated locally by
+`node tools/conversion/export_ground_scorch.cjs "A:\SteamLibrary\steamapps\common\WarFront Demo" .`.
+Only ignored GroundScorchRules/Vector modules contain extracted coefficients/reference results.
+
+Transport sends at most 1024 changed cell/strength records (5 KiB) per ready viewer's private state.
+Hidden creation and restoration stay server-side until visible; unsent overflow retries. Late joins
+and view-ready resets receive current visible stains. Client epochs reject older updates. Optional
+data failure disables ground scorch only, leaving fire damage and other match systems available.
+There are no unit damage, movement, territory or terrain-type changes in this feature.
+
+The native layer uses world-aligned, disjoint 32-cell images below city roofs/canopies, roads,
+weather and fog, reusing images as strengths change. It allocates nothing for absent/hidden/offscreen
+stains, admits two images per check, rotates up to eight tile repaints per 0.2-second check with a
+3ms CPU budget, and yields/retries shared detail after five seconds under image pressure. Reset and
+map cleanup release images and callbacks. Source cell tint/darken is retained, with 8-bit transport/
+native alpha rounding replacing continuous source values. Existing baked city pavement and road
+art can cover these lower ground stains; full dynamic urban-surface staining remains pending. This
+layer ordering intentionally avoids darkening intact roof/tree sprites. No native visual result is
+claimed for the alpha/color-space or batch latency. Fixed one-second war-clock updates replace the
+source wall-clock scheduler/hitch cap. Engineer ground repair/structure grading, snow behavior,
+craters/rubble/wreck/rust/nuclear scorch kinds and other blast types remain pending. The new model
+accepts fire burns only; explosion-triggered fire can eventually leave a burn stain on burnout.
+
+Verified on installed files: **395 Lune tests passed, 0 failed**, changed/new Luau compiles (syntax
+only), original-data exporter generation/syntax pass, and Rojo build passes. Fourteen added tests
+cover nine original burn/overlap/fade/heal scenes, original town catchments, rural persistence,
+fog/late-join/restoration, bounded retry and epochs, clock pause/quiet time, tint/transactional
+validation, actual renderer anchoring/reuse/culling/refusal/reclaim/cleanup, actual burnout callbacks
+and owner-only shared reset. Native services are mocked. **Studio B178-B179 have not been run.**
+
+## Fire damage and projected window lighting (2026-11-11)
+
+The owner's projected side facades/windows now consult the existing visible roof-fire state.
+Active fire actors suppress related fragments even before the first soot stage; lasting roof
+char/ruins keep them suppressed after the flames end. Source restoration or fire reset brings them
+back. The shared mask consumes the same accepted, fog-filtered pixel/actor packets as roof painting;
+older epochs cannot restore stale lights. Teardown clears the mask. No new original art, extracted
+data, native images, server packets or gameplay permissions are added by this batch.
+
+APPROX: projected south/east facades remain an owner-requested port addition, not original game
+geometry. Reverse projection conservatively checks the roof pixels that could produce each wall
+fragment, including across source-tile boundaries. If a shared fragment includes panes from two
+nearby roofs, a damaged parent can hide some intact neighboring panes or a mixed lamp fragment
+until restoration. Fragment-level suppression replaces per-pixel facade material regeneration.
+The source fire model's burning/char/ruin states and restore timing remain unchanged. Broad urban
+ambient glow and street-lamp fields are unchanged; current generated coarse roof-window fields
+are already zero. Exact source night-shader parity is not claimed for these added facades.
+
+Empty masks bypass geometry checks. Damage revisions preserve a cached fragment decision across
+camera updates and unchanged snapshots; intact candidates fill the nearest-visible cap before
+rendering. Existing atlas images are reused on extinguish/rebuild. Fire light pools moved to a
+distinct .23 ground-layer height below city emission (.24) and side windows (.245), fixing a
+coplanar canvas conflict found during integration review. This supersedes the fire-glow layer's
+previous .245 placement without changing source grouping/curve/raster coefficients.
+
+Verified on installed files: **402 Lune tests passed, 0 failed**; changed/new Luau compiles (syntax
+only); Rojo build passes. Seven new checks cover burning/lasting damage/restore masks, unchanged
+revision caching, cross-cell facade provenance, intact-fragment cap selection, actual side-window
+removal/recreation with the same atlas, deferred city-light mask forwarding and actual house-fire
+epochs/cleanup. Existing fire-light native tests verify the separated pool plane. Native services
+are mocked. **Studio B180-B181 have not been run.**
+
+## Tree foreground above damaged roofs (2026-11-11)
+
+Roof-char tiles now reuse the current forest compositor's foreground instead of painting over
+overlapping canopies. Opaque trees retain their color over every roof char/ruin stage; translucent
+canopy edges and tree shadows composite over the damaged roof. The existing town-shade scalar is
+estimated after removing that known foreground contribution, avoiding double-darkening the roof.
+Tree burning/felling/regrowth changes invalidate affected foreground regions; source restoration
+removes the char overlay normally. Fog still gates the complete changed roof pixel.
+
+No extra EditableImages, original art, server state or gameplay changes are introduced. The town
+renderer keeps at most 24 CPU-only cover regions, matching the roof-char renderer's view cap, and
+clears them on teardown. Unrelated tree changes preserve cached regions. Missing/corrupt local tree
+cover warns once, disables this optional cover adapter and keeps the existing town/char behavior.
+
+APPROX: the existing 14px/cell raster, fixed tree shadows and resized sprite/CPU alpha differences
+remain. Foreground-aware shade recovery is still a scalar, rather than the original full dynamic
+town shader; existing bake/resampling differences can shift edge colors slightly. Cover generation
+adds CPU work after relevant tree fates change, but no native memory. Collapsed-height shadows/LOS
+and full urban ground-scar composition remain pending. Native visual/performance parity is untested.
+
+Verified on installed files: **408 Lune tests passed, 0 failed**, changed Luau compiles (syntax only),
+and Rojo build passes. Six added checks cover opaque/partial/empty foreground, fog and dimensions,
+actual CPU cache reuse/fate invalidation/eviction/cleanup, once-only missing-art isolation and actual
+roof-char image reuse while foreground changes. **Studio B182-B183 have not been run.**
+
+## Town ground surfaces retain fire scorch (2026-11-11)
+
+Ground-scar state now also repaints the matching tree-free town bake before forest sprites are
+composited. Courtyards and opaque town ground can show the source burn tint rather than hiding
+the lower ground-scar plane. Original roof pixels are excluded and keep their separate char/ruin
+treatment; tree crowns/shadows remain above scars. The original pixel alpha is preserved. Near
+detail and far overview both update, and restoring/resetting starts from the clean original bake,
+so recoloring cannot accumulate through relighting or image reuse.
+
+This reuses the existing lazy CPU FireMap sampler for exact source roof exclusion, with no second
+atlas decode or extra native images. Ground state retries the town bridge until the sampler is
+ready. A failed native char image does not discard the CPU roof map. Reset epochs, map replacement
+and teardown clear town ground state. The existing one-dirty-chunk-per-check policy, original
+visibility-filtered scar packets and terrain-plane image-budget behavior are unchanged.
+
+APPROX/limits: the existing 14px/cell alpha/color-space, source-shade sampling and overview
+resampling remain; town rebuilding may lag under many changed chunks. This bridge requires a
+matching dynamic forest/tree-free bake and source roof map, currently complete on Saddle. Other
+maps or missing optional data keep the lower ground-plane fallback. Native road overlays can still
+cover road scorch; full road-surface and original material-shader parity remain pending. This
+supersedes the initial ground-scar entry's opaque town-pavement limitation where this bridge is
+available. No terrain gameplay, new art, extra server fields or new purchase features are added.
+
+Verified on installed files: **413 Lune tests passed, 0 failed**; changed/new Luau compiles (syntax
+only); Rojo build passes. Five added checks cover source tint/roof exclusion/alpha, chunk boundary
+mapping, actual town ground/overview restoration with relighting and image reclaim, delayed sampler
+retry/epoch clearing, and one-time lazy roof-map sharing without native allocation. Existing
+failure tests verify CPU map availability after native char-write failure. Native services are
+mocked. **Studio B184-B185 have not been run.**
+
+## Mine, demolition and razed-structure fire triggers (2026-11-11)
+
+Additional authoritative match events now reach the existing house/forest fire models using the
+original effect hooks. Mine detonations and destroyed minefields use the source shell-hit effect
+settings, rather than inventing an ignition radius from combat splash damage. A demolition truck
+feeds its original primary missile-type impact and visual blast size. Destroyed player structures
+feed the original razed heat size, including the larger HQ scale. Rig loss, unit death, cancelled
+construction and voluntary building recycling do not duplicate these extra hooks; existing vehicle
+wreck heat remains on its prior path. Combat damage, production/refunds and targeting are unchanged.
+
+Structure destruction now records category and cell-centre position in its event before the dead
+entity is compacted. MatchService therefore does not depend on a removed entity to find the fire
+origin. All direct/event fire impacts share the original water guard: open deep/shallow/river
+impacts produce no land fire hooks, while a live road/bridge on that cell receives a ground impact.
+Invalid/out-of-map positions or non-finite sizes are ignored. Fire state remains authoritative and
+its existing visibility-filtered packets/native budgets are unchanged.
+
+The new exporter resolves source effect imports, evaluates razed/demolition hook methods and the
+original water predicate, and writes only ignored FireImpactRules/FireImpactVectors:
+`node tools/conversion/export_fire_impacts.cjs "A:\SteamLibrary\steamapps\common\WarFront Demo" .`.
+Absent/invalid optional impact settings skip extra event hooks while retaining guarded direct
+weapon hits. Malformed settings warn once on startup. No original functions or tables are embedded
+in public output, and no new native images are allocated.
+
+APPROX/remaining: event hooks run on authoritative simulation time using existing independent fire
+RNG, rather than the source client's visibility-gated visual RNG. The demolition truck's later
+secondary shell pops, full collapse/demolition effects and immediate crater/rubble/ruin ground
+scorch are not included in this batch. Existing immediate wreck-heat timing remains approximate.
+Fire burnout can still create the previously ported burn scars; no new terrain damage is claimed.
+
+Verified on installed files: **421 Lune tests passed, 0 failed**; changed/new Luau including Sim
+compiles (syntax only); exporter generation/syntax and Rojo build pass. Eight new checks cover
+actual post-compaction destruction metadata, original razed/demolition callbacks and eight water/
+bridge cases, mine settings, duplicate exclusions, shared water gating and invalid/missing optional
+data. **Studio B186-B187 have not been run.**
+
+## Delayed demolition fire impacts (2026-11-11)
+
+Demolition-truck fire ignition now includes the original delayed secondary shell impacts. The
+exporter reads the source pop count, delay range, radial range/reach and weapon, and executes the
+original pop loop to generate private position/timing references. Each landing checks water and
+bridge state separately: a water-covered blast centre can still have a secondary land impact, and
+an individual water pop does not ignite land. Pending impacts are consumed once and allocate no
+native images or new server-to-client fields.
+
+The queue advances on the authoritative war clock before the house/forest fire tick. Match pause
+holds its timers; admin sun freeze alone does not. Rebuild fire damage clears pending fire impacts
+along with the other fire state so they do not re-ignite repaired ground after that reset. Owner
+authorization remains unchanged. Older primary-only generated profiles still work without the pop
+extension; malformed pop settings disable the optional event hooks safely. Regenerate with the
+existing `export_fire_impacts.cjs` command to include this extension.
+
+APPROX: an independent map-seeded presentation RNG and authoritative war time replace the original
+visual RNG/timers. Reference comparisons use the same source draw stream for the pop geometry,
+not the source's complete particle draw order. These are fire-model impacts; full demolition
+explosion/secondary-pop visuals, sounds, collapse particles and immediate crater/rubble/ruin
+scorch remain pending. Existing combat damage is unchanged and is not applied again by this queue.
+This supersedes the prior impact batch's missing-secondary-ignition limitation.
+
+Verified on installed files: **426 Lune tests passed, 0 failed**; changed Luau compiles (syntax
+only); updated exporter generation/syntax and Rojo build pass. Five new checks cover original pop
+positions/delays and exact-once consumption, war pause/reset, independent landing-surface gating,
+owner-only queue reset, malformed data and legacy primary-only compatibility.
+**Studio B188-B189 have not been run.**

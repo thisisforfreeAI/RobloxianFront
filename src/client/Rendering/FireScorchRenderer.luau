@@ -1,5 +1,5 @@
 --!strict
--- Source house char/ruin layer. Prepared API; live fire state is not connected from init yet.
+-- Live source house char/ruin layer, driven by HouseFireRenderer's visible pixel deltas.
 -- APPROX: disjoint eight-cell image tiles, 24 near tiles, two allocations/update, shared detail
 -- priority/retry policy. Existing town shade is preserved; collapsed-height shadows remain pending.
 local ReplicatedStorage=game:GetService("ReplicatedStorage")
@@ -60,6 +60,7 @@ function Renderer.start(map:any,parent:Instance):boolean
 			else st.disabled=true;warn("[FireScorch] Roof source unavailable:",value) end
 		end)
 	end
+	st.load=load
 	local function create(bucket:any):any?
 		local side=meta.tileSize*Scorch.TILE;local image=Memory.create(Vector2.new(side,side),"detail")
 		if not image then st.retry=os.clock()+5;return nil end
@@ -100,7 +101,11 @@ function Renderer.start(map:any,parent:Instance):boolean
 		local made=0
 		for i=1,math.min(MAX_TILES,#order) do
 			local item=order[i]
-			local painted,pixels,count=pcall(Scorch.paint,st.sampler,settings,item.bucket,function(x,y) return not Fog.hidden(x,y) end,Town.sample)
+			local painted,pixels,count=pcall(function()
+				local b=item.bucket
+				local cover=if Town.forestCover then Town.forestCover(b.tx*Scorch.TILE,b.ty*Scorch.TILE,Scorch.TILE,Scorch.TILE) else nil
+				return Scorch.paint(st.sampler,settings,b,function(x,y) return not Fog.hidden(x,y) end,Town.sample,cover)
+			end)
 			if not painted then st.disabled=true;clear();warn("[FireScorch] Char pixels unavailable:",pixels);return end
 			if count==0 then unload(item.key);continue end
 			wanted[item.key]=true
@@ -124,6 +129,12 @@ function Renderer.start(map:any,parent:Instance):boolean
 		if current==st then current=nil end
 	end)
 	return true
+end
+-- Reuse the one lazy CPU roof map for ground-surface exclusion; no second atlas decode/image.
+function Renderer.source():any
+	local st=current;if not st or st.dead then return nil end
+	if not st.sampler and not st.disabled then st.load() end
+	return st.sampler
 end
 -- Changed world-pixel IDs and char stage. Stage zero restores the original underlying town art.
 function Renderer.apply(rows:{any},replace:boolean?)

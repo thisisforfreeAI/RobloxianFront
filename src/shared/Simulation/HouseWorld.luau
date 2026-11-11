@@ -8,6 +8,7 @@ function World.new(settings:any,map:any,context:any):any
 	local self:any={seq=0,epoch=1,paint={},acc=0,lastTime=context.time(),sampleTime=context.time()}
 	local ctx=table.clone(map)
 	ctx.random=context.random
+	ctx.onScar=context.onScar
 	ctx.rain=function(_x,_y)
 		-- APPROX: the admin weather covers the whole map; original spatial fronts remain unported.
 		local weather=context.weather();return if weather=="downpour" or weather=="storm" then 1 else 0

@@ -28,14 +28,22 @@ local TownDetail = require(Shared.Presentation.TownDetail)
 local TownPatch = require(Shared.Presentation.TownPatch)
 local ForestMap = require(Shared.Simulation.ForestMap)
 local ForestRaster = require(Shared.Presentation.ForestRaster)
+local ScorchPixels = require(Shared.Presentation.GroundScorchPixels)
 local DaylightController = require(script.Parent.DaylightController)
 
 local TownRenderer = {}
 local sampler: any = nil
 local forestMap: any = nil
 local forestApply: any = nil
+local coverSampler: any = nil
+local groundApply: any = nil
 function TownRenderer.getForestMap():any return forestMap end
 function TownRenderer.setForestFates(rows:{any},reset:boolean?) if forestApply then forestApply(rows,reset) end end
+function TownRenderer.setGroundScorch(buckets:any,config:any,source:any?) if groundApply then groundApply(buckets,config,source) end end
+-- Tree/shadow foreground used to keep roof damage beneath the same current forest art.
+function TownRenderer.forestCover(cx:number,cy:number,cw:number,ch:number):buffer?
+	return if coverSampler then coverSampler(cx,cy,cw,ch) else nil
+end
 -- CPU source pixels already carry the currently sampled roof shade; this allocates no images.
 function TownRenderer.sample(x:number,y:number):{number}?
 	return if sampler then sampler(x,y) else nil
@@ -84,7 +92,7 @@ type Chunk = { cx: number, cy: number, cw: number, ch: number, name: string, mod
 -- returns true when the town art was drawn
 function TownRenderer.build(mapId: string, parent: Instance): boolean
 	sampler=nil
-	forestMap,forestApply=nil,nil
+	forestMap,forestApply,coverSampler,groundApply=nil,nil,nil,nil
 	local assets = script.Parent.Parent:FindFirstChild("DevAssets")
 	local metaModule = assets and assets:FindFirstChild("City_" .. mapId)
 	if not metaModule or not metaModule:IsA("ModuleScript") then
@@ -112,6 +120,7 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 	local forest:any=nil
 	local fates:any={}
 	local affected:any={}
+	local covers:any={};local coverOrder={};local coverDisabled=false
 	local warnedForest=false
 	if meta.forest then
 		local data=Shared:FindFirstChild("GameData")
@@ -139,8 +148,50 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 			fates[key]=fate;changed[key]=true
 		end
 		for key in changed do for _,c in affected[key] or {} do (c :: any).forestDirty=true end end
+		if next(changed)~=nil then
+			for i=#coverOrder,1,-1 do
+				local key=coverOrder[i];local cover=covers[key]
+				for tree in changed do if cover.members[tree] then covers[key]=nil;table.remove(coverOrder,i);break end end
+			end
+		end
 	end
 	forestApply=applyForest
+	local function sampleCover(cx:number,cy:number,cw:number,ch:number):buffer?
+		if not forest or coverDisabled then return nil end
+		local key=cx..":"..cy..":"..cw..":"..ch
+		if covers[key] then return covers[key].px end
+		local ok,px=pcall(function()
+			return ForestRaster.paint(forest,buffer.create(cw*ch*TILE_PX*TILE_PX*4),cx,cy,cw,ch,fates)
+		end)
+		if not ok then coverDisabled=true;warn("[TownRenderer] Forest roof cover unavailable:",px);return nil end
+		-- APPROX: bounded CPU-only cache, independent of the native image budget; reset on tree fates.
+		if #coverOrder>=24 then covers[table.remove(coverOrder,1)]=nil end
+		local members={};for _,t in forest.inWindow(cx,cy,cw,ch) do members[t.key]=true end
+		covers[key]={px=px,members=members};table.insert(coverOrder,key);return px
+	end
+	coverSampler=sampleCover
+	local groundKnown:any={};local groundConfig:any=nil;local groundSource:any=nil
+	local function applyGround(buckets:any,config:any,source:any?)
+		-- A matching tree-free bake is required to preserve trees above scars and restore cleanly.
+		if not forest then return end
+		local values={};for _,b in buckets do for cell,value in b.cells do values[cell]=value end end
+		if next(values)~=nil then
+			if not source or source.width~=mapW or source.height~=mapH or source.tileSize~=TILE_PX then return end
+			groundSource,groundConfig=source,config
+		end
+		local function update(cell,value)
+			local x,y=cell%mapW,math.floor(cell/mapW)
+			for _,c in chunks do if x>=c.cx and y>=c.cy and x<c.cx+c.cw and y<c.cy+c.ch then
+				local chunk=c :: any;chunk.groundScars=chunk.groundScars or {};chunk.groundScars[cell]=if value>0 then value else nil
+				chunk.forestDirty=true;break
+			end end
+		end
+		for cell in groundKnown do if not values[cell] then update(cell,0) end end
+		for cell,value in values do if groundKnown[cell]~=value then update(cell,value) end end
+		groundKnown=values
+		if next(groundKnown)==nil then groundConfig,groundSource=nil,nil end
+	end
+	groundApply=applyGround
 	local function sample(x:number,y:number):{number}?
 		for _,c in chunks do
 			if c.px and x>=c.cx and y>=c.cy and x<c.cx+c.cw and y<c.cy+c.ch then
@@ -164,10 +215,12 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 			local data=require(patch);local delta=if data.bytes==0 then buffer.create(0) else Inflate.raw(MapCodec.base64Decode(data.deflate),data.bytes)
 			TownPatch.validate(delta,px);TownPatch.apply(px,delta)
 		end
+		local scars=(c :: any).groundScars
+		if scars and next(scars) and groundSource then ScorchPixels.apply(px,c.cx,c.cy,c.cw,c.ch,TILE_PX,mapW,scars,groundConfig,groundSource.roof) end
 		return ForestRaster.paint(forest,px,c.cx,c.cy,c.cw,c.ch,fates)
 	end
 	local function decode(c: Chunk): (buffer, number, number)
-		local dynamic=false
+		local dynamic=(c :: any).groundScars and next((c :: any).groundScars)~=nil or false
 		if forest then for _,t in forest.inWindow(c.cx,c.cy,c.cw,c.ch) do if fates[t.key] then dynamic=true;break end end end
 		(c :: any).dynamicForest=dynamic
 		if dynamic then return forestPixels(c,baseFrame),c.cw*TILE_PX,c.ch*TILE_PX end
@@ -409,6 +462,10 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 		if sampler==sample then sampler=nil end
 		if forestMap==forest then forestMap=nil end
 		if forestApply==applyForest then forestApply=nil end
+		if coverSampler==sampleCover then coverSampler=nil end
+		if groundApply==applyGround then groundApply=nil end
+		groundKnown={};groundConfig,groundSource=nil,nil
+		table.clear(covers);table.clear(coverOrder)
 		if connection then connection:Disconnect() end
 		unregister()
 		for _, c in chunks do if c.image then unload(c) end end

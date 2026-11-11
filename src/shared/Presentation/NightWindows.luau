@@ -20,7 +20,20 @@ end
 function Windows.fade(pixels:number,config:any):number
 	return math.clamp((pixels-config.nearFrom)/(config.nearTo-config.nearFrom),0,1)
 end
-function Windows.visible(items:{any},pixelsPerCell:number,cx:number,cy:number,rx:number,ry:number):{any}
+-- APPROX: conservative provenance for the owner's projected south/east facades. A fragment
+-- stops drawing when any roof pixel that could project its wall is burning/charred/ruined.
+-- Neighboring intact panes inside that shared fragment can disappear until the source restores.
+function Windows.damaged(item:any,pixelsPerCell:number,fine:number,blocked:any):boolean
+	local p=item.point;local tx,ty=math.floor(p[3]/fine),math.floor(p[4]/fine)
+	local function cut(i) return if i==0 then 0 elseif i==fine then pixelsPerCell else math.ceil(i*pixelsPerCell/fine-.5) end
+	local fx,fy=p[3]%fine,p[4]%fine
+	for y=ty*pixelsPerCell+cut(fy),ty*pixelsPerCell+cut(fy+1)-1 do
+		for x=tx*pixelsPerCell+cut(fx),tx*pixelsPerCell+cut(fx+1)-1 do
+			if blocked(x,y-1) or blocked(x,y-2) or blocked(x-1,y) or blocked(x-2,y) then return true end
+		end
+	end;return false
+end
+function Windows.visible(items:{any},pixelsPerCell:number,cx:number,cy:number,rx:number,ry:number,eligible:any?):{any}
 	local out={}
 	local function farther(a:any,b:any):boolean
 		return if a.distance==b.distance then a.item.id>b.item.id else a.distance>b.distance
@@ -28,6 +41,7 @@ function Windows.visible(items:{any},pixelsPerCell:number,cx:number,cy:number,rx
 	for _,item in items do
 		local x,y=(item.point[1]+6)/pixelsPerCell,(item.point[2]+6)/pixelsPerCell
 		if math.abs(x-cx)<=rx+1 and math.abs(y-cy)<=ry+1 then
+			if eligible and not eligible(item) then continue end
 			local distance=(x-cx)^2+(y-cy)^2
 			if #out<Windows.MAX_VISIBLE then
 				table.insert(out,{item=item,distance=distance})

@@ -46,7 +46,11 @@ return function(test:any,eq:any)
 			scorch=Scorch,codec={base64Decode=function() return buffer.create(4) end},inflate={raw=function(b) return b end},
 			map={new=function(_meta,decode,load) h.decodes+=1;decode("raw",4);load("page");return sampler end},
 			memory=memory,fog={hidden=function(x,y) return h.hidden or (h.fog and h.fog(x,y)) or false end},
-			town={sample=function() return {100*h.light,120*h.light,140*h.light} end},view={view=function() return h.view end}}
+			town={sample=function() return {100*h.light,120*h.light,140*h.light} end,forestCover=function(_x,_y,w,hg)
+				if not h.cover then return nil end
+				local px=buffer.create(w*hg*h.meta.tileSize^2*4)
+				for at=0,buffer.len(px)-1,4 do for c=0,3 do buffer.writeu8(px,at+c,h.cover[c+1]) end end;return px
+			end},view={view=function() return h.view end}}
 		h.view={cx=8,cy=4,rx=20,ry=20,cellPixels=12}
 		local env:any=setmetatable({game={GetService=function(_s,name) return if name=="RunService" then {Heartbeat=h.heartbeat} else {WaitForChild=function() return shared end} end},
 			script={Parent={ImageMemory="memory",FogOverlay="fog",TownRenderer="town",WorldLight="view"}},require=function(name) assert(modules[name],tostring(name));return modules[name] end,
@@ -85,7 +89,19 @@ return function(test:any,eq:any)
 	test("actual scorch renderer isolates failed paints and skips missing source data",function()
 		local h=make();h.missing=true;eq(h.renderer.start({data={id="test"}},h.parent),false);eq(h.heartbeat:active(),0)
 		h.missing=false;h.failWrite=true;h.renderer.start({data={id="test"}},h.parent);h.renderer.apply({{33,1}});h.frame();h.flush();h.frame();eq(h.parts(),0);eq(h.created,h.released);eq(h.warnings,1)
+		assert(h.renderer.source(),"a failed native char image must not discard the shared CPU roof map")
 		h.frame();eq(h.warnings,1);h.parent:Destroy()
 		local bad=make();bad.meta.width=0;eq(bad.renderer.start({data={id="test"}},bad.parent),false);eq(bad.heartbeat:active(),0)
+	end)
+	test("actual roof-char renderer preserves changing tree foreground with the same native image",function()
+		local h=make();h.cover={20,200,40,255};h.renderer.start({data={id="test"}},h.parent);h.renderer.apply({{33,2}});h.frame();h.flush();h.frame();eq(h.created,1)
+		local image;for _,o in h.instances do if o.ClassName=="ImageLabel" and not o.dead then image=o.ImageContent;break end end;assert(image)
+		local px=buffer.fromstring(image.last);local at=(1*16+1)*4;eq(buffer.readu8(px,at+1),200);local before=image.last
+		h.cover=nil;h.frame();assert(image.last~=before);eq(h.created,1);h.parent:Destroy();eq(h.created,h.released)
+	end)
+	test("actual fire roof map is lazily shared without duplicate decode or native image allocation",function()
+		local h=make();h.renderer.start({data={id="test"}},h.parent);eq(h.renderer.source(),nil);eq(#h.tasks,1)
+		eq(h.renderer.source(),nil);eq(#h.tasks,1);h.flush();local source=h.renderer.source();assert(source);eq(h.renderer.source(),source)
+		eq(h.decodes,1);eq(h.created,0);h.parent:Destroy();eq(h.renderer.source(),nil)
 	end)
 end

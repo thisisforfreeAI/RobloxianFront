@@ -11,6 +11,7 @@ function World.new(settings:any,map:any,context:any):any
 		local weather=context.weather();return if weather=="downpour" or weather=="storm" then 1 else 0
 	end
 	ctx.onFate=function(t,_fate) self.seq+=1;self.versions[t.key]=self.seq end
+	ctx.onScar=context.onScar
 	self.model=Fire.new(settings,ctx)
 	function self.advance(time:number)
 		local delta=time-self.lastTime;assert(delta>=-1e-8 and delta<math.huge,"forest clock moved backwards");self.lastTime=time;self.acc+=math.max(0,delta)

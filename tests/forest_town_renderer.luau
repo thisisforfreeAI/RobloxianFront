@@ -3,6 +3,7 @@ return function(test:any,eq:any)
 	local fs=require("@lune/fs");local luau=require("@lune/luau")
 	local Map=require("../src/shared/Simulation/ForestMap");local Raster=require("../src/shared/Presentation/ForestRaster")
 	local ImagePixels=require("../src/shared/Presentation/ImagePixels");local TownDetail=require("../src/shared/Presentation/TownDetail");local TownPatch=require("../src/shared/Presentation/TownPatch")
+	local ScorchPixels=require("../src/shared/Presentation/GroundScorchPixels")
 	local function make():any
 		local h:any={now=0,phase=.3,images={},instances={},warnings=0,bareLights=0,releases=0}
 		local function signal():any
@@ -42,9 +43,10 @@ return function(test:any,eq:any)
 		function memory.release(image) if image then assert(not image.dead);image.dead=true;h.releases+=1 end end
 		function memory.register(_,fn) h.reclaim=fn;return function() h.unregistered=true end end
 		function memory.stats() return 0 end;function memory.canDetail() return true end
-		local shared:any={Config={World="world"},Maps={MapCodec="codec"},Utilities={Inflate="inflate"},Simulation={ForestMap="forest"},Presentation={ImagePixels="pixels",TownDetail="detail",TownPatch="patch",ForestRaster="raster"},FindFirstChild=function() return data end}
-		local modules:any={world={STUDS_PER_CELL=4,GROUND_Y=0,TOP_GUI_YAW=0},memory=memory,codec={base64Decode=function(key) return key end},inflate={raw=function(key) return chunks[key] end},
-			forest=Map,raster=Raster,pixels=ImagePixels,detail=TownDetail,patch=TownPatch,day={get=function() return {phase=h.phase} end}}
+		local shared:any={Config={World="world"},Maps={MapCodec="codec"},Utilities={Inflate="inflate"},Simulation={ForestMap="forest"},Presentation={ImagePixels="pixels",TownDetail="detail",TownPatch="patch",ForestRaster="raster",GroundScorchPixels="scorch"},FindFirstChild=function() return data end}
+		local modules:any={world={STUDS_PER_CELL=4,GROUND_Y=0,TOP_GUI_YAW=0},memory=memory,codec={base64Decode=function(key) return key end},inflate={raw=function(key)
+			local source=chunks[key];local fresh=buffer.create(buffer.len(source));buffer.copy(fresh,0,source);return fresh
+		end},forest=Map,raster=Raster,scorch=ScorchPixels,pixels=ImagePixels,detail=TownDetail,patch=TownPatch,day={get=function() return {phase=h.phase} end}}
 		local env:any=setmetatable({game={GetService=function(_,name) return if name=="RunService" then {Heartbeat=h.heartbeat} else {WaitForChild=function() return shared end} end},
 			script={Parent={ImageMemory="memory",DaylightController="day",Parent={FindFirstChild=function() return assets end}}},
 			require=function(key) if type(key)=="table" then return key.value end;return assert(modules[key],tostring(key)) end,
@@ -53,6 +55,7 @@ return function(test:any,eq:any)
 			workspace={CurrentCamera={CFrame={Position=vec(2,80,2),LookVector=vec(0,-1,0)},FieldOfView=60,ViewportSize=vec(800,600)}},
 			os={clock=function() return h.now end},warn=function() h.warnings+=1 end,print=function() end},{__index=getfenv()})
 		h.renderer=luau.load(fs.readFile("src/client/Rendering/TownRenderer.luau"),{environment=env})()
+		function h.far() env.workspace.CurrentCamera.CFrame.Position.Y=5000 end
 		function h.step() h.now+=.2;h.heartbeat:fire(.2) end
 		function h.destroy() for _,o in h.instances do if o.Name=="Towns" then o:Destroy();break end end end
 		return h
@@ -71,5 +74,35 @@ return function(test:any,eq:any)
 		h.badBare=true;h.renderer.setForestFates({{1,{kind="burning",char=0}}});h.step();local warnings=h.warnings
 		h.renderer.setForestFates({{1,{kind="burning",char=0}}});h.step();eq(h.warnings,warnings)
 		h.destroy();h.step();eq(h.renderer.getForestMap(),nil)
+	end)
+	test("actual town forest cover is CPU-only, cached, invalidated by fates and cleared on teardown",function()
+		local h=make();assert(h.renderer.build("test",{}));local n=#h.images
+		local cover=h.renderer.forestCover(0,0,1,1);assert(cover);eq(buffer.readu8(cover,(7*14+7)*4+1),200)
+		eq(h.renderer.forestCover(0,0,1,1),cover);eq(#h.images,n)
+		h.renderer.setForestFates({{1,{kind="burnt"}}},true)
+		local burnt=h.renderer.forestCover(0,0,1,1);assert(burnt~=cover);eq(buffer.readu8(burnt,(7*14+7)*4+3),0);eq(#h.images,n)
+		h.renderer.setForestFates({},true);local restored=h.renderer.forestCover(0,0,1,1);eq(buffer.tostring(restored),buffer.tostring(cover))
+		for x=0,24 do h.renderer.forestCover(x,0,1,1) end
+		assert(h.renderer.forestCover(0,0,1,1)~=restored,"CPU cache must evict old regions")
+		h.destroy();eq(h.renderer.forestCover(0,0,1,1),nil)
+	end)
+	test("failed local tree cover falls back once without breaking the town session",function()
+		local h=make();assert(h.renderer.build("test",{}))
+		h.renderer.getForestMap().pixels=function() error("synthetic missing tree art") end
+		eq(h.renderer.forestCover(0,0,1,1),nil);eq(h.warnings,1)
+		eq(h.renderer.forestCover(0,0,1,1),nil);eq(h.warnings,1)
+		h.step();assert(h.renderer.sample(.5,.5));h.destroy()
+	end)
+	test("actual urban scorch repaints existing ground and overview beneath roofs/trees and restores cleanly",function()
+		local h=make();assert(h.renderer.build("test",{}));h.step();local images=#h.images
+		local source={width=1,height=1,tileSize=14,roof=function(x,y) return x==1 and y==1 end}
+		local config={color="#11171f",darken=.5};local before=h.renderer.sample(.2,.2)[3]
+		h.renderer.setGroundScorch({{cells={[0]=255}}},config,source);h.step()
+		local stained=h.renderer.sample(.2,.2)[3];assert(stained<before);eq(h.renderer.sample(1.5/14,1.5/14)[3],80)
+		eq(h.renderer.sample(.5,.5)[2],200);eq(#h.images,images)
+		h.far();h.step();local overview=h.images[1].last;h.phase=0;h.step();eq(h.renderer.sample(.2,.2)[3],stained)
+		h.reclaim(1,nil);h.step();eq(h.renderer.sample(.2,.2)[3],stained)
+		h.renderer.setGroundScorch({},config,nil);h.step();eq(h.renderer.sample(.2,.2)[3],before);eq(h.renderer.sample(.5,.5)[2],200)
+		assert(h.images[1].last~=overview);h.destroy()
 	end)
 end

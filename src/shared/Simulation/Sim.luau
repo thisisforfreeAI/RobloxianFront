@@ -3617,7 +3617,9 @@ function Sim.new(deps: Deps)
 		end
 		st.alive, st.hp = false, 0
 		setFootprint(st, false)
-		event({ type = "destroyed", id = st.id, kind = st.kind, side = st.side, by = by })
+		-- Preserve collapse origin before compact() removes the dead entity from the match.
+		local collapseX,collapseY=centre(st.cell)
+		event({ type = "destroyed", id = st.id, kind = st.kind, side = st.side, by = by, cat="structure",x=collapseX,y=collapseY })
 		if st.kind == "nightops" and self.sides[st.side] then
 			-- the game's Mje: a lost tower can be replaced only after nightOps.rebuildSec
 			local sd = self.sides[st.side]

@@ -118,6 +118,8 @@ function Admin.handle(sim: any, player: Player, side: number, raw: any): string
 		if not sim.houseFires and not sim.forestFires then return "House fire data unavailable on this map" end
 		if sim.houseFires then sim.houseFires.reset() end
 		if sim.forestFires then sim.forestFires.reset() end
+		if sim.groundScorch then sim.groundScorch.reset() end
+		if sim.fireImpacts then sim.fireImpacts.reset() end
 		return "Fire damage rebuilt"
 	elseif op == "oil" then
 		local amount = tonumber(raw.amount)

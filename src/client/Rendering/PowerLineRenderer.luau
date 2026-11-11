@@ -14,6 +14,10 @@ local WorldLight=require(script.Parent.WorldLight)
 local Renderer={}
 local current:Instance?=nil
 local TILE=8 -- Disjoint world canvases prevent coplanar per-span GUI overlap.
+-- APPROX owner override: static map infrastructure remains visible through fog of war.
+-- Lift only fogged portions above fog's .40 top; revealed portions retain normal unit layering.
+local WIRE_HEIGHT,NODE_HEIGHT=.22,.225
+local FOG_WIRE_HEIGHT,FOG_NODE_HEIGHT=.425,.43
 local weather="clear"
 local S=World.STUDS_PER_CELL
 local function color(hex:string):Color3
@@ -36,9 +40,11 @@ function Renderer.start(map:any,parent:Instance)
 	local cached:{[number]:buffer}={}
 	local nodes:{[number]:any}={}
 	local tiles:{[string]:any}={}
+	local raised:{[any]:boolean}={}
 	local look=data.config.look
 	local wireInk=color(look.wire.ink)
 	local function clear()
+		table.clear(raised)
 		for _,v in nodes do v.part:Destroy() end;table.clear(nodes)
 		for _,v in tiles do v.part:Destroy() end;table.clear(tiles)
 		Memory.release(image);image=nil
@@ -62,18 +68,38 @@ function Renderer.start(map:any,parent:Instance)
 		if not loaded then clear();disabled=true;warn("[PowerLines] Atlas unavailable:",err);return false end
 		return true
 	end
-	local function surface(name:string,x:number,y:number,w:number,h:number,height:number):any
+	local function place(v:any)
+		local layout=v.layout;local x,y=layout.x,layout.y;local ratio=1
+		local camera=workspace.CurrentCamera
+		if layout.height~=layout.base and camera then
+			local p=camera.CFrame.Position
+			local floorY=World.GROUND_Y or 0
+			-- Put the lifted top face on the same camera rays as its ordinary map plane.
+			-- This preserves joins with revealed spans instead of introducing height parallax.
+			local distance=p.Y-floorY-layout.base-.005
+			if distance>1 then
+				ratio=math.max(.01,(p.Y-floorY-layout.height-.005)/distance)
+				x=(p.X+(x*S-p.X)*ratio)/S;y=(p.Z+(y*S-p.Z)*ratio)/S
+			end
+		end
+		v.part.Size=Vector3.new(layout.h*S*ratio,.01,layout.w*S*ratio)
+		v.part.CFrame=CFrame.new(World.toWorld(x,y,layout.height))*CFrame.Angles(0,World.TOP_GUI_YAW,0)
+	end
+	local function surface(name:string,x:number,y:number,w:number,h:number,height:number,base:number):any
 		local part=Instance.new("Part");part.Name=name;part.Anchored=true;part.Transparency=1
 		part.CanCollide=false;part.CanTouch=false;part.CanQuery=false;part.CastShadow=false
-		part.Size=Vector3.new(h*S,.01,w*S)
-		part.CFrame=CFrame.new(World.toWorld(x,y,height))*CFrame.Angles(0,World.TOP_GUI_YAW,0)
+		local v={part=part,layout={x=x,y=y,w=w,h=h,height=height,base=base}}
+		if height~=base then raised[v]=true end
+		place(v)
 		local gui=Instance.new("SurfaceGui");gui.Face=Enum.NormalId.Top;gui.SizingMode=Enum.SurfaceGuiSizingMode.FixedSize
 		gui.LightInfluence=0;gui.AlwaysOnTop=false;gui.MaxDistance=0;gui.ClipsDescendants=false;gui.Parent=part
-		part.Parent=folder;return {part=part,gui=gui}
+		part.Destroying:Connect(function() raised[v]=nil end)
+		v.gui=gui;part.Parent=folder;return v
 	end
-	local function nodeView(n:any):any
+	local function nodeView(n:any,fogged:boolean):any
 		local size=if n.plant then look.plant.cells else data.frame/data.px
-		local v=surface(if n.plant then "NeutralPowerPlant" elseif n.steel then "PowerPylon" else "PowerPole",n.x,n.y,size,size,.225)
+		local v=surface(if n.plant then "NeutralPowerPlant" elseif n.steel then "PowerPylon" else "PowerPole",n.x,n.y,size,size,if fogged then FOG_NODE_HEIGHT else NODE_HEIGHT,NODE_HEIGHT)
+		v.fogged=fogged
 		v.size=size;v.gui.CanvasSize=Vector2.new(data.frame,data.frame)
 		local function label():ImageLabel
 			local l=Instance.new("ImageLabel");l.BackgroundTransparency=1;l.Size=UDim2.fromScale(1,1);l.ResampleMode=Enum.ResamplerMode.Default;l.Parent=v.gui;return l
@@ -92,18 +118,22 @@ function Renderer.start(map:any,parent:Instance)
 		label.ImageContent=Content.fromObject(image :: EditableImage)
 		label.ImageRectOffset=Vector2.new(r[1]/divisor,r[2]/divisor);label.ImageRectSize=Vector2.new(r[3]/divisor,r[4]/divisor)
 	end
-	local function visible(x:number,y:number):boolean return not Fog.hidden(x,y) end
+	local layers={
+		{fogged=false,visible=function(x:number,y:number):boolean return not Fog.hidden(x,y) end},
+		{fogged=true,visible=function(x:number,y:number):boolean return Fog.hidden(x,y) end},
+	}
 	local function line(a:any,b:any,width:number,alpha:number,tint:Color3,pixels:number,layer:number,view:any)
 		if alpha<=0 then return end
 		-- APPROX: one native GUI pixel minimum, with half a stroke of overlap at each joint.
 		local stroke=math.max(1,width)
-		for _,section in Power.sections(a,b,visible,TILE) do
+		-- Both cell sets draw. Fog selects only depth, while the disjoint canvases keep joins intact.
+		for _,layerView in layers do for _,section in Power.sections(a,b,layerView.visible,TILE) do
 			local x0,y0=section.tx*TILE,section.ty*TILE
 			if x0>view.cx+view.rx+1 or x0+TILE<view.cx-view.rx-1 or y0>view.cy+view.ry+1 or y0+TILE<view.cy-view.ry-1 then continue end
-			local key=section.tx..":"..section.ty
+			local key=section.tx..":"..section.ty..(if layerView.fogged then "_Fog" else "")
 			local v=tiles[key]
 			if not v then
-				v=surface("PowerWireTile_"..key,x0+TILE/2,y0+TILE/2,TILE,TILE,.22)
+				v=surface("PowerWireTile_"..key,x0+TILE/2,y0+TILE/2,TILE,TILE,if layerView.fogged then FOG_WIRE_HEIGHT else WIRE_HEIGHT,WIRE_HEIGHT)
 				v.gui.ClipsDescendants=true;v.x0=x0;v.y0=y0;v.frames={};v.used=0;tiles[key]=v
 			end
 			v.gui.CanvasSize=Vector2.new(TILE*pixels,TILE*pixels)
@@ -114,7 +144,7 @@ function Renderer.start(map:any,parent:Instance)
 			f.Position=UDim2.fromOffset(((p.x+q.x)/2-v.x0)*pixels,((p.y+q.y)/2-v.y0)*pixels)
 			f.Size=UDim2.fromOffset(math.sqrt(dx^2+dy^2)*pixels+stroke,stroke)
 			f.Rotation=math.deg(math.atan2(dy,dx));f.BackgroundColor3=tint;f.BackgroundTransparency=1-alpha
-		end
+		end end
 	end
 	local connection=RunService.Heartbeat:Connect(function(dt)
 		acc+=dt;if acc<.1 or disabled then return end;acc=0
@@ -125,7 +155,7 @@ function Renderer.start(map:any,parent:Instance)
 		local near=px>=look.towersFrom
 		local candidates={}
 		for _,n in data.nodes do
-			if math.abs(n.x-view.cx)>view.rx+4 or math.abs(n.y-view.cy)>view.ry+4 or not visible(n.x,n.y) then continue end
+			if math.abs(n.x-view.cx)>view.rx+4 or math.abs(n.y-view.cy)>view.ry+4 then continue end
 			table.insert(candidates,{n=n,d=(n.x-view.cx)^2+(n.y-view.cy)^2})
 		end
 		table.sort(candidates,function(a,b) return if a.d==b.d then a.n.id<b.n.id else a.d<b.d end)
@@ -134,7 +164,14 @@ function Renderer.start(map:any,parent:Instance)
 			local n=candidates[i].n
 			local detailed=(near or n.plant) and atlas()
 			wanted[n.id]=true
-			local v=nodes[n.id];if not v then v=nodeView(n);nodes[n.id]=v end
+			local fogged=Fog.hidden(n.x,n.y)
+			local v=nodes[n.id]
+			if not v then v=nodeView(n,fogged);nodes[n.id]=v
+			elseif v.fogged~=fogged then
+				v.fogged=fogged
+				v.layout.height=if fogged then FOG_NODE_HEIGHT else NODE_HEIGHT
+				raised[v]=if fogged then true else nil;place(v)
+			end
 			v.dot.Visible=not detailed;v.body.Visible=detailed;v.shadow.Visible=detailed and not n.plant
 			if v.dot.Visible then
 				local dot=if n.plant then 1 else math.max(2,math.floor(px*.55+.5))/px/v.size
@@ -194,7 +231,15 @@ function Renderer.start(map:any,parent:Instance)
 		end
 		if usingImage then idle=os.clock() elseif image and os.clock()-idle>3 then Memory.release(image);image=nil end
 	end)
-	folder.Destroying:Connect(function() connection:Disconnect();unregister();clear();if current==folder then current=nil end end)
+	local previousCamera:any=nil;local previousPosition:Vector3?=nil
+	local projection=RunService.RenderStepped:Connect(function()
+		local camera=workspace.CurrentCamera;if not camera then return end
+		local position=camera.CFrame.Position
+		if camera==previousCamera and position==previousPosition then return end
+		previousCamera,previousPosition=camera,position
+		for v in raised do place(v) end
+	end)
+	folder.Destroying:Connect(function() connection:Disconnect();projection:Disconnect();unregister();clear();if current==folder then current=nil end end)
 	print(`[PowerLines] {map.data.id}: {#data.nodes-data.plantCount} visual poles/pylons, {data.plantCount} neutral plants`)
 end
 return Renderer
