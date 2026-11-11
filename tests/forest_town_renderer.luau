@@ -4,7 +4,8 @@ return function(test:any,eq:any)
 	local Map=require("../src/shared/Simulation/ForestMap");local Raster=require("../src/shared/Presentation/ForestRaster")
 	local ImagePixels=require("../src/shared/Presentation/ImagePixels");local TownDetail=require("../src/shared/Presentation/TownDetail");local TownPatch=require("../src/shared/Presentation/TownPatch")
 	local ScorchPixels=require("../src/shared/Presentation/GroundScorchPixels")
-	local function make():any
+	local Lods=require("../src/shared/Presentation/TownLods")
+	local function make(twoChunks:any?):any
 		local h:any={now=0,phase=.3,images={},instances={},warnings=0,bareLights=0,releases=0}
 		local function signal():any
 			local s:any={items={}};function s:Connect(fn) local c:any={fn=fn};function c:Disconnect() self.dead=true end;table.insert(self.items,c);return c end
@@ -34,21 +35,45 @@ return function(test:any,eq:any)
 		local assetsMap:any={City_test=module({forest="Forest_test",lighting={steps=2,sunUp=.62,base=2},chunks={{0,0,1,1,baseName}}}),
 			[baseName]=module({width=14,height=14,deflate="original"}),[baseName.."_Bare"]=module({width=14,height=14,deflate="bare"}),
 			[baseName.."_Light1"]=module({bytes=0}),[baseName.."_BareLight1"]=module({bytes=0})}
-		local assets={FindFirstChild=function(_,name) if h.badBare and string.find(name,"_Bare",1,true) then return nil end;if string.find(name,"_BareLight",1,true) then h.bareLights+=1 end;return assetsMap[name] end}
+		if twoChunks then
+			for i=1,(if type(twoChunks)=="number" then twoChunks else 2)-1 do
+			local name=baseName..(if i==1 then "_next" else "_"..i);table.insert(assetsMap.City_test.value.chunks,{i,0,1,1,name})
+			assetsMap[name]=module({width=14,height=14,deflate="original"});assetsMap[name.."_Light1"]=module({bytes=0})
+			assetsMap[name.."_Bare"]=module({width=14,height=14,deflate="bare"});assetsMap[name.."_BareLight1"]=module({bytes=0})
+			end
+		end
+		local mip=ImagePixels.half(chunks.original,14,14);chunks.mip=mip
+		for _,row in assetsMap.City_test.value.chunks do
+			assetsMap[row[5].."_Mip2"]=module({format=2,stride=2,baseFrame=2,width=7,height=7,sourceHash=Lods.signature("original"),deflate="mip",patches={[2]={sourceHash=1,bytes=0,deflate=""}}})
+		end
+		local assets={FindFirstChild=function(_,name)
+			if string.find(name,"_Mip",1,true) and not h.useMips then return nil end
+			if h.staleMips and string.find(name,"_Mip",1,true) and assetsMap[name] then local bad=table.clone(assetsMap[name].value);bad.sourceHash+=1;return module(bad) end
+			if h.badBare and string.find(name,"_Bare",1,true) then return nil end;if string.find(name,"_BareLight",1,true) then h.bareLights+=1 end;return assetsMap[name]
+		end}
 		local dataMap={Forest_test=module(metadata),pixels=module({deflate="sprites"})};local data={FindFirstChild=function(_,name) return dataMap[name] end}
 		local memory={};function memory.create(size,kind) if h.refuse and kind~="core" then return nil end
 			local image:any={size=size};function image:WritePixelsBuffer(position,extent,px) assert(not self.dead);self.last=buffer.tostring(px);self.writes=(self.writes or 0)+1 end
 			table.insert(h.images,image);return image
 		end
-		function memory.release(image) if image then assert(not image.dead);image.dead=true;h.releases+=1 end end
+		h.uploads=require("../src/shared/Presentation/ImageUploads").new(function(image,x,y,w,h,px) image:WritePixelsBuffer(vec(x,y),vec(w,h),px) end,function() return h.now end)
+		function memory.upload(image,pos,size,px,options)
+			if h.async then return h.uploads.submit(image,pos,size,px,options) end
+			image:WritePixelsBuffer(pos,size,px);if options and options.done then options.done(true) end;return true
+		end
+		function memory.cancelUploads(image) h.uploads.cancel(image) end
+		function memory.release(image) if image then h.uploads.cancel(image);assert(not image.dead);image.dead=true;h.releases+=1 end end
 		function memory.register(_,fn) h.reclaim=fn;return function() h.unregistered=true end end
 		function memory.stats() return 0 end;function memory.canDetail() return true end
-		local shared:any={Config={World="world"},Maps={MapCodec="codec"},Utilities={Inflate="inflate"},Simulation={ForestMap="forest"},Presentation={ImagePixels="pixels",TownDetail="detail",TownPatch="patch",ForestRaster="raster",GroundScorchPixels="scorch"},FindFirstChild=function() return data end}
+		function memory.detailHeadroom() return h.headroom or math.huge end
+		local shared:any={Config={World="world"},Maps={MapCodec="codec"},Utilities={Inflate="inflate"},Simulation={ForestMap="forest"},Presentation={ImagePixels="pixels",TownDetail="detail",TownPatch="patch",TownLods="lods",ForestRaster="raster",GroundScorchPixels="scorch"},FindFirstChild=function() return data end}
 		local raster={overview=Raster.overview,paint=function(...) h.compositions=(h.compositions or 0)+1;return Raster.paint(...) end}
-		local modules:any={world={STUDS_PER_CELL=4,GROUND_Y=0,TOP_GUI_YAW=0},memory=memory,codec={base64Decode=function(key) return key end},inflate={raw=function(key)
+		local modules:any={world={STUDS_PER_CELL=4,GROUND_Y=0,TOP_GUI_YAW=0},memory=memory,codec={base64Decode=function(key) return key end},inflate={raw=function(key,_bytes,checkpoint)
+			if checkpoint and h.yieldWarm then for _=1,3 do coroutine.yield() end end
+			if key=="original" then h.fullDecodes=(h.fullDecodes or 0)+1 end
 			if key=="bare" then h.bareDecodes=(h.bareDecodes or 0)+1 end
 			local source=chunks[key];local fresh=buffer.create(buffer.len(source));buffer.copy(fresh,0,source);return fresh
-		end},forest=Map,raster=raster,scorch=ScorchPixels,pixels=ImagePixels,detail=TownDetail,patch=TownPatch,day={get=function() return {phase=h.phase} end}}
+		end},forest=Map,raster=raster,scorch=ScorchPixels,pixels=ImagePixels,detail=TownDetail,patch=TownPatch,lods=Lods,day={get=function() return {phase=h.phase} end}}
 		local env:any=setmetatable({game={GetService=function(_,name) return if name=="RunService" then {Heartbeat=h.heartbeat} else {WaitForChild=function() return shared end} end},
 			script={Parent={ImageMemory="memory",DaylightController="day",Parent={FindFirstChild=function() return assets end}}},
 			require=function(key) if type(key)=="table" then return key.value end;return assert(modules[key],tostring(key)) end,
@@ -58,6 +83,7 @@ return function(test:any,eq:any)
 			os={clock=function() return h.now end},warn=function() h.warnings+=1 end,print=function() end},{__index=getfenv()})
 		h.renderer=luau.load(fs.readFile("src/client/Rendering/TownRenderer.luau"),{environment=env})()
 		function h.far() env.workspace.CurrentCamera.CFrame.Position.Y=5000 end
+		function h.pan(x) env.workspace.CurrentCamera.CFrame.Position.X=x*4 end
 		function h.step() h.now+=.2;h.heartbeat:fire(.2) end
 		function h.destroy() for _,o in h.instances do if o.Name=="Towns" then o:Destroy();break end end end
 		return h
@@ -124,5 +150,66 @@ return function(test:any,eq:any)
 		h.renderer.setGroundScorch({{cells={[0]=255},tones={[0]=1}}},config,source);h.step();assert(h.renderer.sample(.2,.2)[1]>before)
 		eq(h.renderer.sample(.5,.5)[2],200);eq(#h.images,images)
 		h.renderer.setGroundScorch({},config,nil);h.step();eq(h.renderer.sample(.2,.2)[1],0);h.destroy()
+	end)
+	test("continuous fire dirtiness cannot starve missing town detail",function()
+		local h=make(true);assert(h.renderer.build("test",{}));h.step();eq(#h.images,2)
+		for _=1,4 do h.renderer.setForestFates({{1,{kind="burning",char=0}}});h.step() end
+		eq(#h.images,3,"both detail chunks must load despite continuous fire updates")
+		local found=false;for _,o in h.instances do if o.Name=="City_test_0_0_next" and not o.dead then found=true end end;assert(found)
+		h.destroy();eq(h.warnings,0)
+	end)
+	test("limited aggregate town headroom gives every selected chunk the same affordable detail tier",function()
+		local h=make(true);h.headroom=600;assert(h.renderer.build("test",{}));h.step();h.step()
+		eq(#h.images,3);eq(h.images[2].size.X,7);eq(h.images[3].size.X,7)
+		local n=#h.images;for _=1,4 do h.step() end;eq(#h.images,n)
+		h.destroy();eq(h.warnings,0)
+	end)
+	test("town detail publishes only after queued pixels arrive and keeps the overview while waiting",function()
+		local h=make();h.async=true;assert(h.renderer.build("test",{}));h.step();eq(#h.images,2)
+		local detail=0;for _,o in h.instances do if o.Name=="City_test_0_0" and not o.dead then detail+=1 end end;eq(detail,0)
+		eq(h.images[2].writes,nil);assert(h.images[1].last)
+		h.uploads.step();eq(h.images[2].writes,1)
+		for _,o in h.instances do if o.Name=="City_test_0_0" and not o.dead then detail+=1 end end;eq(detail,1)
+		h.uploads.step();h.destroy();eq(h.uploads.bytes,0)
+	end)
+	test("town teardown cancels unpublished uploads and never resurrects a map part",function()
+		local h=make();h.async=true;assert(h.renderer.build("test",{}));h.step();assert(h.uploads.count>0)
+		h.destroy();h.uploads.step();eq(h.uploads.count,0);eq(h.images[2].writes,nil)
+		for _,o in h.instances do if o.Name=="City_test_0_0" then assert(o.dead) end end
+	end)
+	test("wide town views cover more than nine chunks without pinning all full-resolution CPU pixels",function()
+		local h=make(10);h.headroom=1000;assert(h.renderer.build("test",{}))
+		for _=1,15 do h.step() end
+		local stats=h.renderer.stats();eq(stats.selected,10);eq(stats.shown,10);eq(stats.ready,10);eq(stats.stride,4)
+		assert(stats.sourceBytes<=6*14*14*4);assert(stats.previewBytes>0)
+		for x=0,9 do assert(h.renderer.sample(x+.2,.2),"coarse CPU fallback must still sample displayed art") end
+		local count=#h.images;h.phase=0;for _=1,15 do h.step() end;eq(h.warnings,0);eq(#h.images,count)
+		assert(h.renderer.stats().sourceBytes<=6*14*14*4)
+		h.destroy();eq(h.renderer.stats(),nil)
+	end)
+	test("matching optional town LODs avoid full CPU cold decodes and dynamic fire bypasses them",function()
+		local h=make(true);h.useMips=true;h.headroom=600;assert(h.renderer.build("test",{}));local full=h.fullDecodes
+		h.step();h.step();eq(h.fullDecodes,full);eq(h.renderer.stats().ready,2);assert(h.renderer.stats().mipHits>=2)
+		h.renderer.setForestFates({{1,{kind="burnt"}}});h.step();assert(h.bareDecodes and h.bareDecodes>0);eq(h.renderer.sample(.5,.5)[2],0)
+		h.destroy();eq(h.warnings,0)
+	end)
+	test("stale optional LOD modules fall back to the current full source without a warning loop",function()
+		local h=make(true);h.useMips=true;h.staleMips=true;h.headroom=600;assert(h.renderer.build("test",{}));local before=h.fullDecodes
+		h.step();h.step();eq(h.renderer.stats().ready,2);assert(h.fullDecodes>before);assert(h.renderer.stats().mipMisses>0)
+		local misses=h.renderer.stats().mipMisses;h.step();eq(h.renderer.stats().mipMisses,misses);eq(h.warnings,0);h.destroy()
+	end)
+	test("camera motion keeps fast town previews while full upgrades wait for settled coverage",function()
+		local h=make(true);h.useMips=true;assert(h.renderer.build("test",{}));local before=h.fullDecodes
+		for i=1,6 do h.pan(.5+i*.1);h.step() end
+		eq(h.renderer.stats().ready,2);eq(h.fullDecodes,before,"panning must not repeatedly inflate full sources behind valid previews")
+		for _=1,6 do h.step() end
+		assert(h.fullDecodes>before,"stationary view should upgrade after coverage settles")
+		h.destroy();eq(h.warnings,0)
+	end)
+	test("cooperative full upgrades retain the preview during yields and cancel on map teardown",function()
+		local h=make(true);h.useMips=true;h.yieldWarm=true;assert(h.renderer.build("test",{}))
+		h.step();h.step();h.step();eq(h.renderer.stats().ready,2);eq(h.renderer.stats().warming,true)
+		local images=#h.images;h.step();eq(h.renderer.stats().ready,2);eq(#h.images,images)
+		h.destroy();for _=1,6 do h.step() end;eq(h.renderer.stats(),nil);eq(#h.images,images);eq(h.warnings,0)
 	end)
 end

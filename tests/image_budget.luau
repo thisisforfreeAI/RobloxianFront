@@ -1,6 +1,13 @@
 --!strict
 return function(test: any, eq: any)
 	local Budget = require("../src/shared/Presentation/ImageBudget")
+	test("aggregate LOD headroom respects core reserve detail limits and learned native refusal without probing",function()
+		local attempts=0;local b=Budget.new(function() attempts+=1;return {Destroy=function() end} end,{ceiling=100,detailLimit=60,reserve=20})
+		eq(b:detailHeadroom(),60);b.used=50;b.detail=20;eq(b:detailHeadroom(),30)
+		b.knownCeiling=60;eq(b:detailHeadroom(),0);b.knownCeiling=nil;b.detail=60;eq(b:detailHeadroom(),0)
+		b.used=90;b.detail=50;eq(b:detailHeadroom(),0);eq(b:detailHeadroom(50),40,"replacement must restore core reserve even if current allocations exceed it")
+		eq(attempts,0)
+	end)
 	local function factory(limit: number)
 		local state: any = { used = 0, attempts = 0, destroyed = 0 }
 		local function create(w: number, h: number)

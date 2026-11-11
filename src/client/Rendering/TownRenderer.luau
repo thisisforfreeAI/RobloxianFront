@@ -16,6 +16,10 @@
 	image. APPROX: sampled directions and a fixed-noon overview; tree shadows remain baked.
 ]]
 local ImageMemory = require(script.Parent.ImageMemory)
+-- Legacy injected test backends write immediately; the live memory service queues these writes.
+local upload=ImageMemory.upload or function(image,position,size,pixels,options)
+	image:WritePixelsBuffer(position,size,pixels);if options and options.done then options.done(true) end;return true
+end
 local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
@@ -26,6 +30,7 @@ local Inflate = require(Shared.Utilities.Inflate)
 local ImagePixels = require(Shared.Presentation.ImagePixels)
 local TownDetail = require(Shared.Presentation.TownDetail)
 local TownPatch = require(Shared.Presentation.TownPatch)
+local TownLods = require(Shared.Presentation.TownLods)
 local ForestMap = require(Shared.Simulation.ForestMap)
 local ForestRaster = require(Shared.Presentation.ForestRaster)
 local ScorchPixels = require(Shared.Presentation.GroundScorchPixels)
@@ -38,6 +43,8 @@ local forestApply: any = nil
 local coverSampler: any = nil
 local groundApply: any = nil
 local appearanceRevision=0
+local diagnostics:any=nil
+function TownRenderer.stats():any return if diagnostics then diagnostics() else nil end
 function TownRenderer.revision():number return appearanceRevision end
 function TownRenderer.getForestMap():any return forestMap end
 function TownRenderer.setForestFates(rows:{any},reset:boolean?) if forestApply then forestApply(rows,reset) end end
@@ -55,10 +62,9 @@ local S = World.STUDS_PER_CELL
 local HEIGHT = 0.07 -- above the ground (0), under the roads (0.15)
 local OVERVIEW_PX = 2 -- overview pixels a cell
 local TILE_PX = 14 -- chunk pixels a cell (the game's 14 px town tiles)
-local MAX_LOADED = 9 -- full chunks shown at once
+local MAX_LOADED = 32 -- bounded visible coverage; aggregate LOD still obeys the same image budget
 local CHECK_SEC = 0.1
 local RETRY_SEC = 1.5 -- after the budget refused an image
-local KEEP_REACH = 1.6 -- shown chunks stay until this far past the view (so panning back is instant)
 local PIXEL_CACHE = 6 -- chunk pixels kept in memory for chunks not shown (3.2 MB each)
 local SHOW_MS = 6 -- per check, time spent showing chunks whose pixels are ready
 local POOL_MAX = 1 -- spare images kept for reuse instead of asking the budget again
@@ -199,11 +205,13 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 	groundApply=applyGround
 	local function sample(x:number,y:number):{number}?
 		for _,c in chunks do
-			if c.px and x>=c.cx and y>=c.cy and x<c.cx+c.cw and y<c.cy+c.ch then
-				local px,py=math.floor((x-c.cx)*TILE_PX),math.floor((y-c.cy)*TILE_PX)
-				local at=(py*c.w+px)*4
-				if at+3<buffer.len(c.px) and buffer.readu8(c.px,at+3)>0 then
-					return {buffer.readu8(c.px,at),buffer.readu8(c.px,at+1),buffer.readu8(c.px,at+2)}
+			local pixels=c.px or (c :: any).preview
+			if pixels and x>=c.cx and y>=c.cy and x<c.cx+c.cw and y<c.cy+c.ch then
+				local w,h=if c.px then c.w else c.iw,if c.px then c.h else c.ih
+				local px,py=math.floor((x-c.cx)*w/c.cw),math.floor((y-c.cy)*h/c.ch)
+				local at=(py*w+px)*4
+				if at+3<buffer.len(pixels) and buffer.readu8(pixels,at+3)>0 then
+					return {buffer.readu8(pixels,at),buffer.readu8(pixels,at+1),buffer.readu8(pixels,at+2)}
 				end
 			end
 		end
@@ -234,10 +242,41 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 		if scars and next(scars) and groundSource then ScorchPixels.apply(px,c.cx,c.cy,c.cw,c.ch,TILE_PX,mapW,scars,groundConfig,groundSource.roof,(c :: any).groundTones) end
 		return ForestRaster.paint(forest,px,c.cx,c.cy,c.cw,c.ch,fates)
 	end
-	local function decode(c: Chunk,frame:number?): (buffer, number, number)
+	local mipHits,mipMisses=0,0
+	local function dynamic(c:Chunk):boolean
 		local dynamic=(c :: any).groundScars and next((c :: any).groundScars)~=nil or false
 		if forest then for _,t in forest.inWindow(c.cx,c.cy,c.cw,c.ch) do if fates[t.key] then dynamic=true;break end end end
-		(c :: any).dynamicForest=dynamic
+		return dynamic
+	end
+	local function fastPixels(c:Chunk,stride:number,frame:number):buffer?
+		if stride<2 or dynamic(c) then return nil end
+		local cached=(c :: any).prefetched
+		if cached and cached.stride==stride and cached.frame==frame then (c :: any).prefetched=nil;mipHits+=1;return cached.pixels end
+		local name=c.name.."_Mip"..stride
+		local module=assets:FindFirstChild(name);if not module then return nil end
+		local key=name..":"..frame
+		local state=c :: any;state.lodFailed=state.lodFailed or {};if state.lodFailed[key] then return nil end
+		local ok,px=pcall(function()
+			local source=require(c.mod);state.lodSourceHash=state.lodSourceHash or TownLods.signature(source.deflate)
+			state.lodPatchHashes=state.lodPatchHashes or {}
+			local hash=state.lodPatchHashes[frame]
+			if not hash then
+				local patch=if frame==baseFrame then nil else assets:FindFirstChild(c.name.."_Light"..frame)
+				if frame~=baseFrame and not patch then return nil end
+				hash=TownLods.signature(if patch then require(patch).deflate or "" else "");state.lodPatchHashes[frame]=hash
+			end
+			return TownLods.decode(require(module),stride,frame,source.width,source.height,state.lodSourceHash,hash,function(text,bytes)
+				return Inflate.raw(MapCodec.base64Decode(text),bytes)
+			end,baseFrame)
+		end)
+		if not ok or not px then state.lodFailed[key]=true;mipMisses+=1;return nil end
+		mipHits+=1;return px
+	end
+	local function decode(c: Chunk,frame:number?): (buffer, number, number)
+		(c :: any).prefetched=nil
+		(c :: any).warmPixels=nil
+		local dynamic=dynamic(c)
+		;(c :: any).dynamicForest=dynamic
 		if dynamic then return forestPixels(c,frame or baseFrame),c.cw*TILE_PX,c.ch*TILE_PX end
 		local chunk = require(c.mod) :: any
 		if not c.packed then
@@ -248,6 +287,16 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 	local warnedLighting = false
 	local function relight(c: Chunk, frame: number)
 		if not lighting or c.frame == frame then return end
+		if not c.px then
+			local stride=if c.iw>0 then math.round(c.w/c.iw) else 1
+			local fast=fastPixels(c,stride,frame)
+			if fast then (c :: any).preview=fast;c.frame=frame;c.patch=nil;c.missed=nil;appearanceRevision+=1;return end
+			local ok,px,w,h=pcall(decode,c,frame)
+			if not ok then c.missed=frame;return end
+			c.px,c.w,c.h,c.patch=px,w,h,nil;c.frame=if (c :: any).dynamicForest then frame else baseFrame
+			appearanceRevision+=1
+			if c.frame==frame then return end
+		end
 		if (c :: any).dynamicForest then
 			local ok,px=pcall(forestPixels,c,frame)
 			if ok then c.px=px;c.frame=frame;c.patch=nil;c.missed=nil;appearanceRevision+=1
@@ -277,6 +326,10 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 		appearanceRevision+=1
 	end
 	local function pixelsAt(c: Chunk, stride: number): buffer
+		if not c.px then
+			local preview=(c :: any).preview;assert(preview and buffer.len(preview)==math.ceil(c.w/stride)*math.ceil(c.h/stride)*4,"missing town pixels")
+			return preview
+		end
 		local px, w, h = c.px :: buffer, c.w, c.h
 		if stride >= 2 then px, w, h = ImagePixels.half(px, w, h) end
 		if stride >= 4 then px = ImagePixels.half(px, w, h) end
@@ -348,7 +401,40 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 	local holdUntil = 0
 	local pool: { [string]: { any } } = {}
 	local pooled = 0
+	local pooledBytes = 0
+	local alive = true
+	local warming:any=nil
+	local function startWarm(c:Chunk)
+		if warming then return end
+		local job:any={chunk=c,produced=0}
+		job.thread=coroutine.create(function()
+			local source=require(c.mod);local encoded=c.packed or MapCodec.base64Decode(source.deflate);c.packed=encoded
+			local began=os.clock()
+			local px=Inflate.raw(encoded,source.width*source.height*4,function(produced)
+				job.produced=produced
+				if os.clock()-began>=.002 then coroutine.yield();began=os.clock() end
+			end)
+			return {pixels=px,w=source.width,h=source.height}
+		end)
+		warming=job
+	end
 	local clock = 0
+	local wantedCount,visibleCount,targetStride=0,0,0
+	local wantedChunks:any={}
+	local function stats()
+		local shown,pending,ready,sourceBytes,previewBytes,prefetchBytes,nativeBytes=0,0,0,0,0,0,pooledBytes
+		for _,c in chunks do
+			if c.part then shown+=1 elseif c.image then pending+=1 end
+			if c.part and wantedChunks[c] then ready+=1 end
+			if c.image then nativeBytes+=c.iw*c.ih*4 end
+			if c.px then sourceBytes+=buffer.len(c.px) end
+			if (c :: any).warmPixels then sourceBytes+=buffer.len((c :: any).warmPixels.pixels) end
+			if (c :: any).preview then previewBytes+=buffer.len((c :: any).preview) end
+			if (c :: any).prefetched then prefetchBytes+=buffer.len((c :: any).prefetched.pixels) end
+		end
+		return {visible=visibleCount,selected=wantedCount,ready=ready,shown=shown,pending=pending,stride=targetStride,nativeBytes=nativeBytes,sourceBytes=sourceBytes,previewBytes=previewBytes,prefetchBytes=prefetchBytes,mipHits=mipHits,mipMisses=mipMisses,warming=warming~=nil,warmProduced=if warming then warming.produced else 0}
+	end
+	diagnostics=stats
 	local function sizeKey(w: number, h: number): string
 		return `{w}x{h}`
 	end
@@ -362,9 +448,13 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 		end
 		-- Same overview image, with its noon pixels hidden below a shown chunk. Otherwise old
 		-- ground shadows would remain visible through the newly lit chunk's transparent pixels.
-		overview:WritePixelsBuffer(Vector2.new(x, y), Vector2.new(w, h), pixels)
+		local accepted=upload(overview,Vector2.new(x,y),Vector2.new(w,h),pixels,{priority=1,key=x..":"..y})
+		;(c :: any).overviewRetry=if accepted then nil else covered
 	end
-	local function unload(c: Chunk)
+	local function unload(c: Chunk,discard:boolean?)
+		if c.image and ImageMemory.cancelUploads then ImageMemory.cancelUploads(c.image) end
+		(c :: any).uploading=nil
+		(c :: any).preview=nil
 		if c.part then
 			c.part:Destroy()
 			c.part = nil
@@ -374,10 +464,11 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 			-- Full source pixels stay in the bounded CPU cache; native images may be half-size.
 			c.used = clock
 			local k = sizeKey(c.iw, c.ih)
-			if pooled < POOL_MAX then
+			if not discard and pooled < POOL_MAX then
 				pool[k] = pool[k] or {}
 				table.insert(pool[k], c.image)
 				pooled += 1
+				pooledBytes += c.iw*c.ih*4
 			else
 				ImageMemory.release(c.image)
 			end
@@ -385,10 +476,26 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 			loaded -= 1
 		end
 	end
+	local function writeChunk(c:Chunk,pixels:buffer,priority:number):boolean
+		local image=c.image;if not image then return false end
+		return upload(image,Vector2.zero,Vector2.new(c.iw,c.ih),pixels,{priority=priority,done=function(ok)
+			if not alive or c.image~=image then return end
+			(c :: any).uploading=nil
+			if not ok then unload(c,true);return end
+			(c :: any).preview=if c.iw<c.w then pixels else nil
+			if not c.part then
+				local size=Vector2.new(c.iw,c.ih)
+				local part,label=imagePart(c.name,c.cx,c.cy,c.cw,c.ch,size,HEIGHT+.01,true)
+				label.ImageContent=Content.fromObject(image);part.Parent=folder;c.part=part
+				coverOverview(c,true)
+			end
+		end})
+	end
 	local function takeImage(w: number, h: number): any
 		local list = pool[sizeKey(w, h)]
 		if list and #list > 0 then
 			pooled -= 1
+			pooledBytes -= w*h*4
 			return table.remove(list)
 		end
 		local image = newImage(Vector2.new(w, h))
@@ -401,6 +508,7 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 				table.clear(l)
 			end
 			pooled = 0
+			pooledBytes = 0
 			image = newImage(Vector2.new(w, h))
 		end
 		return image
@@ -409,7 +517,7 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 	local function trimPixels()
 		local spare: { Chunk } = {}
 		for _, c in chunks do
-			if c.px and not c.image then
+			if (c.px or (c :: any).prefetched or (c :: any).warmPixels) and (not c.image or c.iw<c.w) then
 				table.insert(spare, c)
 			end
 		end
@@ -421,35 +529,32 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 		end)
 		for i = 1, #spare - PIXEL_CACHE do
 			spare[i].px = nil
+			(spare[i] :: any).prefetched=nil
+			(spare[i] :: any).warmPixels=nil
 			appearanceRevision+=1
-			spare[i].patch, spare[i].frame = nil, baseFrame
+			spare[i].patch=nil
+			if not spare[i].image then spare[i].frame=baseFrame end
 		end
 	end
 	-- returns false when the budget refused the image
-	local function show(c: Chunk, stride: number): boolean
+	local function show(c: Chunk, stride: number,ready:buffer?): boolean
 		-- Admission may reclaim inactive CPU caches as well as native detail. Keep this chunk's
 		-- full source and reversible patch alive until it becomes a shown chunk.
 		local source, oldPatch, oldFrame = c.px, c.patch, c.frame
 		local iw, ih = math.ceil(c.w / stride), math.ceil(c.h / stride)
 		local image = takeImage(iw, ih)
 		while not image and stride < 4 do
+			if ready then ready=ImagePixels.half(ready,iw,ih) end
 			stride *= 2
 			iw, ih = math.ceil(c.w / stride), math.ceil(c.h / stride)
 			image = takeImage(iw, ih)
 		end
 		if not image then return false end
 		c.px, c.patch, c.frame = source, oldPatch, oldFrame
-		local size = Vector2.new(iw, ih)
-		local ok = pcall(function()
-			image:WritePixelsBuffer(Vector2.zero, size, pixelsAt(c, stride))
-		end)
-		if not ok then ImageMemory.release(image); return false end
-		local part, label = imagePart(c.name, c.cx, c.cy, c.cw, c.ch, size, HEIGHT + 0.01, true)
-		label.ImageContent = Content.fromObject(image)
-		part.Parent = folder
-		c.part, c.image, c.iw, c.ih = part, image, iw, ih
-		coverOverview(c, true)
+		c.image,c.iw,c.ih=image,iw,ih;(c :: any).uploading=true
 		loaded += 1
+		local ok,accepted=pcall(writeChunk,c,ready or pixelsAt(c,stride),1)
+		if not ok or not accepted then unload(c,true);return false end
 		return true
 	end
 	local function drainPool()
@@ -458,6 +563,7 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 			table.clear(list)
 		end
 		pooled = 0
+		pooledBytes = 0
 	end
 	local unregister = ImageMemory.register(10, function(needed: number, _protected: any)
 		local before = ImageMemory.stats()
@@ -476,6 +582,9 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 	end)
 	local connection: RBXScriptConnection? = nil
 	folder.Destroying:Connect(function()
+		alive=false
+		warming=nil
+		if diagnostics==stats then diagnostics=nil end
 		if sampler==sample then sampler=nil end
 		if forestMap==forest then forestMap=nil end
 		if forestApply==applyForest then forestApply=nil end
@@ -487,18 +596,37 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 		if connection then connection:Disconnect() end
 		unregister()
 		for _, c in chunks do if c.image then unload(c) end end
+		for _,c in chunks do c.px=nil;c.patch=nil;(c :: any).preview=nil;(c :: any).prefetched=nil;(c :: any).warmPixels=nil end
 		drainPool(); ImageMemory.release(overview)
 	end)
 	local warnedPressure = false
 	local acc = 0
 	local zoomStride = 0
+	local paintedLast = false
+	local lastX,lastY,lastAt=nil,nil,nil
+	local lastCellPixels,steadySince,lastUpgrade=nil,0,-math.huge
 	connection = RunService.Heartbeat:Connect(function(dt)
+		-- One cooperative static-source warmup per frame; keep its existing native preview bound.
+		if warming then
+			local job=warming;local c=job.chunk
+			if not wantedChunks[c] or dynamic(c) then warming=nil
+			else
+				local ok,result=coroutine.resume(job.thread)
+				if not ok then warming=nil;(c :: any).warmFailed=true;warn("[TownRenderer] Full source warmup failed; preview stays:",result)
+				elseif coroutine.status(job.thread)=="dead" then (c :: any).warmPixels=result;warming=nil end
+			end
+		end
 		acc += dt
 		if acc < CHECK_SEC then
 			return
 		end
 		acc = 0
 		clock += 1
+		for _,c in chunks do
+			if (c :: any).overviewRetry~=nil then
+				local covered=(c :: any).overviewRetry;(c :: any).overviewRetry=nil;coverOverview(c,covered)
+			end
+		end
 		local cam = workspace.CurrentCamera
 		if not cam then
 			return
@@ -512,7 +640,6 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 		local tanHalf = math.tan(math.rad(cam.FieldOfView) / 2)
 		local cellPx = S * cam.ViewportSize.Y / (2 * dist * tanHalf)
 		local fx, fy = focus.X / S, focus.Z / S
-		local reach = dist * tanHalf * math.max(1, cam.ViewportSize.X / math.max(1, cam.ViewportSize.Y)) / S * 1.4
 		local function far(c: Chunk): number
 			local nx = math.clamp(fx, c.cx, c.cx + c.cw)
 			local ny = math.clamp(fy, c.cy, c.cy + c.ch)
@@ -523,10 +650,24 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 		local stride = if zoomStride == 0 then 4 else zoomStride
 		local detail = zoomStride ~= 0 or not overviewOk
 		local frame = if lighting then TownDetail.frame(DaylightController.get().phase, lighting.sunUp, lighting.steps) else baseFrame
+		local ry=dist*tanHalf/S*1.08;local rx=ry*cam.ViewportSize.X/math.max(1,cam.ViewportSize.Y)
+		local now=os.clock();local px,py=TownDetail.predict(fx,fy,lastX,lastY,if lastAt then now-lastAt else 0,rx,ry)
+		if not lastX or math.abs(fx-lastX)>.05 or math.abs(fy-lastY)>.05 or lastCellPixels and math.abs(cellPx-lastCellPixels)>lastCellPixels*.03 then steadySince=now end
+		lastX,lastY,lastAt=fx,fy,now
+		lastCellPixels=cellPx
+		local want,keep,prefetch,seen={},{},{},0
+		if detail then want,keep,prefetch,seen=TownDetail.plan(chunks,fx,fy,rx,ry,MAX_LOADED,px,py) end
+		wantedCount,visibleCount=#want,seen
+		wantedChunks={};for _,c in want do wantedChunks[c]=true end
+		local allReady=true;for _,c in want do if not c.part then allReady=false;break end end
 		-- One changed source chunk per check, including the far overview. Reuse native images.
 		local dirty:any=nil
 		for _,c in chunks do if (c :: any).forestDirty and (not dirty or c.distance<dirty.distance) then dirty=c end end
-		if dirty then
+		local missing=false
+		if detail then for _,c in want do if not c.image then missing=true;break end end end
+		-- Changing fires/scars cannot occupy every check while camera-visible detail is missing.
+		if dirty and (not missing or not paintedLast) then
+			paintedLast=true
 			local paintedFrame=if dirty.image then frame else baseFrame
 			local ok,px,w,h=pcall(decode,dirty,paintedFrame)
 			if ok then
@@ -538,36 +679,42 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 				for row=0,sh-1 do buffer.copy(overviewPixels,((dirty.cy*OVERVIEW_PX+row)*ow+dirty.cx*OVERVIEW_PX)*4,small,row*sw*4,sw*4) end
 				if dirty.image then
 					relight(dirty,frame)
-					local wrote=pcall(function() dirty.image:WritePixelsBuffer(Vector2.zero,Vector2.new(dirty.iw,dirty.ih),pixelsAt(dirty,math.round(w/dirty.iw))) end)
+					local wrote,accepted=pcall(writeChunk,dirty,pixelsAt(dirty,math.round(w/dirty.iw)),if dirty.part then 2 else 1)
 					if not wrote then unload(dirty);drainPool() end
+					if wrote and not accepted then dirty.forestDirty=true end
 				end
-				coverOverview(dirty,dirty.image~=nil);trimPixels()
+				coverOverview(dirty,dirty.part~=nil);trimPixels()
 			else
 				dirty.forestDirty=nil
 				if not warnedForest then warnedForest=true;warn("[TownRenderer] Forest repaint unavailable:",px) end
 			end
 			return
 		end
-		local want: { Chunk } = {}
-		local keep: { [Chunk]: boolean } = {}
-		if detail then
-			local near: { Chunk } = {}
-			for _, c in chunks do
-				local d = far(c)
-				if d <= reach * KEEP_REACH then
-					table.insert(near, c)
-				end
-			end
-			table.sort(near, function(a, b)
-				return far(a) < far(b)
-			end)
-			for i = 1, math.min(#near, MAX_LOADED) do
-				keep[near[i]] = true
-				if far(near[i]) <= reach then
-					table.insert(want, near[i])
-				end
+		paintedLast=false
+		if detail and #want>0 and ImageMemory.detailHeadroom then
+			local held=pooledBytes;local visibleHeld=0;local visible={}
+			for _,c in want do visible[c]=true;if c.image then visibleHeld+=c.iw*c.ih*4 end end
+			for _,c in chunks do if c.image then held+=c.iw*c.ih*4 end end
+			local allowance=ImageMemory.detailHeadroom(held)
+			stride=TownDetail.fitStride(stride,want,TILE_PX,allowance)
+			if TownDetail.bytes(want,stride,TILE_PX)>ImageMemory.detailHeadroom(visibleHeld) then
+				-- Native overscan/spares yield before a camera-visible chunk is left on the overview.
+				for _,c in chunks do if c.image and not visible[c] then unload(c) end end
+				drainPool()
 			end
 		end
+		targetStride=if detail then stride else 0
+		-- Free oversized allocations first, then fill missing detail, then refresh existing shade.
+		table.sort(want,function(a,b)
+			local function priority(c)
+				if c.image and c.iw>math.ceil(c.cw*TILE_PX/stride) then return 0 end
+				return if c.image then 2 else 1
+			end
+			local pa,pb=priority(a),priority(b)
+			if pa~=pb then return pa<pb end
+			if a.distance~=b.distance then return a.distance<b.distance end
+			return (a.cx+a.cw/2-fx)^2+(a.cy+a.ch/2-fy)^2<(b.cx+b.cw/2-fx)^2+(b.cy+b.ch/2-fy)^2
+		end)
 		for _, c in chunks do
 			if c.image and not keep[c] then
 				unload(c)
@@ -581,25 +728,44 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 		local inflated = false
 		for _, c in want do
 			c.used = clock
+			local upgrading=false
 			if c.image then
 				local targetW, targetH = math.ceil(c.w / stride), math.ceil(c.h / stride)
 				if targetW < c.iw then
 					unload(c); drainPool() -- return the larger allocation before creating the smaller one
-				elseif targetW > c.iw and ImageMemory.canDetail(Vector2.new(targetW, targetH)) then
+				elseif targetW>c.iw and allReady and now-steadySince>=.35 and now-lastUpgrade>=.35
+					and (if ImageMemory.detailHeadroom then ImageMemory.detailHeadroom(c.iw*c.ih*4)>=targetW*targetH*4 else ImageMemory.canDetail(Vector2.new(targetW,targetH))) then
+					if not c.px and not dynamic(c) then
+						local warm=(c :: any).warmPixels
+						if warm then c.px,c.w,c.h,c.frame,c.patch=warm.pixels,warm.w,warm.h,baseFrame,nil;(c :: any).warmPixels=nil
+						elseif not (c :: any).warmFailed then startWarm(c);continue
+						else continue end -- a bad optional source must not destroy the working preview
+					end
+					lastUpgrade=now
+					upgrading=true
 					unload(c); drainPool()
 				elseif c.frame ~= frame and c.missed ~= frame then
 					relight(c, frame)
+					if not c.px and not (c :: any).preview then break end
 					local shownStride = math.round(c.w / c.iw)
-					local ok = pcall(function()
-						c.image:WritePixelsBuffer(Vector2.zero, Vector2.new(c.iw, c.ih), pixelsAt(c, shownStride))
-					end)
+					local ok,accepted=pcall(writeChunk,c,pixelsAt(c,shownStride),if c.part then 2 else 1)
 					if not ok then unload(c); drainPool() end
+					if ok and not accepted then c.missed=nil;c.frame=-1 end
 					break -- at most one shadow refresh per check; nearest chunks first
 				else
 					continue
 				end
 			end
-			if not c.px then
+			local ready:buffer?=nil
+			local initialStride=stride
+			if not c.px and not upgrading then
+				initialStride=math.max(2,stride)
+				ready=fastPixels(c,initialStride,frame)
+				if ready then
+					c.w,c.h,c.frame,c.patch=c.cw*TILE_PX,c.ch*TILE_PX,frame,nil
+				end
+			end
+			if not c.px and not ready then
 				if inflated then
 					continue
 				end
@@ -611,8 +777,8 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 				c.px, c.w, c.h = px, w, h
 				appearanceRevision+=1
 			end
-			relight(c, frame)
-			if not show(c, stride) then
+			if not ready then relight(c, frame) end
+			if not show(c,if ready then initialStride else stride,ready) then
 				holdUntil = os.clock() + RETRY_SEC
 				if not warnedPressure then
 					warnedPressure = true
@@ -626,12 +792,14 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 		end
 		-- then, with time to spare, inflate the next chunk just outside the view, ready for panning
 		if not inflated and (os.clock() - t0) * 1000 < SHOW_MS then
-			for c in keep do
-				if not c.px and not c.image then
-					local ok, px, w, h = pcall(decode, c)
-					if ok then
-						c.px, c.w, c.h, c.used = px, w, h, clock
-						appearanceRevision+=1
+			for _,c in prefetch do
+				local cached=(c :: any).prefetched;local prefetchStride=math.max(2,stride)
+				if not c.px and not c.image and (not cached or cached.frame~=frame or cached.stride~=prefetchStride) then
+					local fast=fastPixels(c,prefetchStride,frame)
+					if fast then (c :: any).prefetched={pixels=fast,stride=prefetchStride,frame=frame};c.used=clock
+					else
+						local ok,px,w,h=pcall(decode,c)
+						if ok then c.px,c.w,c.h,c.used=px,w,h,clock;appearanceRevision+=1 end
 					end
 					break
 				end

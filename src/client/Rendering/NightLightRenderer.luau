@@ -10,6 +10,10 @@ local Inflate=require(Shared.Utilities.Inflate)
 local Pixels=require(Shared.Presentation.NightLightPixels)
 local Math=require(Shared.Presentation.GroundWetness)
 local Memory=require(script.Parent.ImageMemory)
+-- Legacy injected test backends write immediately; the live memory service queues these writes.
+local upload=Memory.upload or function(image,position,size,pixels,options)
+	image:WritePixelsBuffer(position,size,pixels);if options and options.done then options.done(true) end;return true
+end
 local Daylight=require(script.Parent.DaylightController)
 local WindowRenderer=require(script.Parent.NightWindowRenderer)
 local Renderer={}
@@ -138,7 +142,9 @@ function Renderer.start(map:any,parent:Instance?)
 				for _,page in session.pages do
 					local partPixels=buffer.create(page.w*page.h*4)
 					for y=0,page.h-1 do buffer.copy(partPixels,y*page.w*4,pixels,(y*width+page.x)*4,page.w*4) end
-					page.image:WritePixelsBuffer(Vector2.zero,Vector2.new(page.w,page.h),partPixels)
+					if not upload(page.image,Vector2.zero,Vector2.new(page.w,page.h),partPixels,{priority=3,done=function(wrote)
+						if not wrote and session.alive then session.disabled=true;clearPages() end
+					end}) then session.stamp=nil end
 				end
 			end)
 			session.busy=false

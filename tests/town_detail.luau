@@ -2,6 +2,26 @@
 return function(test: any, eq: any)
 	local Detail = require("../src/shared/Presentation/TownDetail")
 	local Patch = require("../src/shared/Presentation/TownPatch")
+	test("town planning selects the actual viewport before overscan and prefetches toward camera travel",function()
+		local a={cx=0,cy=0,cw=10,ch=10};local b={cx=20,cy=0,cw=10,ch=10};local off={cx=0,cy=40,cw=10,ch=10}
+		local want,keep,prefetch,seen=Detail.plan({off,b,a},5,5,5,5,32,25,5)
+		eq(seen,1);eq(#want,1);eq(want[1],a);eq(keep[a],true);eq(prefetch[1],b)
+		local x,y=Detail.predict(10,0,0,0,.1,20,10);eq(x,30);eq(y,0)
+		x,y=Detail.predict(10,0,nil,nil,.1,20,10);eq(x,10);eq(y,0)
+	end)
+	test("viewport planning supports broader affordable coverage while keeping its hard limit",function()
+		local chunks={};for x=0,39 do table.insert(chunks,{cx=x,cy=0,cw=1,ch=1}) end
+		local want,_,_,seen=Detail.plan(chunks,20,.5,30,2,32,20,.5);eq(seen,40);eq(#want,32)
+		want=Detail.plan(chunks,10,.5,10,2,32,10,.5);assert(#want>9)
+	end)
+	test("town aggregate LOD covers a nine-chunk view within its existing image budget",function()
+		local chunks={};for _=1,9 do table.insert(chunks,{cw=64,ch=64}) end
+		eq(Detail.fitStride(1,chunks,14,16*1024*1024),2)
+		eq(Detail.fitStride(1,chunks,14,2*1024*1024),4)
+		eq(Detail.fitStride(2,chunks,14,48*1024*1024),2,"budget never overrides the zoom's cheaper tier")
+		eq(Detail.fitStride(1,chunks,14,0),4,"severe pressure keeps the bounded minimum/fallback")
+		eq(Detail.bytes({{cw=1,ch=3}},2,3),2*5*4)
+	end)
 	test("zoom hysteresis avoids repeated texture changes around every boundary", function()
 		local tier = 0
 		for _, entry in { { 2.9, 4 }, { 2.5, 4 }, { 2.3, 4 }, { 2.1, 0 }, { 4.3, 2 }, { 4.0, 2 }, { 3.7, 2 }, { 3.5, 4 }, { 8.1, 1 }, { 7.5, 1 }, { 7.1, 1 }, { 6.9, 2 } } do

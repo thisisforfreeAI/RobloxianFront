@@ -31,6 +31,10 @@ local MapCodec = require(Shared.Maps.MapCodec)
 local Inflate = require(Shared.Utilities.Inflate)
 local WaterShade = require(Shared.Presentation.WaterShade)
 local ImageMemory = require(script.Parent.ImageMemory)
+-- Legacy injected test backends write immediately; the live memory service queues these writes.
+local upload=ImageMemory.upload or function(image,position,size,pixels,options)
+	image:WritePixelsBuffer(position,size,pixels);if options and options.done then options.done(true) end;return true
+end
 local DaylightController = require(script.Parent.DaylightController)
 local WorldLight = require(script.Parent.WorldLight)
 
@@ -445,11 +449,15 @@ function WaterRenderer.build(mapId: string, parent: Instance): boolean
 				local rows = r1 - r0 + 1
 				local band = buffer.create(c.tw * rows * 4)
 				buffer.copy(band, 0, c.px :: buffer, r0 * c.tw * 4, c.tw * rows * 4)
-				local wrote,err=pcall(function() c.image:WritePixelsBuffer(Vector2.new(0, r0), Vector2.new(c.tw, rows), band) end)
+				local target=c.image
+				local wrote,err=pcall(function() return upload(target,Vector2.new(0,r0),Vector2.new(c.tw,rows),band,{priority=3,key="band:"..r0..":"..r1,done=function(ok)
+					if not ok and c.image==target then unload(c);c.failed=true end
+				end}) end)
 				if not wrote then
 					unload(c);c.failed=true;warn("[WaterRenderer] a chunk could not be painted:",err)
 					cursor=cursor % #chunks+1;skipped+=1;continue
 				end
+				if err==false then break end -- retain this row until the bounded queue admits it
 			end
 			if to >= c.n then
 				c.row = if c.visible and animate then 0 else -1

@@ -9,6 +9,10 @@
 ]]
 
 local ImageMemory = require(script.Parent.ImageMemory)
+-- Legacy injected test backends write immediately; the live memory service queues these writes.
+local upload=ImageMemory.upload or function(image,position,size,pixels,options)
+	image:WritePixelsBuffer(position,size,pixels);if options and options.done then options.done(true) end;return true
+end
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local World = require(ReplicatedStorage:WaitForChild("Shared").Config.World)
@@ -100,7 +104,8 @@ function FogOverlay.apply(vision: { number }, seeAll: boolean)
 	if seeAll then pixels=buffer.create(n*4)
 	elseif profile and terrain then pixels=FogPixels.colour(visible,terrain,explored,Terrain.names,profile,width,height,colourCache)
 	else pixels=FogPixels.soften(visible,width,height,DARK_ALPHA) end
-	image:WritePixelsBuffer(Vector2.zero, Vector2.new(width, height), pixels)
+	-- Detection changes immediately; this coalesced display update cannot reveal hidden units.
+	upload(image,Vector2.zero,Vector2.new(width,height),pixels,{priority=0})
 	revision+=1
 end
 

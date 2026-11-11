@@ -33,6 +33,7 @@ local WaterRenderer = require(script.Rendering.WaterRenderer)
 local CivilianRenderer = require(script.Rendering.CivilianRenderer)
 local HouseFireRenderer = require(script.Rendering.HouseFireRenderer)
 local GroundScorchRenderer = require(script.Rendering.GroundScorchRenderer)
+local CollapseRenderer = require(script.Rendering.CollapseRenderer)
 local Rules = require(Shared.Config.Rules)
 local DevFlags = require(script.Dev.DevFlags)
 
@@ -60,6 +61,7 @@ do
 	CivilianRenderer.start(map,mapFolder)
 	HouseFireRenderer.start(map,mapFolder)
 	GroundScorchRenderer.start(map,mapFolder)
+	CollapseRenderer.start(map,mapFolder)
 	TerritoryRenderer.start(map.width,map.height,map.data.id)
 	WeatherGround.start(map)
 	FortRenderer.start(map.data.id)
@@ -109,7 +111,10 @@ do
 		end
 		if state.houseFires then HouseFireRenderer.apply(state.houseFires) end
 		if state.forestFires then HouseFireRenderer.applyForest(state.forestFires) end
-		if state.groundScorch then GroundScorchRenderer.apply(state.groundScorch) end
+		if state.groundScorch then
+			if state.groundScorch.reset then CollapseRenderer.reset() end
+			GroundScorchRenderer.apply(state.groundScorch)
+		end
 		HouseFireRenderer.setNightVision(Hud.nightVisionOn())
 		if state.refugees then CivilianRenderer.applyRefugees(state.refugees) end
 		if state.day or state.weather then
@@ -198,13 +203,14 @@ do
 		task.spawn(board.start, Vector2.new(cx + 30, cy), "ScoutCar", false) -- REQ-0001 pilot, east of the arrows
 	end
 
-	snapshot.OnClientEvent:Connect(function(tick, units, structures, vision, seeAll, deaths)
+	snapshot.OnClientEvent:Connect(function(tick, units, structures, vision, seeAll, deaths, collapses)
 		UnitRenderer.apply(tick, units, deaths)
 		CivilianRenderer.snapshot(units)
 		StructureRenderer.apply(tick, structures or {})
 		if vision then
 			FogOverlay.apply(vision, seeAll == true)
 		end
+		CollapseRenderer.apply(tick,collapses) -- use this snapshot's updated fog for transient births
 	end)
 	-- Both listeners are attached before the server begins fire deltas/resends cached visual state.
 	send({kind="viewReady"})

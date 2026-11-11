@@ -4342,6 +4342,12 @@ require("./roof_canopy")(test, eq)
 require("./urban_scorch")(test, eq)
 require("./fire_impact_events")(test, eq)
 require("./demo_secondary_fire")(test, eq)
+require("./collapse_effects")(test, eq)
+require("./collapse_renderer")(test, eq)
+require("./image_uploads")(test, eq)
+require("./image_memory_uploads")(test, eq)
+require("./town_lods")(test, eq)
+require("./cooperative_inflate")(test, eq)
 
 print(`\n{passed} passed, {failed} failed`)
 if failed > 0 then

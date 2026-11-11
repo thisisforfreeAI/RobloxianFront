@@ -11,6 +11,10 @@ local Scorch=require(Shared.Presentation.FireScorch)
 local Codec=require(Shared.Maps.MapCodec)
 local Inflate=require(Shared.Utilities.Inflate)
 local Memory=require(script.Parent.ImageMemory)
+-- Legacy injected test backends write immediately; the live memory service queues these writes.
+local upload=Memory.upload or function(image,position,size,pixels,options)
+	image:WritePixelsBuffer(position,size,pixels);if options and options.done then options.done(true) end;return true
+end
 local Fog=require(script.Parent.FogOverlay)
 local Town=require(script.Parent.TownRenderer)
 local WorldLight=require(script.Parent.WorldLight)
@@ -134,8 +138,10 @@ function Renderer.start(map:any,parent:Instance):boolean
 			local stamp=cached.stamp
 			if stamp~=v.stamp then
 				local side=meta.tileSize*Scorch.TILE
-				local wrote,err=pcall(function() v.image:WritePixelsBuffer(Vector2.zero,Vector2.new(side,side),pixels) end)
-				if wrote then v.stamp=stamp
+				local wrote,err=pcall(function() return upload(v.image,Vector2.zero,Vector2.new(side,side),pixels,{priority=2,done=function(ok)
+					if not ok and not st.dead and st.views[item.key]==v then st.disabled=true;clear() end
+				end}) end)
+				if wrote then if err then v.stamp=stamp end
 				else unload(item.key);st.disabled=true;clear();warn("[FireScorch] Paint unavailable:",err);return end
 			end
 		end

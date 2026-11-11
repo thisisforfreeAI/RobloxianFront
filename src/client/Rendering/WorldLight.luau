@@ -5,6 +5,10 @@ local RunService=game:GetService("RunService")
 local Shared=ReplicatedStorage:WaitForChild("Shared")
 local Pixels=require(Shared.Presentation.ScreenLight)
 local Memory=require(script.Parent.ImageMemory)
+-- Legacy injected test backends write immediately; the live memory service queues these writes.
+local upload=Memory.upload or function(image,position,size,pixels,options)
+	image:WritePixelsBuffer(position,size,pixels);if options and options.done then options.done(true) end;return true
+end
 local Daylight=require(script.Parent.DaylightController)
 local World=require(Shared.Config.World)
 local WorldLight={}
@@ -49,6 +53,6 @@ function WorldLight.update()
 	if nextStamp==stamp then return end
 	stamp=nextStamp
 	-- CloudRenderer owns the moving shadow mask. This screen-fixed layer is only wash/vignette.
-	image:WritePixelsBuffer(Vector2.zero,Vector2.new(192,128),Pixels.pixels(config,light,192,128))
+	if not upload(image,Vector2.zero,Vector2.new(192,128),Pixels.pixels(config,light,192,128),{priority=3}) then stamp="" end
 end
 return WorldLight

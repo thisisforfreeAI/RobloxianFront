@@ -50,6 +50,12 @@ function ImageBudget.new(factory: (number, number) -> any, options: any?)
 		local ceiling = math.min(self.ceiling, self.knownCeiling or math.huge)
 		return self.detail + bytes <= self.detailLimit and self.used + bytes + self.reserve <= ceiling
 	end
+	-- Read-only headroom for an aggregate LOD plan; no allocation, reclamation or native probe.
+	function self:detailHeadroom(replacing:number?):number
+		local ceiling=math.min(self.ceiling,self.knownCeiling or math.huge)
+		local credit=math.clamp(replacing or 0,0,self.detail)
+		return math.max(0,math.min(self.detailLimit-self.detail+credit,ceiling-self.used-self.reserve+credit))
+	end
 	function self:prepareDetail(bytes: number): boolean
 		if self:canDetail(bytes) then return true end
 		if self.detail + bytes > self.detailLimit then return false end

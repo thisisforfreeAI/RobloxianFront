@@ -8,6 +8,10 @@ local Shared=ReplicatedStorage:WaitForChild("Shared")
 local View=require(Shared.Presentation.GroundScorchView)
 local World=require(Shared.Config.World)
 local Memory=require(script.Parent.ImageMemory)
+-- Legacy injected test backends write immediately; the live memory service queues these writes.
+local upload=Memory.upload or function(image,position,size,pixels,options)
+	image:WritePixelsBuffer(position,size,pixels);if options and options.done then options.done(true) end;return true
+end
 local Fog=require(script.Parent.FogOverlay)
 local WorldLight=require(script.Parent.WorldLight)
 local Town=require(script.Parent.TownRenderer)
@@ -71,7 +75,7 @@ function Renderer.start(map:any,parent:Instance):boolean
 				t={part=part,image=image,size=size};st.tiles[item.key]=t;added+=1
 			end
 			local stamp=buffer.tostring(pixels)
-			if stamp~=t.stamp then t.image:WritePixelsBuffer(Vector2.zero,t.size,pixels);t.stamp=stamp end
+			if stamp~=t.stamp and upload(t.image,Vector2.zero,t.size,pixels,{priority=2}) then t.stamp=stamp end
 			if os.clock()-began>=.003 then break end
 		end
 		for key in st.tiles do if not wanted[key] then unload(key) end end

@@ -8,6 +8,10 @@ local Codec=require(Shared.Maps.MapCodec)
 local Inflate=require(Shared.Utilities.Inflate)
 local Roads=require(Shared.Simulation.Roads)
 local Memory=require(script.Parent.ImageMemory)
+-- Legacy injected test backends write immediately; the live memory service queues these writes.
+local upload=Memory.upload or function(image,position,size,pixels,options)
+	image:WritePixelsBuffer(position,size,pixels);if options and options.done then options.done(true) end;return true
+end
 local WeatherGround={}
 local raining=false
 function WeatherGround.setWeather(weather:string?)
@@ -69,7 +73,7 @@ function WeatherGround.start(map:any)
 		local started=os.clock()
 		local function checkpoint() if os.clock()-started>.003 then RunService.Heartbeat:Wait();started=os.clock() end end
 		local pixels=Wetness.pixels(field :: buffer,eligible,w,h,state,config.weather,checkpoint)
-		if image then image:WritePixelsBuffer(Vector2.zero,Vector2.new(w,h),pixels) end
+		if image then upload(image,Vector2.zero,Vector2.new(w,h),pixels,{priority=3}) end
 		busy=false
 	end)
 	-- Match client lives for one map. Release both connection and optional weather image at shutdown.

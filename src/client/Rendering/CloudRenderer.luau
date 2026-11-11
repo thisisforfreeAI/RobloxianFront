@@ -7,6 +7,10 @@ local Shared=ReplicatedStorage:WaitForChild("Shared")
 local Clouds=require(Shared.Presentation.CloudField)
 local Wetness=require(Shared.Presentation.GroundWetness)
 local Memory=require(script.Parent.ImageMemory)
+-- Legacy injected test backends write immediately; the live memory service queues these writes.
+local upload=Memory.upload or function(image,position,size,pixels,options)
+	image:WritePixelsBuffer(position,size,pixels);if options and options.done then options.done(true) end;return true
+end
 local Daylight=require(script.Parent.DaylightController)
 local WorldLight=require(script.Parent.WorldLight)
 local Renderer={}
@@ -89,9 +93,14 @@ function Renderer.start(parent:Instance)
 			label.ImageContent=Content.fromObject(image);shadow.ImageContent=Content.fromObject(image)
 		end
 		local target=image :: EditableImage
-		local success,err=pcall(function() target:WritePixelsBuffer(Vector2.zero,Vector2.new(width,height),pixels) end)
+		local success,err=pcall(function()
+			return upload(target,Vector2.zero,Vector2.new(width,height),pixels,{priority=3,done=function(ok)
+				if image~=target or disabled then return end
+				if not ok then clear();disabled=true;return end
+				idle=os.clock();painted=field;project(WorldLight.view(workspace.CurrentCamera or camera))
+			end})
+		end)
 		if not success then clear();disabled=true;warn("[Clouds] Sky image unavailable:",err);return end
-		idle=os.clock();painted=field;project(view)
 	end)
 	local parentConnection=parent.Destroying:Connect(function() gui:Destroy() end)
 	gui.Destroying:Connect(function()

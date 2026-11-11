@@ -7,6 +7,10 @@ local World=require(Shared.Config.World)
 local Codec=require(Shared.Maps.MapCodec)
 local Inflate=require(Shared.Utilities.Inflate)
 local Memory=require(script.Parent.ImageMemory)
+-- Legacy injected test backends write immediately; the live memory service queues these writes.
+local upload=Memory.upload or function(image,position,size,pixels,options)
+	image:WritePixelsBuffer(position,size,pixels);if options and options.done then options.done(true) end;return true
+end
 local TerritoryRenderer={}
 local image: EditableImage?=nil
 local width,height=0,0
@@ -52,7 +56,9 @@ function TerritoryRenderer.apply(runs: {number})
 				if os.clock()-started>.003 then RunService.Heartbeat:Wait();started=os.clock() end
 			end
 			local pixels=Pixels.render(current,width,height,config.territory,config.palette,built,checkpoint)
-			if image then image:WritePixelsBuffer(Vector2.zero,Vector2.new(width*2,height*2),pixels) end
+			if image and not upload(image,Vector2.zero,Vector2.new(width*2,height*2),pixels,{priority=2}) then
+				pending=pending or current;RunService.Heartbeat:Wait()
+			end
 		end
 		busy=false
 	end)

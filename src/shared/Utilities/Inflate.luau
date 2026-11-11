@@ -78,10 +78,11 @@ local function fixedTables(): (Table, Table)
 	return fixedLit :: Table, fixedDist :: Table
 end
 
-function Inflate.raw(src: buffer, outSize: number): buffer
+function Inflate.raw(src: buffer, outSize: number, checkpoint:((number)->())?): buffer
 	local out = buffer.create(outSize)
 	local n = buffer.len(src)
 	local pos, bitBuf, bitCnt, o = 0, 0, 0, 0
+	local nextCheck=4096
 
 	local function need(k: number)
 		while bitCnt < k do
@@ -128,6 +129,7 @@ function Inflate.raw(src: buffer, outSize: number): buffer
 			for _ = 1, len do
 				buffer.writeu8(out, o, bits(8))
 				o += 1
+				if checkpoint and o>=nextCheck then nextCheck=o+4096;checkpoint(o) end
 			end
 		elseif kind == 1 or kind == 2 then
 			local lit, dist
@@ -175,6 +177,7 @@ function Inflate.raw(src: buffer, outSize: number): buffer
 				lit, dist = build(litLens, hlit), build(distLens, hdist)
 			end
 			while true do
+				if checkpoint and o>=nextCheck then nextCheck=o+4096;checkpoint(o) end
 				local sym = decode(lit)
 				if sym < 256 then
 					buffer.writeu8(out, o, sym)

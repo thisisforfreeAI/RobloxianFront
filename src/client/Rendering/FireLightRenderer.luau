@@ -10,6 +10,10 @@ local Pixels=require(Shared.Presentation.FireLightPixels)
 local NightPixels=require(Shared.Presentation.NightLightPixels)
 local World=require(Shared.Config.World)
 local Memory=require(script.Parent.ImageMemory)
+-- Legacy injected test backends write immediately; the live memory service queues these writes.
+local upload=Memory.upload or function(image,position,size,pixels,options)
+	image:WritePixelsBuffer(position,size,pixels);if options and options.done then options.done(true) end;return true
+end
 local Daylight=require(script.Parent.DaylightController)
 local Fog=require(script.Parent.FogOverlay)
 local WorldLight=require(script.Parent.WorldLight)
@@ -115,8 +119,13 @@ function Renderer.start(map:any,parent:Instance):any
 			if state.tiles[tile.key]~=tile then continue end
 			local want=wanted[tile.key];if not want then continue end
 			local rgba=Pixels.paint(config,want.pools,tile.x,tile.y,tile.cw,tile.ch,state.scale,mix,state.lookup,visible)
-			tile.image:WritePixelsBuffer(Vector2.zero,tile.size,Pixels.native(rgba))
-			tile.painted=now;tile.savedSignature=tile.signature;tile.label.Visible=true
+			local signature=tile.signature
+			local accepted=upload(tile.image,Vector2.zero,tile.size,Pixels.native(rgba),{priority=3,done=function(ok)
+				if not state.alive or state.tiles[tile.key]~=tile then return end
+				tile.label.Visible=ok and tile.signature==signature
+				if ok then tile.savedSignature=signature end
+			end})
+			if accepted then tile.painted=now end
 			if os.clock()-began>=.003 then break end
 		end
 	end)

@@ -2874,3 +2874,259 @@ mixed reference scenes, hidden tone-only updates/deletions, atomic malformed tra
 per-weapon/legacy behavior, the actual MatchService callback (primary/demo/HQ/delayed pops/water),
 matching town/plane colors, town tone-only repaint with canopy preservation and native tile image
 reuse/reset. Native appearance/frame time still requires Studio. **B193-B195 have not been run.**
+
+## Transient structure-collapse particles (2026-11-11)
+
+Combat-destroyed player structures now produce the source outward dust ring, delayed dust wall,
+falling rubble, short flames/embers and lingering smoke, with the source larger HQ scale. The
+requests share DeathRenderer's existing atlas, physics and 512-particle pool; no new native image
+or per-collapse atlas is allocated. This concerns player-structure destruction; ordinary roof
+burnout retains its separate persistent char/ruin system. Combat HP, existing authoritative fire
+ignition and crater/rubble ground marks are not applied a second time by these cosmetic effects.
+
+The optional seventh snapshot payload contains at most 32 transient structure losses. Events are
+filtered by each side's current sight, sent only after client view readiness and cleared after the
+snapshot. Late joins/reveals do not replay old collapses. Unit losses, rigs, minefields, voluntary
+recycle and cancellation do not enter this collapse sequence. Client rows validate finite map
+coordinates/IDs, deduplicate IDs/ticks and apply the snapshot's fog before new births. Continued
+emission checks source visibility and camera reach; shared particles also check their own fog cells.
+
+APPROX port budgets cap eight active sequences, 128 delayed dust requests and 96 requests per
+check. A hitch advances at most 0.1 s rather than emitting a large catch-up burst. Independent
+cosmetic RNG, real-time sequence aging, fixed camera padding and existing native alpha/particle
+physics replace the source full visual scheduler/culling/shaders. Sound, collapse light/shake,
+demolition-specific effects and convoy deaths remain pending. These limits can omit particles in
+busy scenes. Map cleanup disconnects callbacks/cancels delayed requests and clears only this map's
+shared-pool tag; the existing Rebuild fire damage reset also clears transient collapse effects.
+Missing/malformed optional settings or a failing effect disable this layer once without a repeated
+frame error; other match layers continue.
+
+`node tools/conversion/export_collapse_fx.cjs "A:\SteamLibrary\steamapps\common\WarFront Demo" .`
+reads the original razed/burner routines and generates ignored CollapseFx/CollapseVectors only.
+Four reference sequences cover factory/HQ and two seeded draw streams, comparing each request
+through the complete smoke lifetime. No original functions, art or coefficient tables are embedded
+in the public output; the original installation is read-only. Power infrastructure remains removed
+and paid skins remain the last milestone.
+
+Verified on installed files: **450 Lune tests passed, 0 failed**; changed/new Luau compiles (syntax
+only), exporter JavaScript syntax/generation and Rojo build pass. Eleven new regressions cover
+original particle requests, queue bounds/exclusions/validation, hidden emission aging, shared pool
+caps/hitches, optional data rejection, actual server snapshot visibility/readiness/exact-once
+delivery, actual client fog order, renderer laziness/tick deduplication/reset/teardown/culling and
+once-only failures. **Studio B196-B198 have not been run.**
+
+## Town detail coverage under fire and image pressure (2026-11-11)
+
+Owner screenshots show a blurry town overview beside sharp chunks, then a broadly blurry city
+with many player structures/labels. The screenshots alone do not establish the exact native cause.
+Code inspection identified two independent contributors: continuous forest/ground dirty chunks
+returned before the streaming pass every check, and full-resolution admission for individual
+chunks could exhaust the shared detail allowance before the selected view had coverage.
+
+TownRenderer now reserves alternating streaming turns while nearby detail is missing, retaining
+the one full CPU decode/composition per pass policy. With no missing nearby detail, dirty repaint
+continues normally. Selected chunks choose an affordable common native stride from the existing
+zoom tier and aggregate image allowance; nine full 896-square chunks would exceed the existing
+16 MiB detail limit, so the planner chooses a smaller shared tier before those allocations. Own
+replaceable images are credited while still preserving core reserve, other consumers, detail cap
+and any learned native ceiling. Unused overscan/spare native images yield when needed. Oversized
+images are reduced before missing coverage, and missing chunks load before shade-only refreshes.
+No native memory limits are raised; no original data/art changed. The bounded CPU pixel cache,
+cooperative reclaim/backoff and minimum-resolution overview fallback remain.
+
+This is a first coverage correction, not a guarantee that all map detail stays full-resolution.
+Native refusal, exceptionally low headroom, finite upload bandwidth, the selected nine-chunk cap
+and rapid camera travel can still expose the overview. The new read-only ImageMemory headroom
+query performs no allocation or reclamation itself. Priority and budget behavior are APPROX port
+rendering policy, not original gameplay rules. Existing fire ruins/collapse effects remain active.
+
+### Next proposed rendering/readability milestone (not implemented by this batch)
+
+- A shared versioned image-upload scheduler across fog/towns/fire/weather, with fair aging,
+  visible-coverage priority, coalesced writes and map-session cancellation. Roblox documents that
+  only one displayed EditableImage updates per frame and that EditableImages have strict client
+  memory limits: https://create.roblox.com/docs/reference/engine/classes/EditableImage . Repeated
+  writes across many independent renderers therefore need native profiling and shared scheduling.
+- Benchmark smaller independently streamed tiles, ready-to-use CPU LODs, camera-direction prefetch
+  and retaining an old valid view while replacements prepare. Evaluate published static base-map
+  image assets with dynamic overlays, rather than putting all static art in runtime editable images.
+  These are architecture candidates, not a claim that an upload queue or new tile pipeline exists.
+- Replace placeholder player-building blocks with traced original structure art and proper
+  construction/damage/faction/shadow states. Add zoom-dependent labels, selection/hover priority,
+  overlap avoidance and grouped distant markers, preserving fog filtering and selection behavior.
+  The owner has requested ideas; the exact artwork/layout should be compared with the source.
+- Measure visible detail coverage, oldest pending upload, image bytes and frame times in the
+  reported scene, including fires, many unit types and crowded buildings. Native evidence should
+  choose the architecture, rather than assuming that preloading everything fixes device limits.
+
+The owner also requested a current full roadmap. Prioritize this rendering/readability work,
+remaining original art/destruction effects (including an audit for separate crater sprites),
+living-world/environment completion, gameplay parity audit, original UI/audio, multiplayer/session
+flows and native release testing. Paid cosmetic skins stay LAST. Power lines/stations stay removed.
+Stale early "Next" and placeholder comments are not evidence that their now-tested gameplay
+systems are still absent; use current modules/tests before assigning remaining scope.
+
+Verified on installed files: **454 Lune tests passed, 0 failed**; changed Luau compiles (syntax
+only) and Rojo build passes. Four new regressions cover aggregate nine-chunk LOD selection,
+reserve-aware replacement headroom without native probes, continuous fire dirtiness versus missing
+detail and equal affordable detail across two actual renderer chunks. **B199-B200 are not run.**
+
+## Shared displayed-image upload scheduler (2026-11-11)
+
+Owner selected blurry map/detail loading as the priority over building labels. Repeated live
+image writes now share one client RenderStepped lane: town arrivals/updates and overview regions,
+fog, cloud masks, fire glow, roof char, ground scars, water bands, wet ground, territory, world
+wash and city-light pages. This follows Roblox's documented single displayed EditableImage update
+per frame. Existing first-time static atlas and bootstrap ground/overview writes remain synchronous;
+the scheduler is not a replacement for every image-loading path.
+
+Priority favors fog and first town coverage, then terrain/damage, then ambient effects. Pending
+images age from their first request, including when continuously replaced, so lower-priority
+effects cannot be postponed forever. Full updates coalesce to the latest snapshot; independent
+partial regions remain ordered and batch only for the same selected image. A new full snapshot
+supersedes older partial history. Copied pixel buffers prevent subsequent CPU mutations from
+changing an already queued frame.
+
+APPROX port limits: 64 pending images (four slots reserved from ordinary admission), 16 MiB queued
+CPU snapshots plus a 4 MiB critical reserve, 64 regions/image, and at most 32 writes / 4 MiB for one
+image each render turn. Producers retry or coalesce under backpressure. These are CPU-queue limits,
+not increased native image budgets. Memory.release cancels pending work before destroying storage;
+pooled town images also cancel pending writes before reuse. Idle upload callbacks disconnect.
+An individual write failure drops that image's queued batch and reports once while other images
+continue. Metadata-sensitive cloud projection and fire-light signatures commit with actual writes.
+
+New town images stay unbound while waiting. The current overview remains visible until the
+detail write succeeds; only then is its part published and the corresponding overview region
+queued for masking. Later coalesced writes preserve the publication callback. Map cleanup cannot
+resurrect unpublished parts. Native reclamation/resizing can still briefly expose the fallback;
+the queue does not guarantee that every replacement is seamless on a real device.
+
+ImageMemory.uploadStats() exposes queued images/bytes, oldest wait and submit/coalesce/complete/
+reject/failure counts for native profiling. This batch changes scheduling only: source art,
+simulation, visibility authority, persistent ruins and removed power infrastructure are preserved.
+Smaller map tiles, camera-predicted loading and static published base-map assets remain separate
+work. No Studio FPS, screenshot comparison or elimination of all blur is claimed.
+
+Verified: **465 Lune tests passed, 0 failed**; changed Luau compiles (syntax only) and Rojo build
+passes. Eleven added regressions cover snapshot ownership/coalescing, fairness under perpetual
+foreground updates, single-image/partial batch bounds, ordered full/partial replacement, critical
+reserve/backpressure, cancellation/reuse/reentrancy/failure isolation, the actual ImageMemory
+render-step adapter and actual town deferred publication/cleanup. **B201-B203 have not been run.**
+
+## Camera-rectangle coverage and bounded town source retention (2026-11-11)
+
+The native candidate selection now follows the actual ground-view rectangle before overscan,
+rather than a large circular area capped at nine chunks. Up to 32 visible candidates can share
+the same native image allowance at an affordable common LOD. The native byte limits are unchanged;
+an oversized view can still exceed the candidate cap or available memory. Camera motion predicts
+0.35 s ahead, clamped to one view radius, and prioritizes CPU prefetch in that direction. Four
+overscan candidates retain the existing reuse opportunity; no native images are created solely
+for predicted prefetch. These are APPROX rendering policies, independent of game rules.
+
+Broader coarse views do not pin full 896-square CPU sources for every shown tile. The existing
+six-entry spare CPU cache now includes coarse shown chunks, preserving their smaller displayed
+pixel buffers for lighting/roof sampling. Eviction retains native lighting state; a later lighting
+change rehydrates/composes a fresh source once and updates the existing image. Native-size preview
+buffers are released with their tiles. Full-resolution live source storage is bounded by the
+native detail policy, with six additional full source buffers retained for reuse; the existing two
+clean bare bases and roof-cover caches remain separately bounded.
+
+TownRenderer.stats() now reports viewport/selected/ready/shown/pending counts, selected stride,
+native bytes and retained full-source/preview bytes. It is a read-only diagnostic, not new UI.
+Source visibility, fire progression/ruins, shared upload cancellation and native admission remain.
+
+Actual local Saddle geometry at 1280x720/FOV30: a central height-900 view selects all 12 intersecting
+chunks (the old cap admitted at most nine). Their native image payload is 9.1875 MiB at half detail,
+or 2.296875 MiB at quarter detail. A height-220 central view selects four, costing 12.25 MiB full or
+3.0625 MiB half. These are arithmetic/native-payload estimates, not measured Roblox allocation or
+FPS. A local Lune cold 896-square source profile measured 0.106 s inflate, 0.109 s half and 0.028 s
+quarter preparation; this motivates a separate optional precomputed-LOD pipeline, not a claim that
+CPU cold-load stalls have been eliminated.
+
+Verified on installed files: **468 Lune tests passed, 0 failed**; changed Luau compiles (syntax
+only) and Rojo build passes. Three new checks cover viewport priority/directional prediction,
+broader bounded selection and the actual renderer loading ten coarse chunks with bounded full
+CPU retention, displayed-pixel sampling, later lighting changes and cleanup. **B204-B205 not run.**
+
+## Precomputed town detail levels and progressive camera loading (2026-11-11)
+
+Cold half/quarter town views can now use optional precomputed LOD modules instead of inflating a
+full 896-square source and downsampling it during camera travel. The new local packer reproduces
+ImagePixels.half's alpha-weighted RGB, Lua rounding and odd-edge behavior exactly. It applies each
+original sparse lighting patch before reduction, then stores one reduced base plus reversible
+reduced-resolution XOR deltas. Saddle's 24 chunks/17 light samples use 48 ignored Mip modules,
+about 14.20 MiB of generated Luau files on disk. All variants embedded in those modules derive
+from original art; they remain ignored. The abandoned fully duplicated staging format is not
+installed. No source image, map definition or original installation file was modified.
+
+Generate/rebuild locally (requires NumPy):
+`python tools/asset_pipeline/pack_town_lods.py src/client/DevAssets src/client/DevAssets --map saddle`
+Source modules must already exist from the regular local asset pipeline. The command writes only
+the named converted DevAssets output directory; it is not part of the original game installer.
+
+TownLods validates format, dimensions, stride, base frame and Adler signatures of the current
+encoded source and original lighting patch before inflating a cached level. Adler is a stale-input
+check for trusted local assets, not cryptographic authentication. A missing, corrupt or stale
+optional LOD falls back to the existing source path, caching failures per chunk/frame to avoid
+repeat attempts. Live forest fates and ground scars bypass static LODs, so precomputed intact art
+cannot overwrite burnt/felled trees or damaged ground. Dynamic roof char retains its separate
+overlay. Evicted static CPU sources can also refresh lighting from an appropriate small LOD.
+
+Initial cold tiles may publish a half-detail preview even when the final zoom target is full.
+Full-resolution upgrades wait until selected coverage has parts, camera motion/zoom has settled
+for 0.35 s and the previous upgrade is at least 0.35 s old. Replacement admission credits the
+tile's existing allocation while retaining other consumers and the core reserve. Camera motion
+keeps those previews instead of repeatedly decoding full sources. CPU prefetch uses the small
+LOD too; prefetched buffers share the six-entry cache and expose prefetchBytes/mipHits/mipMisses
+in TownRenderer.stats(). Cleanup explicitly clears source, preview and prefetch references.
+These thresholds and policies are APPROX port rendering choices, not original game rules.
+
+Local Lune CPU profile on one actual Saddle chunk, including current source/patch signatures and
+the compact LOD module read/parse: original inflate + light + quarter reduction **0.2491 s**;
+precomputed quarter path **0.00916 s**, about **96.3% less preparation time**. Output matched byte
+for byte. This is one local CPU measurement, not a Roblox FPS or end-to-end streaming guarantee.
+Bootstrap overview generation, full-resolution cold upgrades and dynamic fire/scar composition
+still use full sources and can cost more. First-time module replication, native upload latency,
+low-memory fallback and other maps' absent optional data remain limits for Studio evaluation.
+Smaller physical map tiles and fully budgeted/incremental full-source decoding remain possible
+next steps if native profiling identifies a remaining bottleneck.
+
+Verified on installed files: **473 Lune tests passed, 0 failed**, **5 Python packer tests passed**,
+changed/new Luau compiles (syntax only), generation of all 48 modules and Rojo build pass. Five
+added Lune checks cover source signatures/stale rejection, byte-exact generated half/quarter pixels
+for all 17 source lighting samples on an actual chunk, actual renderer cold fast paths/dynamic
+fire bypass, stale fallback and camera-motion previews followed by settled full upgrades. Python
+checks cover every alpha/odd dimensions, transparent edges, reversible/invalid sparse runs and
+reduced sparse-delta reconstruction. **Studio B206-B208 have not been run.** Restart Play after
+Rojo finishes syncing the new local modules; original data and paid-cosmetic priorities are unchanged.
+
+## Cooperative full-resolution town warmup (2026-11-11)
+
+Full-resolution upgrades no longer have to decode their whole static source in the same update
+that replaces the half-detail preview. Inflate.raw accepts an optional output checkpoint callback,
+retaining its existing synchronous two-argument API for other users. Checkpoints occur around
+each additional 4096 output bytes for stored and Huffman/backreference streams; only a completed,
+validated buffer is returned. A caller can yield or cancel through that callback.
+
+TownRenderer runs one static full-source warmup coroutine per map, resuming it once per Heartbeat.
+The callback yields after a soft 2 ms CPU target. The preview/native allocation stays bound while
+the job waits; the ordinary settled-view, coverage and memory checks still govern publication.
+A completed base source is lit normally before its queued full-resolution upload. Camera selection
+loss, dynamic fire/scar changes or map teardown cancel obsolete jobs. Completed warm buffers share
+the six-entry spare source cache; live decode clears an obsolete warm result. A failed static
+source keeps the working preview and reports once for that chunk instead of repeatedly retrying.
+TownRenderer.stats() adds warming and warmProduced diagnostics.
+
+APPROX: this is cooperative scheduling, not a worker thread or a hard frame-time guarantee.
+Huffman table construction, individual output intervals, initial module/base64 preparation and
+buffer allocation can exceed the soft target. Bootstrap overview decoding, damaged forest/ground
+composition and other consumers' synchronous decoder calls are unchanged. The same actual Saddle
+source profiled locally in Lune completed across eight resumes with a maximum measured resume of
+0.00202 s; machine/warm-cache conditions differ from earlier samples, so no total-time speedup or
+native FPS comparison is inferred. Native frame spikes and time to full clarity need B209-B210.
+
+Verified on installed files: **477 Lune tests passed, 0 failed**; changed Luau compiles (syntax
+only), and Rojo build passes. Four new regressions cover yielding without partial publication,
+cancellation/error propagation and strict size validation, exact output across actual source
+Huffman/backreferences, and the actual town retaining its preview through yielded warmup then
+cancelling cleanly on map teardown. **Studio B209-B210 have not been run.**

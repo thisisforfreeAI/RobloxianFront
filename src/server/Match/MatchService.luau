@@ -34,6 +34,7 @@ local ForestMap = require(Shared.Simulation.ForestMap)
 local ForestWorld = require(Shared.Simulation.ForestWorld)
 local GroundScorchWorld = require(Shared.Simulation.GroundScorchWorld)
 local WorldFireImpacts = require(Shared.Simulation.WorldFireImpacts)
+local CollapseEvents = require(Shared.Protocol.CollapseEvents)
 local Hash = require(Shared.Utilities.Hash)
 local UnitStages = require(Shared.Presentation.UnitStages)
 local TerritoryPixels = require(Shared.Presentation.TerritoryPixels)
@@ -677,6 +678,7 @@ end
 
 -- vehicles destroyed since the last snapshot (the client leaves the game's wrecks for them)
 local deaths: { any } = {}
+local collapses: { any } = {}
 
 local function snapshot()
 	local bySide: { [number]: any } = {}
@@ -691,7 +693,8 @@ local function snapshot()
 					table.insert(seen, d)
 				end
 			end
-			v = { units = units, structures = structures, runs = runs, key = if runs then table.concat(runs, ",") else "all", deaths = seen }
+			local seenCollapses=CollapseEvents.visible(collapses,function(x,y) return not viewer or viewer.visibleAt(x,y) end)
+			v = { units = units, structures = structures, runs = runs, key = if runs then table.concat(runs, ",") else "all", deaths = seen, collapses=seenCollapses }
 			bySide[side] = v
 		end
 		local vision = nil
@@ -699,9 +702,11 @@ local function snapshot()
 			sentVision[player] = v.key
 			vision = v.runs or {}
 		end
-		Net.sendSnapshot(player, tick, v.units, v.structures, vision, side == 0 or not sim.fogOn(), if #v.deaths > 0 then v.deaths else nil)
+		Net.sendSnapshot(player, tick, v.units, v.structures, vision, side == 0 or not sim.fogOn(), if #v.deaths > 0 then v.deaths else nil,
+			if readyView[player] and #v.collapses>0 then v.collapses else nil)
 	end
 	table.clear(deaths)
+	table.clear(collapses)
 end
 
 -- Own territory as row runs { y, x0, x1, ... } (sent only when it changes): the client tints the
@@ -1472,6 +1477,7 @@ function MatchService.start(mapModule: string)
 			if sim.groundScorch then sim.groundScorch.advance(sim.time) end
 			for _, ev in sim.takeEvents() do
 				alertsFor(ev)
+				CollapseEvents.push(collapses,ev,map.width,map.height)
 				if sim.fireImpacts then sim.fireImpacts.event(ev) end
 				if ev.type == "destroyed" and ev.x and rules:has(`units.{ev.kind}.move`) and rules:text(`units.{ev.kind}.move`) ~= "foot" then
 					table.insert(deaths, { ev.id, ev.kind, ev.x, ev.y, ev.heading or 0, ev.turret or ev.heading or 0 })
