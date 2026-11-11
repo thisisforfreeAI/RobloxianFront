@@ -1931,3 +1931,58 @@ rerunning with a writable staging temp directory passed. The changed Luau compil
 and Rojo build passes. Source smoke pose references still match to 1e-9. New B144-B146 are not run
 in Studio. B141's misplaced-origin feedback is recorded as corrected pending recheck, not a pass.
 
+## Moving cloud bodies and shared cloud/shadow field (2026-11-10)
+
+Added the original clear-skirmish sky field above the world and below the HUD/weather overlay.
+It uses the source integer-cell cloud grid with empty/half/full thickness, three noise octaves,
+wind drift, camera-centred parallax, cloud colour, golden-hour lift, night thinning and zoom fade.
+Clouds are translucent, not opaque scenery. The source body persists in thinner form at night;
+its ground shadow fades out at full night. Weather/front simulation is not part of this batch:
+the existing approximate admin rain/storm haze and streaks remain over this layer.
+
+The existing ground cloud shadow now samples the same CloudField helper and the same presentation
+clock as the sky. Added the source sun/moon-vector shadow offset, capped by its original maximum.
+The two screen projections intentionally differ: cloud bodies have source sky parallax, ground
+shadows sample ground coordinates with the sun offset. No second shadow overlay was added.
+WorldLight owns the shared visual clock/view math. Clouds keep drifting when the admin daylight
+clock is frozen and during war/deployment pauses, matching the independent source visual clock.
+APPROX: wall time replaces the original per-frame hitch-clamped clock.
+
+CloudRenderer uses one shared detail image: 256x160 (160 KiB) close up, 128x80 (40 KiB) at wider
+zoom, with hysteresis around the switch. Native storage is allocated only if a painted cloud is
+in view, releases at far zoom/after three cloud-free seconds/map cleanup, and yields via the shared
+ImageMemory reclaimer. Allocation refusal is nil-safe with a five-second retry delay. Missing
+CloudLook skips the sky and preserves the older local shadow settings. Missing daylight data skips
+sky painting rather than indexing an absent palette. No cloud uses a per-object image/part.
+The sky does not consume hidden units, cities or combat data; its field is independent scenery
+above fog, not an additional reveal mask.
+
+APPROX rendering adapters: source GPU noise is evaluated in CPU doubles (the GPU's 32-bit hash
+can put individual cells in different places), fixed small screen images with default filtering,
+sky repaints every 0.15 seconds instead of every frame, and the existing lower-resolution screen
+lighting/shadow cadence remains. Shadow darkening stays a screen-wide adapter rather than the
+source ground-only shader. Exact source sampling at CPU precision is tested; full GPU/Roblox image
+identity is not claimed. Normal-skirmish colour is implemented; special survive/dead-mode cloud
+palettes and the source night-vision tube's alternate cloud treatment remain unported.
+
+Generate local settings and independent reference data from the project root:
+```
+node tools/conversion/export_clouds.cjs "A:\SteamLibrary\steamapps\common\WarFront Demo"
+```
+The exporter reads the installed shader and sky-class methods at runtime. shader_reference.cjs is
+a limited straight-line scalar/vector evaluator for those local shader functions; unsupported
+syntax fails. CloudLook and CloudVectors stay ignored in GameData. No original shader functions,
+settings tables or art were copied into public output; the original install was read only.
+Existing water preparation, smoke roof anchors, civilian traffic/refugees and lamp work remain.
+
+Verification: five focused cloud tests passed and changed Luau compiled (syntax only); Rojo build
+passed. Full Lune suite actually run: **272 passed, 0 failed**, including the five new cloud tests.
+Tests compare 720 evaluated source noise/density cases, 20 source-class colour/opacity cases and
+308 actual extracted sky-projection pixel samples. Further checks cover source shadow direction
+and cap, night/far suppression, translated wind/world coordinates and near-zoom cell caching.
+Representative 1280x800-view Lune paint measurements: about 3.4 ms at 4 px/cell (128x80 image),
+2.6 ms at 10 px/cell and 1.5 ms at 20 px/cell (256x160 image). These are CPU measurements on this
+machine, not Studio frame-time guarantees. B147-B149 are added and not run in Studio. Restart Play
+after Rojo sync. The owner's general "looking good" feedback was not recorded as a specific pass
+for B144-B146; those detailed checks still need confirmation.
+
