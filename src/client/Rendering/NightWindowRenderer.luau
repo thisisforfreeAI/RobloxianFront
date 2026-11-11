@@ -13,6 +13,7 @@ local Noise=require(Shared.Presentation.GroundWetness)
 local Memory=require(script.Parent.ImageMemory)
 local Daylight=require(script.Parent.DaylightController)
 local Renderer={}
+local EMISSION_GAIN=2.4 -- APPROX owner request: more noticeable window/lamp glow.
 function Renderer.start(data:any,profile:any,parent:Instance,born:number):any
 	local state:any={ready=false,fade=0}
 	if not data or not profile.city then return state end
@@ -43,7 +44,8 @@ function Renderer.start(data:any,profile:any,parent:Instance,born:number):any
 			label.ImageTransparency=1;label.Parent=gui;return label
 		end
 		local face=if p[6]~=nil and p[6]>=0 then layer(p[6]) else nil
-		if face then face.ImageColor3=Color3.new(.035,.032,.028) end -- APPROX dark projected masonry.
+		-- Preserve dark masonry while increasing the emission layer in the same SurfaceGui.
+		if face then face.ImageColor3=Color3.new(.035,.032,.028)*(1.4/EMISSION_GAIN) end
 		local label=layer(p[5])
 		gui.Parent=part;part.Parent=folder
 		return {part=part,gui=gui,label=label,face=face,item=item}
@@ -89,7 +91,7 @@ function Renderer.start(data:any,profile:any,parent:Instance,born:number):any
 		local clock=os.clock()-born
 		local correction=Pixels.compensate(Daylight.postEffect(),profile.color)
 		for _,v in views do
-			v.gui.Enabled=true;v.gui.Brightness=correction.brightness*1.4 -- APPROX owner-requested stronger emission.
+			v.gui.Enabled=true;v.gui.Brightness=correction.brightness*EMISSION_GAIN
 			v.label.ImageColor3=Color3.new(correction.color[1],correction.color[2],correction.color[3])
 			v.label.ImageTransparency=if Windows.on(v.item,profile,clock,Noise.hash21) then 1-night*fade else 1
 			if v.face then v.face.ImageTransparency=1-night*fade end -- Wall stays visible when its window switches off.

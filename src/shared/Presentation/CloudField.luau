@@ -28,19 +28,29 @@ function Clouds.tone(c:any,light:any,pixels:number):({number},number)
 	end
 	return color,c.body*Clouds.share(c,pixels)*(1-c.nightThin*light.night)
 end
-function Clouds.pixels(c:any,light:any,w:number,h:number,view:any,noise:(number,number)->number):(buffer,number)
+-- Reproject a cached world-space image every frame, independently of expensive noise repainting.
+function Clouds.project(painted:any,view:any,c:any):any
+	local elapsed=view.time-painted.time
+	local cx,cy=painted.cx-elapsed*c.dx,painted.cy-elapsed*c.dy
+	return {x=.5+(cx-view.cx)/(view.rx*2),y=.5+(cy-view.cy)/(view.ry*2),
+		width=painted.rx/view.rx,height=painted.ry/view.ry,
+		covered=math.abs(cx-view.cx)+view.rx<=painted.rx+1e-9 and math.abs(cy-view.cy)+view.ry<=painted.ry+1e-9}
+end
+function Clouds.pixels(c:any,light:any,w:number,h:number,view:any,noise:(number,number)->number,parallax:number?):(buffer,number)
 	local out=buffer.create(w*h*4)
 	local color,alpha=Clouds.tone(c,light,view.cellPixels)
 	if alpha<=0 then return out,0 end
 	local rgb={};for i=1,3 do rgb[i]=math.clamp(math.floor(color[i]*255+.5),0,255) end
 	local count=0
+	-- APPROX owner option: runtime passes zero to lock clouds to the map; nil retains source projection.
+	local lift=1+(if parallax~=nil then parallax else c.parallax)
 	-- Cache integer cloud-grid cells within this paint; near zoom repeats each cell many times.
 	local cache:{[number]:{[number]:number}}={}
 	for y=0,h-1 do
-		local cy=math.floor(view.cy+((y+.5)/h-.5)*view.ry*2/(1+c.parallax)+view.time*c.dy)
+		local cy=math.floor(view.cy+((y+.5)/h-.5)*view.ry*2/lift+view.time*c.dy)
 		local row=cache[cy];if not row then row={};cache[cy]=row end
 		for x=0,w-1 do
-			local cx=math.floor(view.cx+((x+.5)/w-.5)*view.rx*2/(1+c.parallax)+view.time*c.dx)
+			local cx=math.floor(view.cx+((x+.5)/w-.5)*view.rx*2/lift+view.time*c.dx)
 			local cover=row[cx]
 			if cover==nil then cover=Clouds.cell(c,cx,cy,noise);row[cx]=cover end
 			local a=math.floor(alpha*cover*255+.5)

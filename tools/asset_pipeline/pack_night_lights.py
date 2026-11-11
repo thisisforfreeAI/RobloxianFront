@@ -40,6 +40,16 @@ def facade_masks(codes,look):
     lights=(south_outer&~south_inner&south&np.isin(x%6,[1,2])) | (east_outer&~east_inner&east&np.isin(y%6,[1,2]))
     return lights|(codes==look['lamp']),south|east,roof
 
+def window_halo(mask):
+    """OWNER-REQUESTED APPROX: stronger near light and a broader soft skirt, without square edges."""
+    near=np.asarray(Image.fromarray(mask).filter(ImageFilter.GaussianBlur(1.0))).astype(float)
+    wide=np.asarray(Image.fromarray(mask).filter(ImageFilter.GaussianBlur(1.8))).astype(float)
+    y,x=np.indices(mask.shape)
+    edge=np.minimum.reduce([x,y,mask.shape[1]-1-x,mask.shape[0]-1-y])
+    feather=np.clip(edge/2,0,1)
+    halo=np.minimum(224,(near*.8+wide*2.0)*feather)
+    return np.maximum(np.round(mask*.98),np.round(halo)).astype(np.uint8)
+
 def window_shapes(head,parts,w,h,look):
     """Share facade/window fragments and roof-clipped halos in one native image."""
     size=head['size'];fine=look['fine'];pad=3;slot=12
@@ -67,8 +77,7 @@ def window_shapes(head,parts,w,h,look):
                 coverage[y*fine+fy,x*fine+fx]=round(float(patch.mean())*255)
                 mask=np.zeros((slot,slot),np.uint8)
                 mask[pad:pad+patch.shape[0],pad:pad+patch.shape[1]]=patch*255
-                halo=np.asarray(Image.fromarray(mask).filter(ImageFilter.GaussianBlur(1.1)))
-                alpha=np.maximum(np.round(mask*.98),np.round(halo*.8)).astype(np.uint8)
+                alpha=window_halo(mask)
                 gx,gy=x*size+cuts[fx],y*size+cuts[fy]
                 # Context includes neighboring source tiles: glow cannot cross back onto any roof.
                 blocked=roof_pad[gy:gy+slot,gx:gx+slot]

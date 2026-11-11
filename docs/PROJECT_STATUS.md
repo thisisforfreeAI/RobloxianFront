@@ -1986,3 +1986,52 @@ machine, not Studio frame-time guarantees. B147-B149 are added and not run in St
 after Rojo sync. The owner's general "looking good" feedback was not recorded as a specific pass
 for B144-B146; those detailed checks still need confirmation.
 
+## Cloud camera anchoring and stronger city-light glow (2026-11-10)
+
+Owner reported clouds moving with the camera, then requested more noticeable city-light glow.
+Both are corrected in this batch. No Studio pass is inferred from the reports.
+
+The cloud symptom had two causes: the source eye-centred parallax moves apparent cloud positions
+relative to map landmarks, and the throttled ScreenGui image stayed fixed on screen between CPU
+repaints. APPROX owner-requested override: runtime cloud painting now passes zero parallax, while
+the original private profile and default sampler remain intact for source-reference comparison.
+The image is painted over padded world bounds (1.75 times each view half-extent), then reprojected
+after the camera every rendered frame using the last painted world bounds. Camera pan/zoom moves
+the cached image to its map position; only elapsed wind changes its world position. Expensive
+noise still repaints every 0.15 seconds. If a teleport or large zoom outruns the padded region,
+the stale cache is hidden until the next paint rather than exposing an image edge.
+
+The additional render binding is removed on map teardown/restart. Padding increases noise work,
+so the existing smaller 128x80 image now persists until 18 px/cell and the larger 256x160 image
+returns to small below 14 px/cell (port hysteresis policy). A local padded-view benchmark measured
+about 3.5 ms at 4/10 px/cell with the small image, 4.3 ms at 20 px/cell and 3.3 ms at 32 px/cell
+with the large image. These are Lune CPU samples, not Studio frame-time guarantees. The same
+single-image budget/reclamation policy is retained. Padding can include offscreen cloud samples;
+it does not add native images per cloud or evaluate noise every frame.
+
+For city lights, the original side-window/lamplight cores remain on the facades and original lamp
+texels. APPROX owner tuning: combine a stronger near halo with a wider soft skirt, feather the
+frame boundary to transparent, and retain the exact source-roof exclusion mask. Window/lamp-fragment
+emission gain rises from 1.4 to 2.4; the dark masonry colour is inversely compensated so that this
+does not brighten the facade itself. Broad local city/road light emission is multiplied by 1.5.
+These are visual port choices, not original-game light intensities. No global brightness, bloom
+effect, new light instances or whole-map tint was added.
+
+Repacked Saddle's existing shared window atlas: 768x732 (about 2.14 MiB), with a 384x366 fallback
+(about 0.54 MiB). The new masks contain about 3.18 times the previous integrated outer-halo alpha;
+this is mask energy, not a claim about final Roblox display luminance. All 37,413 actual packed
+light/facade fragments were checked against the city material map: no roof pixel receives alpha,
+and light-frame edges are transparent. Coarse rooftop window coverage remains zero. Window
+occupancy/flicker, fog/depth ordering, facade placement and shared-image count are unchanged.
+The packer contains the new halo policy, so local regeneration keeps the correction. Original
+art/layout remains ignored; the original install and Claude's unrelated files were preserved.
+
+Verification: eight focused cloud tests pass, including three new regressions for overlapping
+world pixels across a pan, cached world positions across camera translation/zoom/wind, and hiding
+out-of-cache edges. The original 720 shader/20 tone/308 pixel references still pass in source mode.
+Eleven Python packer tests pass, including a new halo spill/transparent-edge check and existing
+roof exclusion/seam checks. Changed Luau compiles and Rojo build passes. Full Lune suite actually
+run: **275 passed, 0 failed**.
+Manual checks B150-B152 are new and not run. Restart Play after Rojo sync for both renderer changes
+and the regenerated local light atlas.
+

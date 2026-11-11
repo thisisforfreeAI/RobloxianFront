@@ -68,4 +68,33 @@ return function(test:any,eq:any)
 		local empty,count=Clouds.pixels(config,light,16,10,view,Wet.valueNoise)
 		eq(count,0);eq(buffer.tostring(empty),string.rep("\0",16*10*4))
 	end)
+	test("map-locked cloud sampling preserves overlapping world pixels during camera pans",function()
+		local view={cx=0,cy=0,rx=14,ry=10,time=0,cellPixels=10}
+		local moved=table.clone(view);moved.cx=2
+		local function noise(x:number,_y:number):number return if x>=0 then 1 else 0 end
+		local a,count=Clouds.pixels(config,refs.tones[1].light,28,20,view,noise,0)
+		local b=Clouds.pixels(config,refs.tones[1].light,28,20,moved,noise,0)
+		assert(count>0 and count<28*20)
+		for y=0,19 do for x=0,25 do
+			eq(buffer.readu32(a,(y*28+x+2)*4),buffer.readu32(b,(y*28+x)*4))
+		end end
+	end)
+	test("cached clouds reproject with camera translation/zoom every frame and only wind moves their world position",function()
+		local painted={cx=100,cy=80,rx=50,ry=40,time=10}
+		for _,view in {{cx=100,cy=80,rx=20,ry=15,time=10},{cx=115,cy=74,rx=20,ry=15,time=10},{cx=95,cy=85,rx=30,ry=20,time=10.12}} do
+			local p=Clouds.project(painted,view,config);assert(p.covered)
+			for _,anchor in {{90,75},{110,90}} do
+				local u=(anchor[1]-painted.cx)/(painted.rx*2)+.5
+				local v=(anchor[2]-painted.cy)/(painted.ry*2)+.5
+				local sx,sy=p.x+(u-.5)*p.width,p.y+(v-.5)*p.height
+				close(view.cx+(sx-.5)*view.rx*2,anchor[1]-(view.time-painted.time)*config.dx)
+				close(view.cy+(sy-.5)*view.ry*2,anchor[2]-(view.time-painted.time)*config.dy)
+			end
+		end
+	end)
+	test("cloud cache edges stay hidden when a teleport or large zoom outruns padded coverage",function()
+		local painted={cx=100,cy=80,rx=35,ry=25,time=10}
+		assert(not Clouds.project(painted,{cx=200,cy=80,rx=20,ry=15,time=10},config).covered)
+		assert(not Clouds.project(painted,{cx=100,cy=80,rx=70,ry=50,time=10},config).covered)
+	end)
 end

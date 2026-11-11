@@ -109,7 +109,7 @@ function Renderer.start(map:any,parent:Instance?)
 		end
 		local correction=Pixels.compensate(Daylight.postEffect(),profile.color)
 		for _,page in session.pages do
-			page.gui.Brightness=correction.brightness
+			page.gui.Brightness=correction.brightness*1.5 -- APPROX owner-requested stronger local city/road glow.
 			page.label.ImageColor3=Color3.new(correction.color[1],correction.color[2],correction.color[3])
 			page.label.ImageTransparency=1-light.night
 		end

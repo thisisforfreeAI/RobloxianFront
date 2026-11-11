@@ -1,9 +1,17 @@
 """Synthetic asset checks; no original data required. Run beside pack_night_lights.py."""
 import unittest
 import numpy as np
-from pack_night_lights import windows,city_glow,road_lights,window_shapes,facade_masks,material_map
+from pack_night_lights import windows,city_glow,road_lights,window_shapes,facade_masks,material_map,window_halo
 
 class NightFields(unittest.TestCase):
+    def test_stronger_window_halo_has_soft_spill_and_no_rectangular_frame_edge(self):
+        mask=np.zeros((12,12),np.uint8);mask[5,5:7]=255
+        glow=window_halo(mask)
+        self.assertTrue((glow[5,5:7]>=245).all())
+        self.assertGreater(int(glow[3,5]),20)
+        self.assertGreater(int(glow[3,5]),int(glow[1,5]))
+        self.assertEqual(int(glow[0,:].sum()+glow[-1,:].sum()+glow[:,0].sum()+glow[:,-1].sum()),0)
+
     def test_roof_material_and_missing_tiles(self):
         atlas=np.zeros((1,4,4),np.uint8);atlas[0,:,3]=[224,225,201,200]
         index=np.zeros((1,5,4),np.uint8);index[0,:4,0]=[1,2,3,4]
