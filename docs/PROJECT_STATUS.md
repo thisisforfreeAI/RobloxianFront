@@ -1587,3 +1587,153 @@ measurements were about 2.4 ms for initial occupancy selection and 1.6 ms per vi
 sample city view; these exclude Roblox instance creation/drawing and are not Studio frame times.
 Studio recheck B123 and new B126-B127 remain pending; no exact brightness match is claimed.
 
+## Civilian road traffic (2026-11-10)
+
+First moving-world traffic pass: CivilianRenderer now adds the original ambient cars and pickups,
+including moving town-to-town trips and parked cars on internal town streets. The source fQt
+layout and mQt street scan run locally against the port's settlement positions/radii and original
+.city material art. Saddle produces 40 moving cars and 22 parked cars across 23 settlements, with
+five vehicle looks. The original cQt procedural baker generates all 16 facings, shaded bodies and
+silhouettes; these are the actual ambient sprites, not military scout-car substitutes. Original
+material, layouts, settings and reference vectors remain in existing ignored directories. No
+original code is emitted by the tools; the original install is read only.
+
+CivilianTraffic ports source polyline sampling, trip/parking cycles, pull-over offsets, opposite
+travel lanes, directional facings, yielding, speed and alpha fades. Traffic density uses the source
+zoom thresholds, night reduction, integrity bands and garrison multiplier. Cars flee toward their
+trip endpoint when their settlement is hit, disappear there, wait through the source calm period,
+and gradually return. MatchService includes lastHitAt only in the already visible/own settlement
+row; unknown rows still omit that field. No hidden town damage/garrison state is sent to drive
+ambient behavior. Displayed cars additionally require their own current cell to be visible, so
+they do not remain moving in explored fog. Unknown/ruined settlements emit no cars.
+
+The dedicated civilianTime packet carries actual sim.time and whether the war is advancing. This
+avoids treating the opening-drop clock or total server tick count as elapsed war time. Opening
+picks/flight and victory pause cars; admin day-clock freezing does not pause them. Clock jumps
+resnap the trip schedule. Currently visible/own ground unit positions are traffic obstacles;
+INSIDE troops are excluded. Civilian cars are decorative, unselectable, noncolliding and absent
+from authoritative unit/combat/economy lists. They do not obstruct military movement or change oil.
+
+Civilian car art uses TWO shared 704x220 EditableImages (body/shadow), about 1.18 MiB total at any
+actor count. Both allocations go through ImageMemory; partial refusal releases storage and waits
+before retry. Images load only for visible nearby traffic, release at far zoom/after idle and on
+map destruction, and cached CPU pixels avoid repeated inflate work. No per-car image is allocated.
+The quads draw below fog and military units; shadows follow the existing day/night sun controller.
+
+APPROX: global Roblox daylight grading replaces the source ambient renderer's discrete dusk/dark
+sprite variants. The visible road-cut radius is a conservative substitute for the unavailable exact
+cut-cell list. Road presence is rasterized from the map; this batch does not reproduce later
+bridge widening, trench detours or server road-cell edits beyond visible cut circles. A town must
+have current known health before its cars appear, which is stricter than the original renderer's
+canonical world state. Only actual town hits trigger retreat here; the original ambient blast hook
+for nearby explosions outside a town is still outstanding. Local half-second clock extrapolation,
+three-second idle image release and native allocation cooldown are port policies. This is the
+car-traffic slice: pedestrians, fleeing civilians/refugee columns, animals, smoke and other ambient
+systems remain planned; no audio was added. Claude's water preparation and existing lighting files
+were preserved. B123/B126-B127 lighting approval remains pending, not inferred from "continue".
+
+Local generation from the project root:
+
+1. lune run tools/conversion/export_civilian_input
+2. node tools/conversion/export_civilian_traffic.cjs "<original install>" docs/private/civilian-input_saddle.json "<local original saddle.city>"
+
+Verification actually run: full Lune suite **227 passed, 0 failed**; changed Luau compiled and Rojo
+build passed. Eight new tests cover bends/end clamps, yielding and cuts, parking/return lanes,
+panic speed/endpoint fade, hidden/ruined towns, night/damage/garrison/calm density, original motion
+reference agreement, and both complete sprite sheets. The original class generated independent
+reference runs of 180 seconds each for normal/night/panic/blocked conditions. All sampled distance,
+direction, alpha and pull-over values agree to 1e-10. Both sheets decoded at their declared size
+and the generated vehicle facings were visually inspected as an atlas. Studio appearance, movement
+at intersections, Script Analysis, combined memory pressure and B128-B130 remain unrun. Restart
+Play after Rojo sync for the new client module and server packet fields.
+
+Next moving-world slice: town pedestrians and civilians evacuating from fighting. Street furniture,
+powerlines, cloud bodies, building ignition/forest fires and separate water integration remain on
+the roadmap; paid cosmetics remain the final milestone.
+
+## Civilian lane and queue correction (2026-11-10)
+
+Owner feedback: cars occupied the middle of roads and accumulated there. CivilianDriving now
+uses the same RoadLook widths/markings as the rendered pavement. Highway traffic uses the outer
+lane on its own side of the median; minor roads/tracks use their own width. Narrow-road cars scale
+slightly to fit. Standing/arrival bays are staggered, parked vehicles near mapped roads move to
+the curb, and trip endpoints move clear of intersections. Lane normals blend at bends instead of
+jumping across the pavement. A car can merge toward its departure lane while still stationary,
+avoiding a lock after its return trip.
+
+These are OWNER-REQUESTED APPROX behavior changes from the original small fixed lane offset:
+front clearance/headway with acceleration/braking, prevention of coincident spawns, curb bay
+assignment and FIFO junction reservations. An approach blocked outside the junction yields its
+reservation to a clear approach; cars wait for an exit to clear before entering. Traffic uses
+current known civilian poses and already filtered unit positions, never hidden enemy units.
+Current-cell fog and town intel gating remain. Crossing roads are geometrically detected from
+map polylines (60 junction nodes on Saddle). This is not a full road-law or traffic-light system;
+routes still follow the original town-to-town polylines, and shoulder/turnaround behaviour is
+approximate. RoadLook missing retains the earlier source driver. No new native images, physics
+collisions, combat entities or economy rules are introduced.
+
+Verification: eight new tests cover lane placement, following/clearance, opposing traffic,
+intersection turns and starvation, staggered bays/spawn suppression, bend continuity, departure
+from a returning curb bay and a unit-blocked approach yielding the junction. A ten-minute local
+Saddle simulation had no car remain stuck with a drive target for over 40 seconds (parking waits
+excluded). Local Lune costs were about 1 ms junction setup and 0.44 ms per fleet step, excluding
+Roblox drawing and instance work; these are not Studio frame times. The original eight traffic
+tests/reference vectors still pass when the upgrade is absent. Full suite **235 passed, 0 failed**;
+changed Luau compiled and Rojo build passed. B131-B132 and prior pending checks require Studio.
+The owner did not report B128-B130 passed; their traffic screenshot prompted this correction.
+
+Pedestrians and town evacuation remain the next in-progress slice after this traffic fix.
+
+## Town pedestrians and evacuation (2026-11-10)
+
+The pedestrian slice is now installed after the owner's traffic-lane correction. The original
+fQt layout provides 98 town walkers/standing civilians on Saddle; original oQt supplies road exits
+at all 23 settlements. export_civilian_traffic.cjs now exports those paths and bakes the actual
+ambient personA/B/C standing and two walking poses with cQt, across all 16 facings. No substitute
+military men or newly invented civilian artwork was used. Original-derived art/layout/settings
+and numerical references remain in the existing ignored DevAssets/GameData directories.
+
+CivilianPeople ports the original short out-and-back strolls, sidewalk offsets, stance/stride
+selection and density fades. Ordinary town pedestrians thin out with damage/garrisons and go
+indoors at night. Town hits and nearby current combat start staggered groups that leave via the
+source road exits, fade in, walk beyond the settlement and fade out. The original per-kind counts,
+timings, speed, spread and visible fleeing cap come from the local source profile. Ruined/unknown
+towns emit none. The already filtered unit snapshot now appends capped time-since-hit (field 18)
+so being hit, as well as firing (existing field 15), can trigger a nearby visible evacuation. No
+hidden enemy unit is sent. Both the fight trigger and each displayed person require current cell
+visibility. A stale combat observation does not start a new wave.
+
+PeopleRenderer has its own shared body/shadow pair and uses the same war clock as civilian cars.
+Opening deployment/victory pause animation; the admin daylight freeze does not pause walks. Nine
+poses fit in two 832x468 images, about 2.97 MiB combined, with an offline alpha-weighted half-size
+416x234 pair (about 0.74 MiB) on allocation refusal. Frame/px ratios keep identical world scale.
+Every allocation uses ImageMemory, releases partial failures, retains reduced resolution for the
+session and retries with a cooldown. No image is created per pedestrian. Far zoom, idle scenes
+and map destruction release native images; CPU pixels stay cached for reuse. Pedestrian quads are
+unselectable/noncolliding and draw below fog/troops, with sun/night-dependent shadows. The vehicle
+lane/spacing/junction fix remains enabled and does not share pedestrian sprite frames.
+
+APPROX: global Roblox night grading replaces the source discrete ambient dusk/dark atlases, as
+with cars. The reduced-resolution fallback, half-second clock extrapolation and three-second idle
+release are port policies. Town unknown-state gating is stricter than the source canonical world.
+Pedestrians are decorative and do not obstruct traffic or become combat targets; there are no
+new casualty/economy rules. This implements local town fleeing, not the separate random-event
+long-distance refugee-column system. That event/column system and carts remain outstanding,
+alongside animals, smoke, street furniture/powerlines, cloud bodies and building/forest fires.
+Paid skins remain the final milestone. Existing lighting/water work was preserved; no pending
+Studio test was marked passed solely from the owner's "continue".
+
+Regenerate with the same export_civilian_input/export_civilian_traffic commands in the earlier
+traffic entry; the second command now also generates OrigCivilianPeople_saddle and richer private
+reference vectors.
+
+Verification actually run: full Lune suite **242 passed, 0 failed**; changed Luau compiled;
+exporter JavaScript syntax check and Rojo build passed. Seven new tests compare ambient seed hash,
+walking/standing/fading poses and town-hit/fight/ruin evacuation against independent original
+class runs, plus hidden/stale combat, unknown towns, night density, wave cap/clock rewind and
+complete full/half sprite sheets with matching world scale. Original runs cover 60-second walks
+and 20-second evacuation scenarios; sampled model, position, heading and alpha agree to 1e-9.
+The generated standing/walking atlas was visually inspected. These are CPU/data checks, not
+Studio appearance or Script Analysis. New B133-B135 and lane checks B131-B132 remain pending;
+restart Play after Rojo sync to load the new modules and extended unit packet.
+

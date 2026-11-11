@@ -631,7 +631,8 @@ local function viewFor(side: number): ({ any }, { any }, { number }?)
 		if e.cat == "unit" then
 			if not viewer or viewer.unitVisible(e) then
 				local flags, aimX, aimY, since = unitLook(e)
-				table.insert(units, { e.id, e.kind, e.side, e.x, e.y, e.heading, e.hp, e.maxHp, unitStatus(e), e.rank or 0, if e.cargo then #e.cargo else 0, flags, aimX, aimY, since, e.turret or e.heading, unitStage(e) })
+				table.insert(units, { e.id, e.kind, e.side, e.x, e.y, e.heading, e.hp, e.maxHp, unitStatus(e), e.rank or 0, if e.cargo then #e.cargo else 0, flags, aimX, aimY, since, e.turret or e.heading, unitStage(e),
+					if e.hitAt then math.clamp(sim.time-e.hitAt,0,9) else 9 }) -- visible/own combat age for fleeing civilians
 			end
 		elseif e.kind == "rig" then
 			local seen = not viewer or e.side == side or viewer.visibleAt(e.x, e.y)
@@ -917,6 +918,8 @@ local function privateState()
 		payload.alerts = pendingAlerts[side]
 		-- time of day and weather, for the client's lighting; admin: show the test panel
 		payload.day = { Admin.phaseOf(sim), sim.nightAmount() } -- preserve clock precision for sun/colour changes
+		-- Ambient motion follows the war clock, which pauses during opening picks/flight and victory.
+		payload.civilianTime = { sim.time, not sim.winner and (not sim.drop or sim.drop.phase=="done") }
 		payload.weather = Admin.weather()
 		payload.admin = Admin.isAdmin(player)
 		if s then
@@ -1194,7 +1197,8 @@ local function privateState()
 			if seen then
 				seenOwners[st.id] = st.owner
 				table.insert(cities, { st.id, st.owner, if st.capture then st.capture.by else 0, if st.capture then math.floor(st.capture.progress * 100) / 100 else 0, math.floor(st.hold * 100) / 100, #st.garrison, rules:number(`cities.garrisonFull.{st.kind}`), st.trait or "", if sim.traitActive(st) then 1 else 0,
-					math.floor(st.integrity / math.max(1, st.maxIntegrity) * 100), if st.destroyed then 1 else 0 })
+					math.floor(st.integrity / math.max(1, st.maxIntegrity) * 100), if st.destroyed then 1 else 0,
+					math.floor(st.lastHitAt*20)/20 }) -- ambient retreat; only visible/own settlements get this timestamp
 			else
 				-- the trait is known from the map; garrison and whether it works are not
 				table.insert(cities, { st.id, seenOwners[st.id] or 0, 0, 0, 1, 0, 0, st.trait or "", 0, -1, 0 })

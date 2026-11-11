@@ -27,6 +27,7 @@ local TerritoryRenderer = require(script.Rendering.TerritoryRenderer)
 local WeatherGround = require(script.Rendering.WeatherGround)
 local FortRenderer = require(script.Rendering.FortRenderer)
 local NightLightRenderer = require(script.Rendering.NightLightRenderer)
+local CivilianRenderer = require(script.Rendering.CivilianRenderer)
 local Rules = require(Shared.Config.Rules)
 local DevFlags = require(script.Dev.DevFlags)
 
@@ -48,6 +49,7 @@ do
 	UnitRenderer.start()
 	local mapFolder=MapRenderer.build(map)
 	NightLightRenderer.start(map,mapFolder)
+	CivilianRenderer.start(map,mapFolder)
 	TerritoryRenderer.start(map.width,map.height,map.data.id)
 	WeatherGround.start(map)
 	FortRenderer.start(map.data.id)
@@ -91,6 +93,7 @@ do
 	stateEvent.OnClientEvent:Connect(function(state)
 		Hud.update(state, info.side)
 		AdminPanel.update(state)
+		if state.civilianTime then CivilianRenderer.syncClock(state.civilianTime[1],state.civilianTime[2]==true) end
 		if state.day or state.weather then
 			Atmosphere.apply(state.day, state.weather)
 		end
@@ -107,9 +110,11 @@ do
 		if state.cities then
 			CityOverlay.apply(state.cities)
 			FortRenderer.apply(state.cities)
+			CivilianRenderer.applyCities(state.cities,state.time)
 		end
 		if state.cuts then
 			RoadOverlay.applyCuts(state.cuts)
+			CivilianRenderer.applyCuts(state.cuts)
 		end
 		if state.ghosts then
 			GhostOverlay.apply(state.ghosts)
@@ -177,6 +182,7 @@ do
 
 	snapshot.OnClientEvent:Connect(function(tick, units, structures, vision, seeAll, deaths)
 		UnitRenderer.apply(tick, units, deaths)
+		CivilianRenderer.snapshot(units)
 		StructureRenderer.apply(tick, structures or {})
 		if vision then
 			FogOverlay.apply(vision, seeAll == true)
