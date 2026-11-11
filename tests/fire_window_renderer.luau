@@ -2,7 +2,7 @@
 return function(test:any,eq:any)
 	local fs=require("@lune/fs");local luau=require("@lune/luau");local roblox=require("@lune/roblox")
 	local function fixture():any
-		local h:any={time=0,created=0,released=0,instances={},blocked=false}
+		local h:any={time=0,created=0,released=0,instances={},blocked=false,warnings=0}
 		local function signal():any
 			local s:any={items={}};function s:Connect(fn) local c:any={fn=fn};function c:Disconnect() self.dead=true end;table.insert(self.items,c);return c end
 			function s:fire(dt) for _,c in table.clone(self.items) do if not c.dead then c.fn(dt) end end end;return s
@@ -20,7 +20,12 @@ return function(test:any,eq:any)
 			world={STUDS_PER_CELL=4,GROUND_Y=0,TOP_GUI_YAW=-math.pi/2},memory=memory,daylight={get=function() return {night=1} end,postEffect=function() return {} end}}
 		local env:any=setmetatable({game={GetService=function(_,key) return if key=="RunService" then {Heartbeat=h.heartbeat} else {WaitForChild=function() return shared end} end},
 			script={Parent={ImageMemory="memory",DaylightController="daylight"}},require=function(key) return assert(modules[key],key) end,
-			Instance={new=instance},Vector2=roblox.Vector2,Vector3=roblox.Vector3,CFrame=roblox.CFrame,Color3=roblox.Color3,
+			Instance={new=instance},Vector2=roblox.Vector2,Vector3=roblox.Vector3,CFrame=roblox.CFrame,
+			-- Lune Color3 supports arithmetic that Studio rejects; keep this boundary strict.
+			Color3={new=function(r,g,b)
+				if h.failColor then error("synthetic color creation failure") end
+				return setmetatable({R=r,G=g,B=b},{__mul=function() error("Color3 multiplication is unavailable in Studio") end})
+			end},warn=function() h.warnings+=1 end,
 			UDim2={fromScale=function(x,y) return {x,y} end},Content={fromObject=function(img) return img end},
 			Enum={NormalId={Top=0},SurfaceGuiSizingMode={FixedSize=0},ResamplerMode={Default=0}},
 			workspace={CurrentCamera={CFrame=roblox.CFrame.new(28,100,28),FieldOfView=30,ViewportSize=roblox.Vector2.new(800,800)}},os={clock=function() return h.time end}},{__index=getfenv()})
@@ -44,6 +49,13 @@ return function(test:any,eq:any)
 	test("actual side-window renderer never creates a facade for an already damaged roof",function()
 		local h=fixture();h.blocked=true;h.start();h.paint();eq(h.parts(),0)
 		h.parent:Destroy();eq(h.released,h.created)
+	end)
+	test("window colors avoid unsupported Color3 arithmetic and unexpected failures stop cleanly once",function()
+		local h=fixture();h.start();h.paint();eq(h.parts(),1);eq(h.warnings,0)
+		local broken=fixture();broken.failColor=true;broken.start();broken.paint();eq(broken.warnings,1);eq(broken.parts(),0);eq(broken.created,broken.released)
+		broken.failColor=false;for _=1,5 do broken.paint() end;eq(broken.warnings,1);eq(broken.parts(),0)
+		for _,c in broken.heartbeat.items do assert(c.dead) end
+		h.parent:Destroy()
 	end)
 	test("actual city-light controller forwards the current damage mask through deferred preparation",function()
 		local callbacks={};local heartbeat:any={Connect=function(_,fn) table.insert(callbacks,fn);return {Disconnect=function() end} end}

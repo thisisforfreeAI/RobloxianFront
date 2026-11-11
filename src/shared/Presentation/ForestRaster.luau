@@ -15,9 +15,11 @@ function Raster.over(out:buffer,at:number,r:number,g:number,b:number,a:number)
 	if a<=0 then return end
 	if a>=255 then buffer.writeu8(out,at,r);buffer.writeu8(out,at+1,g);buffer.writeu8(out,at+2,b);buffer.writeu8(out,at+3,255);return end
 	local prior=buffer.readu8(out,at+3);local den=a*255+prior*(255-a)
-	for ch,value in {r,g,b} do
-		buffer.writeu8(out,at+ch-1,math.clamp(round((value*a*255+buffer.readu8(out,at+ch-1)*prior*(255-a))/den),0,255))
-	end
+	-- This runs for every shadow/edge texel: avoid a temporary RGB table per pixel.
+	local ink,under=a*255,prior*(255-a)
+	buffer.writeu8(out,at,math.clamp(round((r*ink+buffer.readu8(out,at)*under)/den),0,255))
+	buffer.writeu8(out,at+1,math.clamp(round((g*ink+buffer.readu8(out,at+1)*under)/den),0,255))
+	buffer.writeu8(out,at+2,math.clamp(round((b*ink+buffer.readu8(out,at+2)*under)/den),0,255))
 	buffer.writeu8(out,at+3,math.clamp(round(den/255),0,255))
 end
 local function blit(out:buffer,w:number,h:number,source:buffer,frame:any,x:number,y:number,tint:number,shadow:number?)

@@ -161,7 +161,7 @@ function HouseFire.new(settings:any,context:any):any
 	function self.tick(dt:number)
 		assert(dt==dt and dt<math.huge and dt>=0,"invalid fire time step");if dt==0 then return end
 		self.time+=dt
-		if #self.shells>0 then
+		if context.autoRebuild~=false and #self.shells>0 then
 			self.rebuildAcc+=dt
 			if self.rebuildAcc>=c.rebuild.everySec then self.rebuildAcc=0;self.rebuildShells() end
 		end

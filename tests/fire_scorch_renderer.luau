@@ -28,7 +28,7 @@ return function(test:any,eq:any)
 			h.created+=1;local image:any={}
 			function image:WritePixelsBuffer(_pos:any,sz:any,pixels:buffer)
 				assert(not self.dead);if h.failWrite then error("synthetic failed paint") end
-				eq(buffer.len(pixels),sz.X*sz.Y*4);self.last=buffer.tostring(pixels);h.writes+=1
+				eq(buffer.len(pixels),sz.X*sz.Y*4);self.last=buffer.tostring(pixels);self.writes=(self.writes or 0)+1;h.writes+=1
 			end
 			return image
 		end
@@ -45,8 +45,8 @@ return function(test:any,eq:any)
 		local modules:any={source=h.meta,rules=settings,page={},world={STUDS_PER_CELL=4,TOP_GUI_YAW=-math.pi/2,toWorld=function(x,y,z) return vec(x*4,z,y*4) end},
 			scorch=Scorch,codec={base64Decode=function() return buffer.create(4) end},inflate={raw=function(b) return b end},
 			map={new=function(_meta,decode,load) h.decodes+=1;decode("raw",4);load("page");return sampler end},
-			memory=memory,fog={hidden=function(x,y) return h.hidden or (h.fog and h.fog(x,y)) or false end},
-			town={sample=function() return {100*h.light,120*h.light,140*h.light} end,forestCover=function(_x,_y,w,hg)
+			memory=memory,fog={hidden=function(x,y) return h.hidden or (h.fog and h.fog(x,y)) or false end,revision=function() return tostring(h.hidden)..":"..tostring(h.fog) end},
+			town={revision=function() return tostring(h.light)..":"..tostring(h.cover) end,sample=function() h.samples=(h.samples or 0)+1;return {100*h.light,120*h.light,140*h.light} end,forestCover=function(_x,_y,w,hg)
 				if not h.cover then return nil end
 				local px=buffer.create(w*hg*h.meta.tileSize^2*4)
 				for at=0,buffer.len(px)-1,4 do for c=0,3 do buffer.writeu8(px,at+c,h.cover[c+1]) end end;return px
@@ -103,5 +103,20 @@ return function(test:any,eq:any)
 		local h=make();h.renderer.start({data={id="test"}},h.parent);eq(h.renderer.source(),nil);eq(#h.tasks,1)
 		eq(h.renderer.source(),nil);eq(#h.tasks,1);h.flush();local source=h.renderer.source();assert(source);eq(h.renderer.source(),source)
 		eq(h.decodes,1);eq(h.created,0);h.parent:Destroy();eq(h.renderer.source(),nil)
+	end)
+	test("unchanged fire packets and static roof views reuse paint instead of rebuilding every check",function()
+		local h=make();h.renderer.start({data={id="test"}},h.parent);h.renderer.apply({{33,2}});h.frame();h.flush();h.frame()
+		local samples,writes=h.samples,h.writes
+		for _=1,10 do h.renderer.apply({});h.renderer.apply({{33,2}});h.frame() end
+		eq(h.samples,samples);eq(h.writes,writes)
+		h.light=.3;h.frame();assert(h.samples>samples);assert(h.writes>writes)
+		h.parent:Destroy()
+	end)
+	test("a lighting change refreshes a large roof set over multiple bounded checks",function()
+		local h=make();h.renderer.start({data={id="test"}},h.parent);h.renderer.apply({{33,2},{49,2},{545,2},{561,2}})
+		h.frame();h.flush();h.frame();h.frame();eq(h.created,4)
+		local writes=h.writes;h.light=.3;h.frame();eq(h.writes-writes,2);h.light=.2;h.frame();eq(h.writes-writes,4);eq(h.created,4)
+		for _,o in h.instances do if o.ClassName=="ImageLabel" and not o.dead then eq(o.ImageContent.writes,2) end end
+		h.parent:Destroy()
 	end)
 end

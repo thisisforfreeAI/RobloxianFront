@@ -44,9 +44,11 @@ return function(test:any,eq:any)
 		function memory.register(_,fn) h.reclaim=fn;return function() h.unregistered=true end end
 		function memory.stats() return 0 end;function memory.canDetail() return true end
 		local shared:any={Config={World="world"},Maps={MapCodec="codec"},Utilities={Inflate="inflate"},Simulation={ForestMap="forest"},Presentation={ImagePixels="pixels",TownDetail="detail",TownPatch="patch",ForestRaster="raster",GroundScorchPixels="scorch"},FindFirstChild=function() return data end}
+		local raster={overview=Raster.overview,paint=function(...) h.compositions=(h.compositions or 0)+1;return Raster.paint(...) end}
 		local modules:any={world={STUDS_PER_CELL=4,GROUND_Y=0,TOP_GUI_YAW=0},memory=memory,codec={base64Decode=function(key) return key end},inflate={raw=function(key)
+			if key=="bare" then h.bareDecodes=(h.bareDecodes or 0)+1 end
 			local source=chunks[key];local fresh=buffer.create(buffer.len(source));buffer.copy(fresh,0,source);return fresh
-		end},forest=Map,raster=Raster,scorch=ScorchPixels,pixels=ImagePixels,detail=TownDetail,patch=TownPatch,day={get=function() return {phase=h.phase} end}}
+		end},forest=Map,raster=raster,scorch=ScorchPixels,pixels=ImagePixels,detail=TownDetail,patch=TownPatch,day={get=function() return {phase=h.phase} end}}
 		local env:any=setmetatable({game={GetService=function(_,name) return if name=="RunService" then {Heartbeat=h.heartbeat} else {WaitForChild=function() return shared end} end},
 			script={Parent={ImageMemory="memory",DaylightController="day",Parent={FindFirstChild=function() return assets end}}},
 			require=function(key) if type(key)=="table" then return key.value end;return assert(modules[key],tostring(key)) end,
@@ -104,5 +106,14 @@ return function(test:any,eq:any)
 		h.reclaim(1,nil);h.step();eq(h.renderer.sample(.2,.2)[3],stained)
 		h.renderer.setGroundScorch({},config,nil);h.step();eq(h.renderer.sample(.2,.2)[3],before);eq(h.renderer.sample(.5,.5)[2],200)
 		assert(h.images[1].last~=overview);h.destroy()
+	end)
+	test("fire updates compose once at current light and reuse an immutable decoded town base",function()
+		local h=make();assert(h.renderer.build("test",{}));h.step();h.phase=0
+		local before=h.compositions or 0;h.renderer.setForestFates({{1,{kind="burning",char=0}}});h.step()
+		eq(h.compositions-before,1);eq(h.bareDecodes,1)
+		local revision=h.renderer.revision();h.step();eq(h.renderer.revision(),revision)
+		h.renderer.setForestFates({{1,{kind="burnt"}}});h.step();eq(h.bareDecodes,1);eq(h.renderer.sample(.5,.5)[3],80)
+		h.renderer.setForestFates({},true);h.step();eq(h.renderer.sample(.5,.5)[2],200)
+		h.destroy()
 	end)
 end

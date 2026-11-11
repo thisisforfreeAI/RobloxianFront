@@ -25,6 +25,7 @@ function Renderer.start(data:any,profile:any,parent:Instance,born:number,damage:
 	local imageDivisor=1
 	local preferHalf=false
 	local retry=0
+	local creating:Part?=nil
 	local function release()
 		for _,v in views do v.part:Destroy() end;table.clear(views)
 		Memory.release(image);image=nil;state.ready=false;state.fade=0
@@ -32,13 +33,16 @@ function Renderer.start(data:any,profile:any,parent:Instance,born:number,damage:
 	local function create(item:any):any
 		local p=item.point;local scale=data.pixelsPerCell
 		local part=Instance.new("Part");part.Name="Window_"..item.id
+		creating=part;part.Parent=folder
 		part.Anchored=true;part.CanCollide=false;part.CanTouch=false;part.CanQuery=false;part.CastShadow=false;part.Transparency=1
 		part.Size=Vector3.new(data.slot/scale*World.STUDS_PER_CELL,.01,data.slot/scale*World.STUDS_PER_CELL)
 		part.CFrame=CFrame.new((p[1]+data.slot/2)/scale*World.STUDS_PER_CELL,World.GROUND_Y+.245,(p[2]+data.slot/2)/scale*World.STUDS_PER_CELL)*CFrame.Angles(0,World.TOP_GUI_YAW,0)
 		local gui=Instance.new("SurfaceGui");gui.Face=Enum.NormalId.Top;gui.SizingMode=Enum.SurfaceGuiSizingMode.FixedSize
+		gui.Parent=part
 		gui.CanvasSize=Vector2.new(data.slot,data.slot);gui.LightInfluence=0;gui.AlwaysOnTop=false;gui.MaxDistance=0
 		local function layer(index:number):ImageLabel
 			local label=Instance.new("ImageLabel");label.BackgroundTransparency=1;label.Size=UDim2.fromScale(1,1)
+			label.Parent=gui
 			label.ImageContent=Content.fromObject(image :: EditableImage)
 			label.ImageRectOffset=Vector2.new((index%data.perRow)*data.slot/imageDivisor,math.floor(index/data.perRow)*data.slot/imageDivisor)
 			label.ImageRectSize=Vector2.new(data.slot/imageDivisor,data.slot/imageDivisor);label.ResampleMode=Enum.ResamplerMode.Default
@@ -46,13 +50,16 @@ function Renderer.start(data:any,profile:any,parent:Instance,born:number,damage:
 		end
 		local face=if p[6]~=nil and p[6]>=0 then layer(p[6]) else nil
 		-- Preserve dark masonry while increasing the emission layer in the same SurfaceGui.
-		if face then face.ImageColor3=Color3.new(.035,.032,.028)*(1.4/EMISSION_GAIN) end
+		if face then
+			local gain=1.4/EMISSION_GAIN
+			face.ImageColor3=Color3.new(.035*gain,.032*gain,.028*gain)
+		end
 		local label=layer(p[5])
-		gui.Parent=part;part.Parent=folder
+		creating=nil
 		return {part=part,gui=gui,label=label,face=face,item=item}
 	end
 	local acc=0
-	local connection=RunService.Heartbeat:Connect(function(dt)
+	local function update(dt:number)
 		acc+=dt;if acc<.1 then return end;acc=0
 		local night=Daylight.get().night
 		if night<=0 then if image then release() end;return end
@@ -112,6 +119,14 @@ function Renderer.start(data:any,profile:any,parent:Instance,born:number,damage:
 		local complete=true
 		for _,entry in selected do if not views[entry.item.id] then complete=false;break end end
 		state.fade=if complete then fade else 0
+	end
+	local connection=RunService.Heartbeat:Connect(function(dt)
+		local ok,err=pcall(update,dt)
+		if not ok then
+			if creating then creating:Destroy();creating=nil end
+			-- Stop this optional layer once, releasing partial views, instead of failing every heartbeat.
+			folder:Destroy();warn("[NightWindows] Disabled after a rendering failure:",err)
+		end
 	end)
 	folder.Destroying:Connect(function() connection:Disconnect();release();table.clear(damageCache) end)
 	return state

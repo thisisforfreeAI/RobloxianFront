@@ -33,6 +33,8 @@ local visible: buffer
 local explored: buffer
 local terrain: buffer? = nil
 local colourCache: any = {}
+local revision=0
+function FogOverlay.revision():number return revision end
 
 function FogOverlay.start(mapWidth: number, mapHeight: number, terrainPixels: buffer?)
 	width, height = mapWidth, mapHeight
@@ -99,6 +101,7 @@ function FogOverlay.apply(vision: { number }, seeAll: boolean)
 	elseif profile and terrain then pixels=FogPixels.colour(visible,terrain,explored,Terrain.names,profile,width,height,colourCache)
 	else pixels=FogPixels.soften(visible,width,height,DARK_ALPHA) end
 	image:WritePixelsBuffer(Vector2.zero, Vector2.new(width, height), pixels)
+	revision+=1
 end
 
 -- true when cell (x, y) is fogged for this player right now (false without the overlay)

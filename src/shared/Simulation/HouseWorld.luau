@@ -9,6 +9,8 @@ function World.new(settings:any,map:any,context:any):any
 	local ctx=table.clone(map)
 	ctx.random=context.random
 	ctx.onScar=context.onScar
+	-- Owner-requested rule: burned map buildings stay ruined until an explicit fire-damage reset.
+	ctx.autoRebuild=false
 	ctx.rain=function(_x,_y)
 		-- APPROX: the admin weather covers the whole map; original spatial fronts remain unported.
 		local weather=context.weather();return if weather=="downpour" or weather=="storm" then 1 else 0

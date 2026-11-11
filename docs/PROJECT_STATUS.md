@@ -2786,3 +2786,42 @@ only); updated exporter generation/syntax and Rojo build pass. Five new checks c
 positions/delays and exact-once consumption, war pause/reset, independent landing-surface gating,
 owner-only queue reset, malformed data and legacy primary-only compatibility.
 **Studio B188-B189 have not been run.**
+
+## Fire runtime correction and persistent ruins (2026-11-11)
+
+Owner reported a repeated NightWindowRenderer Color3 multiplication error, fire stutter and
+unwanted automatic rebuilding. Window colors now scale channels explicitly instead of multiplying
+a Color3 by a number. The renderer also cleans partially created instances and disconnects the
+optional window layer after an unexpected failure, warning once instead of throwing every frame.
+The regression mock rejects Color3 arithmetic, matching the reported Studio boundary that Lune's
+Color3 arithmetic support had masked.
+
+OWNER OVERRIDE: live HouseWorld disables automatic rebuilding after roof burnout. Burned map
+buildings retain their char/ruins past both original rebuild timers until the owner explicitly uses
+Rebuild fire damage (or starts a fresh world). The pure source model retains opt-in/default original
+timer behavior for reference tests. This supersedes earlier automatic roof rebuild expectations;
+forest regrowth, ground stain recovery and structure combat HP/engineer repairs are unchanged.
+
+Fire char no longer rebuilds buckets for identical/empty deltas or repaints static tiles every
+check. Bounded CPU results invalidate on actual damage, town appearance or fog changes. At most two
+dirty roof tiles paint per 0.2-second check with a time check between tiles; oldest invalid results
+refresh first so continuously changing fog/light does not starve more distant tiles. Existing
+images remain while their refresh is queued. The nearest 24 tile CPU results are retained (about
+1.2 MB at the current scale), using the existing native image admission/reclaim policy.
+
+Town forest/scar updates compose once at current lighting instead of composing then immediately
+relighting the whole chunk. Up to two immutable tree-free CPU bases are cached (about 6.4 MB for
+two full 896-square chunks). Raster blend and fire light loops no longer allocate temporary RGB
+tables per affected pixel. No new native images, network fields or extracted source data were
+added. Power lines and power stations remain disabled.
+
+A local Lune microbenchmark checked identical forest blend output for all 256 alpha values, then
+measured three runs of 200,000 blends: prior loop 0.317 s, scalar loop 0.049 s (84.7% lower time).
+This is not a Studio FPS result. Dense scenes still update progressively; native fire stutter,
+memory and visual quality require B190-B192. Stop Play and start Play again after sync to reload
+required modules and connections.
+
+Verified on installed files: **431 Lune tests passed, 0 failed**; changed Luau compiles (syntax
+only) and Rojo build passes. Five added regressions cover real window cleanup/strict colors,
+persistent live ruins/manual reset, unchanged roof paint reuse, bounded fair refresh under repeated
+lighting changes and single-compose clean town base reuse. **Studio B190-B192 have not been run.**

@@ -37,6 +37,8 @@ local forestMap: any = nil
 local forestApply: any = nil
 local coverSampler: any = nil
 local groundApply: any = nil
+local appearanceRevision=0
+function TownRenderer.revision():number return appearanceRevision end
 function TownRenderer.getForestMap():any return forestMap end
 function TownRenderer.setForestFates(rows:{any},reset:boolean?) if forestApply then forestApply(rows,reset) end end
 function TownRenderer.setGroundScorch(buckets:any,config:any,source:any?) if groundApply then groundApply(buckets,config,source) end end
@@ -91,6 +93,7 @@ type Chunk = { cx: number, cy: number, cw: number, ch: number, name: string, mod
 
 -- returns true when the town art was drawn
 function TownRenderer.build(mapId: string, parent: Instance): boolean
+	appearanceRevision+=1
 	sampler=nil
 	forestMap,forestApply,coverSampler,groundApply=nil,nil,nil,nil
 	local assets = script.Parent.Parent:FindFirstChild("DevAssets")
@@ -149,6 +152,7 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 		end
 		for key in changed do for _,c in affected[key] or {} do (c :: any).forestDirty=true end end
 		if next(changed)~=nil then
+			appearanceRevision+=1
 			for i=#coverOrder,1,-1 do
 				local key=coverOrder[i];local cover=covers[key]
 				for tree in changed do if cover.members[tree] then covers[key]=nil;table.remove(coverOrder,i);break end end
@@ -205,11 +209,21 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 		return nil
 	end
 	sampler=sample
+	-- Repeated fire/ground updates reuse a clean base instead of inflating the same 3 MB chunk.
+	-- Two CPU-only bases are retained; every paint clones one before applying reversible changes.
+	local bareCache:any={};local bareOrder={}
 	-- the compressed bytes stay cached (small); inflating is the slow part
 	local function forestPixels(c:Chunk,frame:number):buffer
-		local module=assets:FindFirstChild(c.name.."_Bare");assert(module,"missing tree-free town chunk")
-		local bare=require(module);local px=Inflate.raw(MapCodec.base64Decode(bare.deflate),bare.width*bare.height*4)
-		assert(bare.width==c.cw*TILE_PX and bare.height==c.ch*TILE_PX,"tree-free chunk dimensions differ")
+		local base=bareCache[c.name]
+		if not base then
+			local module=assets:FindFirstChild(c.name.."_Bare");assert(module,"missing tree-free town chunk")
+			local bare=require(module)
+			assert(bare.width==c.cw*TILE_PX and bare.height==c.ch*TILE_PX,"tree-free chunk dimensions differ")
+			base=Inflate.raw(MapCodec.base64Decode(bare.deflate),bare.width*bare.height*4)
+			if #bareOrder>=2 then bareCache[table.remove(bareOrder,1)]=nil end
+			bareCache[c.name]=base;table.insert(bareOrder,c.name)
+		end
+		local px=buffer.create(buffer.len(base));buffer.copy(px,0,base)
 		if lighting and frame~=baseFrame then
 			local patch=assets:FindFirstChild(c.name.."_BareLight"..frame);assert(patch,"missing tree-free lighting patch")
 			local data=require(patch);local delta=if data.bytes==0 then buffer.create(0) else Inflate.raw(MapCodec.base64Decode(data.deflate),data.bytes)
@@ -219,11 +233,11 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 		if scars and next(scars) and groundSource then ScorchPixels.apply(px,c.cx,c.cy,c.cw,c.ch,TILE_PX,mapW,scars,groundConfig,groundSource.roof) end
 		return ForestRaster.paint(forest,px,c.cx,c.cy,c.cw,c.ch,fates)
 	end
-	local function decode(c: Chunk): (buffer, number, number)
+	local function decode(c: Chunk,frame:number?): (buffer, number, number)
 		local dynamic=(c :: any).groundScars and next((c :: any).groundScars)~=nil or false
 		if forest then for _,t in forest.inWindow(c.cx,c.cy,c.cw,c.ch) do if fates[t.key] then dynamic=true;break end end end
 		(c :: any).dynamicForest=dynamic
-		if dynamic then return forestPixels(c,baseFrame),c.cw*TILE_PX,c.ch*TILE_PX end
+		if dynamic then return forestPixels(c,frame or baseFrame),c.cw*TILE_PX,c.ch*TILE_PX end
 		local chunk = require(c.mod) :: any
 		if not c.packed then
 			c.packed = MapCodec.base64Decode(chunk.deflate)
@@ -235,7 +249,7 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 		if not lighting or c.frame == frame then return end
 		if (c :: any).dynamicForest then
 			local ok,px=pcall(forestPixels,c,frame)
-			if ok then c.px=px;c.frame=frame;c.patch=nil;c.missed=nil
+			if ok then c.px=px;c.frame=frame;c.patch=nil;c.missed=nil;appearanceRevision+=1
 			else c.missed=frame;if not warnedLighting then warnedLighting=true;warn("[TownRenderer] Forest lighting unavailable:",px) end end
 			return
 		end
@@ -259,6 +273,7 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 		if c.patch then TownPatch.apply(c.px :: buffer, c.patch) end -- undo the previous sample
 		TownPatch.apply(c.px :: buffer, patch)
 		c.patch, c.frame = patch, frame
+		appearanceRevision+=1
 	end
 	local function pixelsAt(c: Chunk, stride: number): buffer
 		local px, w, h = c.px :: buffer, c.w, c.h
@@ -405,6 +420,7 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 		end)
 		for i = 1, #spare - PIXEL_CACHE do
 			spare[i].px = nil
+			appearanceRevision+=1
 			spare[i].patch, spare[i].frame = nil, baseFrame
 		end
 	end
@@ -464,6 +480,7 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 		if forestApply==applyForest then forestApply=nil end
 		if coverSampler==sampleCover then coverSampler=nil end
 		if groundApply==applyGround then groundApply=nil end
+		appearanceRevision+=1;table.clear(bareCache);table.clear(bareOrder)
 		groundKnown={};groundConfig,groundSource=nil,nil
 		table.clear(covers);table.clear(coverOrder)
 		if connection then connection:Disconnect() end
@@ -509,9 +526,11 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 		local dirty:any=nil
 		for _,c in chunks do if (c :: any).forestDirty and (not dirty or c.distance<dirty.distance) then dirty=c end end
 		if dirty then
-			local ok,px,w,h=pcall(decode,dirty)
+			local paintedFrame=if dirty.image then frame else baseFrame
+			local ok,px,w,h=pcall(decode,dirty,paintedFrame)
 			if ok then
-				dirty.px,dirty.w,dirty.h,dirty.frame,dirty.patch,dirty.missed=px,w,h,baseFrame,nil,nil
+				dirty.px,dirty.w,dirty.h,dirty.frame,dirty.patch,dirty.missed=px,w,h,if dirty.dynamicForest then paintedFrame else baseFrame,nil,nil
+				appearanceRevision+=1
 				dirty.forestDirty=nil;dirty.used=clock
 				local small=ForestRaster.overview(px,w,h,TILE_PX,OVERVIEW_PX)
 				local sw,sh=dirty.cw*OVERVIEW_PX,dirty.ch*OVERVIEW_PX
@@ -589,6 +608,7 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 					continue -- unreadable: skip it
 				end
 				c.px, c.w, c.h = px, w, h
+				appearanceRevision+=1
 			end
 			relight(c, frame)
 			if not show(c, stride) then
@@ -610,6 +630,7 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 					local ok, px, w, h = pcall(decode, c)
 					if ok then
 						c.px, c.w, c.h, c.used = px, w, h, clock
+						appearanceRevision+=1
 					end
 					break
 				end

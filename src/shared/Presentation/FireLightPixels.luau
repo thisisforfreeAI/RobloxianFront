@@ -35,15 +35,17 @@ function Pixels.paint(config:any,lights:{any},x0:number,y0:number,cw:number,ch:n
 	end
 	local out=buffer.create(w*h*4);local knee=config.light.knee+(nv.knee-config.light.knee)*mix
 	local tail=config.light.ceiling+(nv.ceiling-config.light.ceiling)*mix-knee
+	local function soften(value:number):number return if value>knee then knee+tail*(1-math.exp(-(value-knee)/tail)) else value end
+	local function encode(value:number):number
+		value=value/(1+value)*255;local whole=math.floor(value);local fraction=value-whole
+		-- Uint8ClampedArray uses ties-to-even.
+		return whole+(if fraction>.5 or fraction==.5 and whole%2==1 then 1 else 0)
+	end
 	for i=0,w*h-1 do
-		local rgb={};local sum=0
-		for c=0,2 do local value=buffer.readf32(acc,i*12+c*4);if value>knee then value=knee+tail*(1-math.exp(-(value-knee)/tail)) end;rgb[c+1]=value;sum+=value end
-		if sum<=.004 then continue end
-		for c=0,2 do
-			local value=rgb[c+1]/(1+rgb[c+1])*255;local whole=math.floor(value);local fraction=value-whole
-			-- Uint8ClampedArray uses ties-to-even.
-			buffer.writeu8(out,i*4+c,whole+(if fraction>.5 or fraction==.5 and whole%2==1 then 1 else 0))
-		end;buffer.writeu8(out,i*4+3,255)
+		-- No transient RGB table per light texel; keep the same float32 inputs and source rounding.
+		local r=soften(buffer.readf32(acc,i*12));local g=soften(buffer.readf32(acc,i*12+4));local b=soften(buffer.readf32(acc,i*12+8))
+		if r+g+b<=.004 then continue end
+		buffer.writeu8(out,i*4,encode(r));buffer.writeu8(out,i*4+1,encode(g));buffer.writeu8(out,i*4+2,encode(b));buffer.writeu8(out,i*4+3,255)
 	end;return out
 end
 function Pixels.native(source:buffer):buffer

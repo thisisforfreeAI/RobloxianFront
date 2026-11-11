@@ -14,6 +14,13 @@ return function(test:any,eq:any)
 		return h
 	end
 	local function visible() return true end
+	test("live fire ruins persist past original rebuild timers until an explicit reset",function()
+		local h=make();assert(h.world.model.ignite(7,7));h.world.model.houses[1].life=.01;h.world.advance(.25)
+		local points=table.clone(h.world.model.shells[1].px);assert(#points>0)
+		h.time=math.max(settings.houses.rebuild.afterSec,settings.houses.rebuild.loneSec)+600;h.world.advance(h.time)
+		for _,p in points do eq(h.world.paint[p],3);eq(h.world.model.mark[p],2) end
+		h.world.reset();eq(next(h.world.paint),nil);eq(#h.world.model.shells,0)
+	end)
 	test("fire packets bound pixel/roof buffers and reject malformed lengths, stages and coordinates",function()
 		local rows={{0,0},{27,1},{88,3}};local out=Packets.readPixels(Packets.pixels(rows),100)
 		for i,r in rows do eq(out[i][1],r[1]);eq(out[i][2],r[2]) end
