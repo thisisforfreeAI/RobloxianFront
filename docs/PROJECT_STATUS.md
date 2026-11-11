@@ -1737,3 +1737,51 @@ The generated standing/walking atlas was visually inspected. These are CPU/data 
 Studio appearance or Script Analysis. New B133-B135 and lane checks B131-B132 remain pending;
 restart Play after Rojo sync to load the new modules and extended unit packet.
 
+## Side-window city lights; roof emitters removed (2026-11-10)
+
+Owner clarification: lights should come from windows on the sides of buildings; glowing roof
+patches look bad. The original .city artwork is flat roof art, so this is an explicitly requested
+APPROX facade treatment rather than a claim about original wall textures or actual 3D buildings.
+The packer now derives a thin projected wall rim at the south/east (lower/right) edges of raised
+source roof footprints, with paired warm window panes on the outer rim. All roof material codes,
+including formerly emissive even codes, are excluded from the facade, bright core and its halo.
+Flat ground-level roof/terrace codes do not extrude new walls. Existing lamp pixels remain eligible.
+Materials are assembled in world coordinates before edge extraction, so a roof crossing source
+tile boundaries does not grow a false wall or line of windows through its interior.
+
+Window masks and dark masonry-rim masks share one atlas. A separate dark layer keeps the facade
+visible when occupancy/flicker switches a pane off. Core opacity is 0.98; the existing 1.4 brightness
+gain and outward soft halo remain. The facade depth (two art pixels), paired-pane pattern/spacing,
+dark neutral masonry tint, lower/right projection and glow clipping are owner-requested port
+design choices, not traced source values. RGB/HDR/tone-mapping remains approximate and needs a
+Studio comparison. This does not rotate the camera or convert the towns into 3D geometry.
+
+Coarse roof windows are now entirely disabled (field R is zero); zooming out cannot restore the
+old roof spots. Broad road/city emission is also excluded from fine blocks touching roof pixels.
+Facade detail still follows the existing near-view fade. At far zoom the separate road/city
+ambience remains, without individual window patches. The full-resolution atlas and facade masks
+were checked against the actual map: 37,413 light/face fragment checks found no alpha on roofs.
+That checks raster data, not the engine's filtered pixel boundaries or final Studio colour.
+
+Saddle has 18,724 facade/light fragments using 2,258 shared frame patterns. ONE 768x600 image
+costs about 1.76 MiB; a prepacked 384x300 fallback costs about 0.44 MiB. It retains identical world
+position/size and texture-rectangle mapping. Reduced-resolution filtering can soften the rim.
+ImageMemory admission, retry cooldown, daytime release, fog/world depth and map cleanup remain.
+No image is allocated per facade. The existing 768-visible-fragment cap is retained. A bounded
+nearest-first heap avoids sorting/allocating entries for every visible candidate; it produces the
+same selected IDs/order as a full sort. Local Lune measurements were roughly 4-5 ms preparation
+and 2.3 ms per cull, excluding engine creation/drawing; these are not Studio frame-time claims.
+
+Verification actually run: full Lune suite **244 passed, 0 failed**; **10 Python asset checks passed**;
+changed Luau compiled and Rojo build passed. Regression checks cover side-face placement, former
+roof light suppression, clipped halos/facades, continuous roofs across tile seams, no edge wrap,
+flat terraces, shared masks/bright cores, non-flickering wall geometry, bounded selection parity,
+zero coarse-window channel and decoded full/half atlases. An offline asset-layout preview was
+visually inspected; it is not a Studio screenshot. New B136-B137 and previous pending checks
+remain unrun. Restart Play after Rojo sync. Existing civilian traffic/pedestrians, lighting clock,
+weather, visibility and Claude's water preparation were preserved.
+
+Regeneration uses the same pack_night_lights.py command from the night-lighting entry; local
+source city/map/profile inputs and the generated module remain ignored. No original-install or
+Git operations were performed.
+

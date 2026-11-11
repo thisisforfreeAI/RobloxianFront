@@ -1,6 +1,6 @@
 """Pack local original city/road night-light fields (original-derived output stays ignored).
 python pack_night_lights.py <city> <worker-map.json> <private/night-look.json> <output.luau>
-Fields: R eligible window/lamp; G highway body; B near street/highway pool; A dithered city glow.
+Fields: R reserved/zero (no coarse roof windows); G highway; B near pools; A roof-excluded city glow.
 APPROX: source shader geometry is sampled at fine-texel centres; road IDs/urban interpolation and
 capsule endpoints replace its full junction/road-list shader. Runtime keeps source window flicker.
 """
@@ -8,41 +8,81 @@ import base64,json,math,pathlib,struct,sys,zlib
 import numpy as np
 from PIL import Image,ImageFilter
 
-def window_shapes(head,parts,w,h,look):
-    """Retain original pixel silhouettes; share repeated fine-cell fragments in a small atlas.
-    APPROX: padded soft halo/core opacity are the owner's brighter-glow rendering adaptation.
-    """
-    size=head['size'];fine=look['fine'];pad=3;slot=12
-    assert size==14 and fine==3,'window atlas requires repacking policy for another tile size'
+def material_map(head,parts,w,h):
+    """Assemble material codes in world pixels; edges must continue across tile boundaries."""
+    size=head['size']
     index=np.frombuffer(parts['index'],np.uint8).reshape(h,w,4).astype(np.int64)
     ids=index[:,:,0]+(index[:,:,1]<<8)+(index[:,:,2]<<16)
     atlas=np.frombuffer(parts['atlas'],np.uint8).reshape(head['atlasH'],head['atlasW'],4)
-    codes=atlas[:,:,3];eligible=((codes>=look['roofFrom']) & (codes%2==0)) | (codes==look['lamp'])
-    cuts=[0]+[math.ceil(i*size/fine-.5) for i in range(1,fine)]+[size]
-    patterns=[];lookup={};points=[];coverage=np.zeros((h*fine,w*fine),np.uint8)
+    codes=np.zeros((h*size,w*size),np.uint8)
     for y,x in zip(*np.where(ids>0)):
         tile=int(ids[y,x]-1);tx=(tile%head['perRow'])*size;ty=(tile//head['perRow'])*size
-        tile_mask=eligible[ty:ty+size,tx:tx+size]
-        if not tile_mask.any():continue
+        codes[y*size:(y+1)*size,x*size:(x+1)*size]=atlas[ty:ty+size,tx:tx+size,3]
+    return codes
+
+def facade_masks(codes,look):
+    """OWNER-REQUESTED APPROX: projected south/east wall rims, not original rooftop lights.
+    Source materials identify roofs/height and existing lamps; all roof levels stay unlit.
+    """
+    roof=codes>=look['roofFrom'];raised=codes>=look['roofFrom']+2
+    def shift(dy,dx):
+        out=np.zeros_like(roof)
+        h,w=raised.shape
+        if dy>=h or dx>=w:return out
+        out[dy:,dx:]=raised[:h-dy,:w-dx]
+        return out
+    south_inner,south_outer=shift(1,0),shift(2,0)
+    east_inner,east_outer=shift(0,1),shift(0,2)
+    south=(south_inner|south_outer)&~roof
+    east=(east_inner|east_outer)&~roof&~south
+    y,x=np.indices(codes.shape,sparse=True)
+    # Thin paired window panes on the outer face row/column; roof interiors are never emitters.
+    lights=(south_outer&~south_inner&south&np.isin(x%6,[1,2])) | (east_outer&~east_inner&east&np.isin(y%6,[1,2]))
+    return lights|(codes==look['lamp']),south|east,roof
+
+def window_shapes(head,parts,w,h,look):
+    """Share facade/window fragments and roof-clipped halos in one native image."""
+    size=head['size'];fine=look['fine'];pad=3;slot=12
+    assert size==14 and fine==3,'window atlas requires repacking policy for another tile size'
+    codes=material_map(head,parts,w,h)
+    eligible,faces,roof=facade_masks(codes,look)
+    roof_pad=np.pad(roof,pad,constant_values=False)
+    cuts=[0]+[math.ceil(i*size/fine-.5) for i in range(1,fine)]+[size]
+    patterns=[];lookup={};points=[];coverage=np.zeros((h*fine,w*fine),np.uint8)
+    active=(eligible|faces).reshape(h,size,w,size).any(axis=(1,3))
+    def store(alpha):
+        key=alpha.tobytes()
+        if key not in lookup:
+            lookup[key]=len(patterns)
+            rgba=np.full((slot,slot,4),255,np.uint8);rgba[:,:,3]=alpha;patterns.append(rgba)
+        return lookup[key]
+    for y,x in zip(*np.where(active)):
+        tile_mask=eligible[y*size:(y+1)*size,x*size:(x+1)*size]
+        tile_face=faces[y*size:(y+1)*size,x*size:(x+1)*size]
         for fy in range(fine):
             for fx in range(fine):
                 patch=tile_mask[cuts[fy]:cuts[fy+1],cuts[fx]:cuts[fx+1]]
-                if not patch.any():continue
+                face=tile_face[cuts[fy]:cuts[fy+1],cuts[fx]:cuts[fx+1]]
+                if not patch.any() and not face.any():continue
                 coverage[y*fine+fy,x*fine+fx]=round(float(patch.mean())*255)
                 mask=np.zeros((slot,slot),np.uint8)
                 mask[pad:pad+patch.shape[0],pad:pad+patch.shape[1]]=patch*255
-                key=mask.tobytes()
-                if key not in lookup:
-                    lookup[key]=len(patterns)
-                    halo=np.asarray(Image.fromarray(mask).filter(ImageFilter.GaussianBlur(1.1)))
-                    alpha=np.maximum(np.round(mask*.96),np.round(halo*.8)).astype(np.uint8)
-                    rgba=np.full((slot,slot,4),255,np.uint8);rgba[:,:,3]=alpha
-                    patterns.append(rgba)
-                points.append([int(x*size+cuts[fx]-pad),int(y*size+cuts[fy]-pad),int(x*fine+fx),int(y*fine+fy),lookup[key]])
-    per=32;rows=max(1,math.ceil(len(patterns)/per));assert rows*slot<=1024
+                halo=np.asarray(Image.fromarray(mask).filter(ImageFilter.GaussianBlur(1.1)))
+                alpha=np.maximum(np.round(mask*.98),np.round(halo*.8)).astype(np.uint8)
+                gx,gy=x*size+cuts[fx],y*size+cuts[fy]
+                # Context includes neighboring source tiles: glow cannot cross back onto any roof.
+                blocked=roof_pad[gy:gy+slot,gx:gx+slot]
+                alpha[:blocked.shape[0],:blocked.shape[1]][blocked]=0
+                light_id=store(alpha)
+                face_id=-1
+                if face.any():
+                    base=np.zeros_like(mask);base[pad:pad+face.shape[0],pad:pad+face.shape[1]]=face*255
+                    face_id=store(base)
+                points.append([int(gx-pad),int(gy-pad),int(x*fine+fx),int(y*fine+fy),light_id,face_id,int(patch.any())])
+    per=64;rows=max(1,math.ceil(len(patterns)/per));assert rows*slot<=1024
     sheet=np.zeros((rows*slot,per*slot,4),np.uint8)
     for i,pattern in enumerate(patterns):sheet[(i//per)*slot:(i//per+1)*slot,(i%per)*slot:(i%per+1)*slot]=pattern
-    return {'width':sheet.shape[1],'height':sheet.shape[0],'slot':slot,'perRow':per,'pixelsPerCell':size,'points':points},sheet,coverage
+    return {'mode':'facades','width':sheet.shape[1],'height':sheet.shape[0],'slot':slot,'perRow':per,'pixelsPerCell':size,'points':points},sheet,coverage
 
 def read_city(path):
     b=pathlib.Path(path).read_bytes();assert b[:4]==b'WFCT'
@@ -55,16 +95,16 @@ def plain(value):
     return value['data'] if isinstance(value,dict) else value
 
 def windows(head,parts,w,h,look):
-    scale=look['fine'];tile_size=head['size'];per=head['perRow']
-    index=np.frombuffer(parts['index'],np.uint8).reshape(h,w,4).astype(np.int64)
-    ids=index[:,:,0]+(index[:,:,1]<<8)+(index[:,:,2]<<16)
-    atlas=np.frombuffer(parts['atlas'],np.uint8).reshape(head['atlasH'],head['atlasW'],4)
-    x,y=np.arange(w*scale)[None,:],np.arange(h*scale)[:,None]
-    tile=ids[y//scale,x//scale];safe=np.maximum(tile-1,0)
-    sx=np.floor(((x+.5)/scale%1)*tile_size).astype(int)
-    sy=np.floor(((y+.5)/scale%1)*tile_size).astype(int)
-    code=np.where(tile>0,atlas[(safe//per)*tile_size+sy,(safe%per)*tile_size+sx,3],0)
-    return ((code>=look['roofFrom']) & (code%2==0)) | (code==look['lamp'])
+    """Fine-grid coverage of facade windows/lamps; no rooftop eligibility remains."""
+    eligible,_,_=facade_masks(material_map(head,parts,w,h),look)
+    size,scale=head['size'],look['fine']
+    out=np.zeros((h*scale,w*scale),bool)
+    cuts=[0]+[math.ceil(i*size/scale-.5) for i in range(1,scale)]+[size]
+    for fy in range(scale):
+        for fx in range(scale):
+            blocks=eligible.reshape(h,size,w,size)[:,cuts[fy]:cuts[fy+1],:,cuts[fx]:cuts[fx+1]]
+            out[fy::scale,fx::scale]=blocks.any(axis=(1,3))
+    return out
 
 def sample_cells(values,scale):
     h,w=values.shape
@@ -126,20 +166,34 @@ def generate(city,map_path,settings,out):
     urban=np.array(plain(m['urban'])).reshape(h,w)
     fields=np.zeros((h*scale,w*scale,4),np.uint8)
     detail,sheet,coverage=window_shapes(head,parts,w,h,look)
-    fields[:,:,0]=coverage
+    # The coarse map cannot resolve a side wall without splashing its light onto a roof again.
+    # Facade windows use their pixel-aligned detail layer; far urban ambience remains separate.
+    fields[:,:,0]=0
     coverage,pools=road_lights(m,urban,look)
     fields[:,:,1]=np.round(coverage*255).astype(np.uint8);fields[:,:,2]=np.round(pools*255).astype(np.uint8)
     fields[:,:,3]=np.round(city_glow(urban,look)*255).astype(np.uint8)
+    materials=material_map(head,parts,w,h)
+    roof=materials>=look['roofFrom']
+    cuts=[0]+[math.ceil(i*head['size']/scale-.5) for i in range(1,scale)]+[head['size']]
+    for fy in range(scale):
+        for fx in range(scale):
+            blocked=roof.reshape(h,head['size'],w,head['size'])[:,cuts[fy]:cuts[fy+1],:,cuts[fx]:cuts[fx+1]].any(axis=(1,3))
+            fields[fy::scale,fx::scale][blocked]=0
     compressor=zlib.compressobj(9,zlib.DEFLATED,-15);packed=base64.b64encode(compressor.compress(fields.tobytes())+compressor.flush()).decode()
     target=pathlib.Path(out);target.parent.mkdir(parents=True,exist_ok=True)
     compressor=zlib.compressobj(9,zlib.DEFLATED,-15)
     detail['deflate']=base64.b64encode(compressor.compress(sheet.tobytes())+compressor.flush()).decode()
+    # All nontransparent frame pixels are white masks, so alpha averaging preserves edge colour.
+    half=np.full((sheet.shape[0]//2,sheet.shape[1]//2,4),255,np.uint8)
+    half[:,:,3]=np.round(sheet[:,:,3].astype(float).reshape(half.shape[0],2,half.shape[1],2).mean(axis=(1,3))).astype(np.uint8)
+    compressor=zlib.compressobj(9,zlib.DEFLATED,-15)
+    detail['half']={'width':half.shape[1],'height':half.shape[0],'deflate':base64.b64encode(compressor.compress(half.tobytes())+compressor.flush()).decode()}
     def lua(v):
         if isinstance(v,dict):return '{'+','.join('['+json.dumps(k)+']='+lua(x) for k,x in v.items())+'}'
         if isinstance(v,list):return '{'+','.join(lua(x) for x in v)+'}'
         return json.dumps(v)
-    target.write_text('--!strict\n-- GENERATED local-only original night-light fields and pixel-aligned window shapes.\nreturn {'+f'width={w*scale},height={h*scale},mapWidth={w},mapHeight={h},scale={scale},deflate="{packed}",windows='+lua(detail)+'}\n')
-    print('Night fields:',w*scale,h*scale,'window candidates',int((fields[:,:,0]>0).sum()),'road/pool texels',int(((fields[:,:,1]>0)|(fields[:,:,2]>0)).sum()))
+    target.write_text('--!strict\n-- GENERATED local-only source footprints with owner-requested facade windows.\nreturn {'+f'width={w*scale},height={h*scale},mapWidth={w},mapHeight={h},scale={scale},deflate="{packed}",windows='+lua(detail)+'}\n')
+    print('Night fields:',w*scale,h*scale,'coarse roof windows',int((fields[:,:,0]>0).sum()),'road/pool texels',int(((fields[:,:,1]>0)|(fields[:,:,2]>0)).sum()))
     print('Window atlas:',sheet.shape[1],sheet.shape[0],'patterns',len(set(p[4] for p in detail['points'])),'fragments',len(detail['points']))
     return fields
 

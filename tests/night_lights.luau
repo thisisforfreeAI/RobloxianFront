@@ -72,6 +72,29 @@ return function(test:any,eq:any)
 		eq(Windows.fade(7,{nearFrom=5,nearTo=9}),.5)
 		eq(Windows.fade(12,{nearFrom=5,nearTo=9}),1)
 	end)
+	test("projected facades remain when occupancy or flicker switches their windows off",function()
+		local points={{0,0,0,0,0,1,1},{14,0,3,0,0,2,0}}
+		local dark=Windows.prepare(points,config,function() return .9 end)
+		eq(#dark,2)
+		for _,item in dark do assert(not Windows.on(item,config,0,function() return .9 end)) end
+		local lit=Windows.prepare(points,config,function() return .2 end)
+		eq(#lit,2);assert(Windows.on(lit[1],config,0,function() return .9 end))
+		assert(not Windows.on(lit[2],config,0,function() return .9 end))
+	end)
+	test("bounded window selection keeps the same nearest visible fragments as a complete sort",function()
+		local points={}
+		for y=0,49 do for x=0,49 do table.insert(points,{x*14,y*14,x*3,y*3,0}) end end
+		local items=Windows.prepare(points,config,function() return .2 end)
+		local selected=Windows.visible(items,14,21,28,18,19)
+		local expected={}
+		for _,item in items do
+			local x,y=(item.point[1]+6)/14,(item.point[2]+6)/14
+			if math.abs(x-21)<=19 and math.abs(y-28)<=20 then table.insert(expected,{item=item,distance=(x-21)^2+(y-28)^2}) end
+		end
+		table.sort(expected,function(a,b) return if a.distance==b.distance then a.item.id<b.item.id else a.distance<b.distance end)
+		eq(#selected,Windows.MAX_VISIBLE)
+		for i,item in selected do eq(item.item.id,expected[i].item.id) end
+	end)
 	test("coarse window energy respects material coverage and fades out independently of city glow",function()
 		local f=buffer.create(12);buffer.writeu8(f,0,255);buffer.writeu8(f,4,64);buffer.writeu8(f,11,255)
 		local state=Lights.prepare(f,3,1,config,function() return .2 end)
@@ -103,6 +126,9 @@ return function(test:any,eq:any)
 		local Codec=require("../src/shared/Maps/MapCodec")
 		local Inflate=require("../src/shared/Utilities/Inflate")
 		local bytes=Inflate.raw(Codec.base64Decode(data.deflate),data.width*data.height*4)
+		if data.windows and data.windows.mode=="facades" then
+			for i=0,data.width*data.height-1 do eq(buffer.readu8(bytes,i*4),0) end
+		end
 		eq(data.width,data.mapWidth*data.scale);eq(data.height,data.mapHeight*data.scale)
 		local state=Lights.prepare(bytes,data.width,data.height,look.nightLights,Noise.hash21)
 		assert(state.count>0 and state.count<data.width*data.height/2)
@@ -115,6 +141,11 @@ return function(test:any,eq:any)
 			assert(detail.width<=1024 and detail.height<=1024)
 			assert(#detail.points>0)
 			for _,p in detail.points do assert(p[5]*detail.slot*detail.slot<detail.width*detail.height) end
+			if detail.half then
+				local half=detail.half
+				eq(half.width*2,detail.width);eq(half.height*2,detail.height)
+				eq(buffer.len(Inflate.raw(Codec.base64Decode(half.deflate),half.width*half.height*4)),half.width*half.height*4)
+			end
 		end
 	end)
 end

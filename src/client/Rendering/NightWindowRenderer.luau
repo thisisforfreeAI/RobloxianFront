@@ -1,6 +1,6 @@
 --!strict
--- Original 14 px building-material silhouettes, shared through one small atlas. Soft halos and
--- higher core opacity are APPROX rendering adaptations requested after the first Studio comparison.
+-- Source roof footprints with owner-requested projected side facades and roof-clipped windows.
+-- APPROX: flat town art gets a thin wall rim; original roof-surface emitters are intentionally removed.
 local ReplicatedStorage=game:GetService("ReplicatedStorage")
 local RunService=game:GetService("RunService")
 local Shared=ReplicatedStorage:WaitForChild("Shared")
@@ -20,6 +20,8 @@ function Renderer.start(data:any,profile:any,parent:Instance,born:number):any
 	local items=Windows.prepare(data.points,profile,Noise.hash21)
 	local views:{[number]:any}={}
 	local image:EditableImage?=nil
+	local imageDivisor=1
+	local preferHalf=false
 	local retry=0
 	local function release()
 		for _,v in views do v.part:Destroy() end;table.clear(views)
@@ -33,12 +35,18 @@ function Renderer.start(data:any,profile:any,parent:Instance,born:number):any
 		part.CFrame=CFrame.new((p[1]+data.slot/2)/scale*World.STUDS_PER_CELL,World.GROUND_Y+.245,(p[2]+data.slot/2)/scale*World.STUDS_PER_CELL)*CFrame.Angles(0,World.TOP_GUI_YAW,0)
 		local gui=Instance.new("SurfaceGui");gui.Face=Enum.NormalId.Top;gui.SizingMode=Enum.SurfaceGuiSizingMode.FixedSize
 		gui.CanvasSize=Vector2.new(data.slot,data.slot);gui.LightInfluence=0;gui.AlwaysOnTop=false;gui.MaxDistance=0
-		local label=Instance.new("ImageLabel");label.BackgroundTransparency=1;label.Size=UDim2.fromScale(1,1)
-		label.ImageContent=Content.fromObject(image :: EditableImage)
-		label.ImageRectOffset=Vector2.new((p[5]%data.perRow)*data.slot,math.floor(p[5]/data.perRow)*data.slot)
-		label.ImageRectSize=Vector2.new(data.slot,data.slot);label.ResampleMode=Enum.ResamplerMode.Default
-		label.ImageTransparency=1;label.Parent=gui;gui.Parent=part;part.Parent=folder
-		return {part=part,gui=gui,label=label,item=item}
+		local function layer(index:number):ImageLabel
+			local label=Instance.new("ImageLabel");label.BackgroundTransparency=1;label.Size=UDim2.fromScale(1,1)
+			label.ImageContent=Content.fromObject(image :: EditableImage)
+			label.ImageRectOffset=Vector2.new((index%data.perRow)*data.slot/imageDivisor,math.floor(index/data.perRow)*data.slot/imageDivisor)
+			label.ImageRectSize=Vector2.new(data.slot/imageDivisor,data.slot/imageDivisor);label.ResampleMode=Enum.ResamplerMode.Default
+			label.ImageTransparency=1;label.Parent=gui;return label
+		end
+		local face=if p[6]~=nil and p[6]>=0 then layer(p[6]) else nil
+		if face then face.ImageColor3=Color3.new(.035,.032,.028) end -- APPROX dark projected masonry.
+		local label=layer(p[5])
+		gui.Parent=part;part.Parent=folder
+		return {part=part,gui=gui,label=label,face=face,item=item}
 	end
 	local acc=0
 	local connection=RunService.Heartbeat:Connect(function(dt)
@@ -58,9 +66,15 @@ function Renderer.start(data:any,profile:any,parent:Instance,born:number):any
 		end
 		if not image then
 			if os.clock()<retry then return end
-			image=Memory.create(Vector2.new(data.width,data.height))
+			local variant=if preferHalf and data.half then data.half else data
+			image=Memory.create(Vector2.new(variant.width,variant.height))
+			if not image and not preferHalf and data.half then
+				preferHalf=true;variant=data.half
+				image=Memory.create(Vector2.new(variant.width,variant.height))
+			end
 			if not image then retry=os.clock()+5;return end
-			local ok,err=pcall(function() (image :: EditableImage):WritePixelsBuffer(Vector2.zero,Vector2.new(data.width,data.height),Inflate.raw(Codec.base64Decode(data.deflate),data.width*data.height*4)) end)
+			imageDivisor=if preferHalf then 2 else 1
+			local ok,err=pcall(function() (image :: EditableImage):WritePixelsBuffer(Vector2.zero,Vector2.new(variant.width,variant.height),Inflate.raw(Codec.base64Decode(variant.deflate),variant.width*variant.height*4)) end)
 			if not ok then release();retry=math.huge;warn("[NightWindows] Local atlas unavailable:",err);return end
 			state.ready=true
 		end
@@ -78,6 +92,7 @@ function Renderer.start(data:any,profile:any,parent:Instance,born:number):any
 			v.gui.Enabled=true;v.gui.Brightness=correction.brightness*1.4 -- APPROX owner-requested stronger emission.
 			v.label.ImageColor3=Color3.new(correction.color[1],correction.color[2],correction.color[3])
 			v.label.ImageTransparency=if Windows.on(v.item,profile,clock,Noise.hash21) then 1-night*fade else 1
+			if v.face then v.face.ImageTransparency=1-night*fade end -- Wall stays visible when its window switches off.
 		end
 		-- Keep coarse coverage until all selected fragments exist; no empty camera-pan interval.
 		local complete=true
