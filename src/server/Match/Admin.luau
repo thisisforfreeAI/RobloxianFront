@@ -11,8 +11,7 @@
 	  time    { phase = 0..1, freeze = bool? }  sets the sim's day phase (the game's 480 s day: night
 	          from phase 0.62, full at 0.70, dawn over the last 0.05). freeze holds it there.
 	  weather { weather = "clear" | "fog" | "downpour" | "storm" | "sandstorm" }  sets the weather the
-	          clients draw. Visual only: the port has no weather rules yet (the game keeps weather off
-	          in skirmish), so sight and pace do not change.
+	          clients draw. Rain/storm also suppress roof fires; sight and pace do not change.
 	  oil     { amount = number, add = bool? }  sets (or adds to) the sender's side's oil.
 ]]
 local RunService = game:GetService("RunService")
@@ -107,6 +106,19 @@ function Admin.handle(sim: any, player: Player, side: number, raw: any): string
 		st.weather = w
 		sim.weather = w
 		return `Weather: {w}`
+	elseif op == "townFire" or op=="forestFire" then
+		local world=if op=="townFire" then sim.houseFires else sim.forestFires
+		if not world then return if op=="townFire" then "House fire data unavailable on this map" else "Forest fire data unavailable on this map" end
+		if sim.winner or (sim.drop and sim.drop.phase~="done") then return "Start the match first" end
+		local x,y=raw.x,raw.y
+		if type(x)~="number" or type(y)~="number" or x~=x or y~=y or x<0 or y<0 or x>=sim.deps.map.width or y>=sim.deps.map.height then return "Bad fire position" end
+		local count=world.igniteAt(x,y)
+		return if op=="townFire" then `Ignited {count} nearby roofs` else `Ignited {count} nearby trees`
+	elseif op == "rebuildFires" then
+		if not sim.houseFires and not sim.forestFires then return "House fire data unavailable on this map" end
+		if sim.houseFires then sim.houseFires.reset() end
+		if sim.forestFires then sim.forestFires.reset() end
+		return "Fire damage rebuilt"
 	elseif op == "oil" then
 		local amount = tonumber(raw.amount)
 		local s = sim.sides[side]

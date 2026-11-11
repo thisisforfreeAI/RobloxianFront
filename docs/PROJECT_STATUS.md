@@ -1,6 +1,6 @@
 # PROJECT_STATUS: WarFront Roblox port
 
-Last updated: 2026-11-10
+Last updated: 2026-11-11
 
 Latest feature and verification results are in the dated entries at the end. The early phase and
 validation sections below are historical checkpoints.
@@ -2078,3 +2078,447 @@ completed: the UI input guard detected user activity and the subsequent capture 
 Studio game view. No successful local restart or visual pass is claimed. B153-B154 remain pending.
 Restart Play after sync to load the corrected renderer rather than its cached ModuleScript.
 
+## Cloud confirmation and visual power infrastructure (2026-11-11)
+
+Owner confirmed the repeated cloud/camera problem is now fixed after the runtime correction.
+Recorded as an owner-confirmed camera-anchoring result for B153. The broader night/lifecycle/
+memory checks in B154 are not inferred to have passed from that confirmation.
+
+Added a separate PowerLineRenderer and source-derived local art/layout for Saddle. The original
+power planner and BJt power drawing code were traced. Saddle's authored map has no power grid;
+APPROX owner-requested presentation addition: apply only the original procedural power planning
+pass to the designed Saddle map, using its map seed for the sub-seed. This yields two neutral
+plant sites, 159 poles/pylons and 159 connected spans. These are source-generated placements,
+not positions claimed to exist in the authored original Saddle layout. Other maps without a
+generated power module remain unchanged.
+
+This is a VISUAL layer. It adds no electrical supply, power ownership, blackout rules, capture,
+repair, sabotage, extra blocking cells, combat targets or unit collisions. Existing gameplay and
+city-light rules remain. Static neutral plant art terminates the lines; it is unselectable scenery.
+The original default skirmish power setting is off. A later authoritative electricity batch must
+connect the topology and all source rules before any live power simulation is claimed.
+
+Steel lattice pylons, wooden poles and feed-pole variants are baked by executing the original
+rectangle-drawing methods, with sixteen orientations. Neutral plant body/paint comes from the
+original building sheet. One shared 768x432 atlas (about 1.27 MiB) contains all source pole art and
+plant pixels; the 384x216 fallback uses about 0.32 MiB. Wire segments are GUI geometry and allocate
+no EditableImages. Atlas storage is lazy, budgeted as detail, reclaimable, and released when no
+sprite detail uses it or the map is destroyed. Refusal tries the smaller atlas and then backs off;
+no nil writes or per-pole images. Node/plant parts are non-collidable and non-queryable.
+
+Wire attachment points, two/three conductors, sway phases, source effect clock, zoom width/alpha,
+and the sun-projected sag of wire shadows follow the original renderer. Source red pylon beacons
+blink at night. Far wood wires simplify and steel towers become dots. Visible wire portions check
+current fog at endpoints and segment midpoints; poles/plants require current visibility. The layer
+uses the shared visual clock and fixed world positions, independent of camera panning.
+
+APPROX rendering policies: 96 nearby node/plant views and 64 spans maximum; three milliseconds
+for constructing new views per update; 0.1-second update cadence; source 16-facing baked tower art
+with residual rotation; rotated GUI bars instead of Canvas strokes; translated tower sprite shadows
+instead of the original height-varying tower shadow lines; stricter fog suppression; and common
+daylight grading instead of the source power palette's separate stepped night-darkening. Plant
+cast shadows, steam, destruction/fall/arcs and the wire highlight stroke remain unported. Power
+planner reserve/terrain checks are used, but the existing baked vegetation is not rebuilt around
+the newly added layout. Report visual intersections during Studio review; no unrelated map art
+was silently regenerated.
+
+Generate locally from the project root:
+```
+node tools/conversion/export_power_lines.cjs "A:\SteamLibrary\steamapps\common\WarFront Demo"
+python tools/asset_pipeline/pack_power_lines.py docs/private/power-art_saddle.json assets/original/warfront-demo-assets-20261110-104215/dist/tiles/buildings-top.png src/client/DevAssets/OrigPowerLines_saddle.luau
+```
+The exporter reads the original main/worker bundles in memory, evaluates the original planner,
+geometry and drawing, and writes only ignored original-derived data/art under GameData,
+DevAssets and docs/private. Original code/settings are not embedded in tracked files. The source
+install was read only. The original atlas preview was inspected locally. Claude's water and street
+furniture work, the cloud correction and stronger city-light halo were preserved.
+
+Verification: six pure/data tests and two actual-renderer tests pass; changed Luau compiles and
+Rojo build passes. Full Lune suite actually run: **289 passed, 0 failed**, including eight new
+power presentation/renderer tests.
+Wire curves were compared across every Saddle span at four wind times to captured original
+drawSky output. Ground-wire shadows agree with original drawGround at three sun vectors; source
+zoom width/alpha agrees at six zoom levels (1e-8 tolerance). Other checks cover valid rooted plan
+topology, all atlas facings/full/half decoding, no plan mutation, real renderer startup/fog culling,
+one shared atlas, full-size refusal/half fallback, reclamation, idle release and map teardown.
+The renderer tests mock Roblox boundaries; native visuals and frame cost remain for Studio.
+New B155-B157 are not run. Restart Play after sync for the new renderer and local art.
+
+## Power continuity and wet-weather motion correction (2026-11-11)
+
+Owner reported missing wire segments and lines ending in empty space, and requested sway only in
+rain/storms. Removed the independently chosen 96-node/64-span limits and the shared creation timer
+that could omit connections after drawing nearby poles. All visible members of the finite generated
+network now participate. Plants remain visible at wire zoom; small pole anchors remain when detail
+is reduced, and image-allocation refusal keeps simple anchors instead of leaving naked wire ends.
+
+Replaced overlapping per-span SurfaceGui planes with disjoint eight-cell world tiles. Conductors
+and their shadows reuse native Frames within these tiles; wires still allocate no EditableImages.
+APPROX port policy: native strokes are at least one GUI pixel wide, adjacent pieces overlap by half
+a stroke, and curve subdivisions reduce to two/four below 8/14 px per cell. Source attachment
+coordinates and full-detail curves remain intact. Fog clipping splits at cell boundaries and keeps
+visible portions of a span even if both distant endpoints are hidden. Fogged cells stay hidden.
+
+APPROX owner override of the original always-on wind: runtime sway is enabled only for downpour
+(the admin Rain setting) and storm. Clear, fog and sandstorm wires remain still. Day-only state
+packets retain the last weather. The original curve sampler default still supports source-reference
+comparisons; only the actual renderer supplies the owner-requested motion gate.
+
+Verification: fourteen focused tests pass, including actual-renderer coverage for every Saddle
+span and all 161 anchors, disjoint tile placement, full/half/all-refused image paths, wet/dry motion,
+partial snapshots, visible midspans between hidden endpoints, reclamation and teardown. Original
+wire/shadow/style references still pass. Changed Luau compiles; Rojo build passes. Full Lune suite
+actually run: **295 passed, 0 failed**. Native rasterization and frame pacing still require Studio.
+B158-B160 are new and not run. Restart Play after sync. B156's dry-weather sway expectation and
+B157's independent cap/fill behavior are superseded by these correction checks.
+
+## Prepared water renderer connected and lifecycle hardened (2026-11-11)
+
+Connected Claude's prepared WaterRenderer after MapRenderer.build and added its tests to the main
+runner. Missing water data and the current dry Saddle map skip the layer without resources. The
+selected match map is unchanged. Existing generated Shoals/Fjords data stays local and ignored.
+The source depth/swell/surf/crest/tide/river/glint formulas and coefficients are preserved; the
+earlier documented GPU hash, repaint cadence and chunk-edge tide approximations still apply.
+
+Review found that destroying a map's parent did not disconnect the water heartbeat/render callbacks
+or release images, and that already-painted static far water did not update when daylight changed.
+Added parent teardown with restart-safe disconnection/release, shared camera view bounds and a
+quantized daylight invalidation for still water. Memory reclaim now backs off before refilling;
+malformed chunks and failed image writes are disabled after one warning rather than retried forever.
+APPROX CPU cache policy: discard the deterministic noise cache every ten seconds so it cannot grow
+through an indefinitely long match. This changes no sampled noise values. The existing 12-image,
+3 ms repaint and progressive-load policies remain. Water is still below towns/roads/fog and has no
+colliders or gameplay state. New storm sea, reflections, blast ripples and dam flooding are not claimed.
+
+Verification: ten existing water tests and six new actual-renderer tests pass. New tests cover dry/
+missing maps, world chunk placement, clear land texels, streaming/eviction, far-daylight updates,
+allocation refusal/retry, reclamation, parent teardown/map replacement, invalid chunks and failed
+writes without warning loops. These execute the real renderer with mocked Roblox image/services
+and small synthetic chunks using locally generated settings. Changed Luau compiles; Rojo build
+passes. Full Lune suite actually run: **311 passed, 0 failed**. B161-B163 are new and not run; a water map must be
+selected in Studio to see this layer. No water visual pass is inferred from dry Saddle tests.
+
+## Fire source tracing and pure behavior foundation (2026-11-11)
+
+Started the next living-world fire work. This batch is a tested behavior foundation, **not live
+forest/building fires**: it is not connected to match blasts, state replication or native art.
+The existing playable match remains unchanged by these new pure modules.
+
+Traced original forest controller Ihe and house controller Ohe, separate from generic structure
+destruction/wreck flames. Added export_fire_rules.cjs, which reads the installed bundle in memory
+and generates ignored FireRules and forest/house reference trajectories. Original coefficient
+tables, terrain definitions, motion vectors and captured outputs remain under ignored GameData;
+no source tables or extracted bundle code are embedded in tracked files. Read-only original install.
+
+ForestFire ports ignition life scaled by tree size, char stages, wind/downwind/crosswind/upwind
+spread, deterministic patch dryness, water/major-road firebreaks, rare one-cell gap jumps, soft/
+hard fire caps, hot wreck ignition, per-cell scars and gradual timed regrowth. Context callbacks
+provide stable tree queries and future visual mutation without modifying the input map data.
+HouseFire ports the bounded four-neighbor roof flood fill across cell seams, tiny-fragment rollback,
+burn stages/lifetimes, wind spread with generation falloff/limit, rain acceleration and suppression,
+caps, ruin marks and explicit restoration. It uses world-pixel IDs through an adapter instead of
+original atlas indices. This coordinate adaptation is tested against an equivalent original atlas.
+
+Eight focused tests pass. Four original forest trajectories cover 36 checkpoints through 1,600
+seconds each, including dry/rain/firebreak/gap conditions, burn ages/lifetimes/char, ordered fates,
+scar order, regrowth and exact RNG draw counts. Two original house trajectories cover fourteen
+checkpoints with ordered roof pixel claims, centroids/radii, generations, stages, ruin marks and
+RNG counts. Other tests cover signed hashes, caps/duplicates, immutable inputs, water barriers,
+hot-source expiry, seam claims/max/min pixel budgets, forbidden roots, restoration and reset.
+All comparison tolerances are 1e-8 or exact IDs/counts. Changed Luau compiles; Rojo build passes.
+Full Lune suite actually run: **319 passed, 0 failed**. The repository's existing GameData ignore
+rule covers all three generated modules. A Git check-ignore probe was unavailable in this tool
+environment (reported no work tree), so ignore coverage was checked against the read .gitignore;
+no Git settings, index, commits or branches were changed.
+
+Next fire integration work: source weapon blast ignition/felling, dynamic char/ruin/tree artwork,
+source flame/smoke/light emission with a shared particle budget, settlement rebuild gates, original
+regrowth visuals, fog-safe authoritative triggers/state and visibility/blocker updates where needed.
+Nuclear/windthrow/crushing and field fires are not implemented by this foundation. No new fire
+Studio check is marked ready while no live integration exists. Existing B158-B163 remain pending.
+
+## Source fire blast response and char-pixel foundation (2026-11-11)
+
+Extended the pure fire foundation with common weapon blast responses. Forest blasts follow the
+source's scaled splinter/fell/ignite rings, stump/fall shares, fall angles and hot-wreck/razed heat.
+House blasts follow source ignition chance, bounded radial roof sampling, first-hit treatment and
+one/two-house early exit. Bullets/flares retain their zero-ignition source behavior. No live blast
+event or fire rendering is connected yet, and no extra gameplay damage is invented.
+
+Added FirePixels.house: original per-pixel soot/char/ruin colors, remaining wall/floor material
+heights and source hash IDs. A repacked city must provide the ORIGINAL atlas pixel ID through an
+adapter to preserve that pattern. Source-derived palettes/salts stay in ignored FireRules. Factored
+the generic original To/Ui hash into Hash.seed; ambient Do mapping remains mathematically identical.
+Fixed the new forest/pixel modules' dependency loading for both Roblox ModuleScripts and Lune.
+
+Verification: twelve focused fire tests pass, including 168 original forest weapon cases, 168
+original house weapon cases and 384 original soot/ruin pixel samples, byte for byte. Existing long
+forest/house trajectories and RNG counts still match. Added an actual module-loader check for the
+Roblox dependency branch. Full Lune suite actually run: **323 passed, 0 failed**; Rojo build passes.
+Original art/coefficients/reference output remain local/ignored; no Git mutation or original-install
+write. Native char/ruin painting, tree replacement, flames/smoke/lights, settlement rebuild gates
+and fog-safe live triggers/state are still required before fires appear in the playable match.
+
+## Real city-to-fire adapter prepared (2026-11-11)
+
+Added pure FireMap and a read-only export_fire_map.cjs pipeline. It evaluates the original worker
+for map identity/rigs, reads the matching original .city file and emits ignored source atlas/index/
+cell data and the original oil-site no-fire reservation. The adapter maps world roof texels to
+ORIGINAL atlas pixel IDs and RGBA, so HouseFire can find actual connected roofs and FirePixels can
+retain the original char pattern after the port repacks towns into map chunks.
+
+Saddle has 11,008 source tiles. Its no-fire mask reserves 1,134 cells around the source rig pads.
+Atlas storage is split into seventeen compressed 512 KiB raw pages instead of a single large
+ModuleScript literal (APPROX port storage policy). Decoding is explicitly requested by a caller;
+this batch does not load it during the live match and allocates no EditableImages. A future loaded
+sampler needs about 9.2 MB of decoded CPU buffers, separate from native image memory; dispose its
+owning session on teardown. Only static map data is exposed by this adapter, no hidden live state.
+
+Four focused tests pass: swapped tile coordinates/bounds/malformed storage; ordered/complete page
+validation; 1,200 original coordinate/RGBA samples and rig reservations; and actual connected roof
+claims using generated Saddle data, compared to original Ohe.claim. These exercise the real city
+mapping rather than only a synthetic identity atlas. Existing house/forest behavior is unchanged.
+Changed Luau compiles; Rojo build passes. Full Lune suite actually run: **327 passed, 0 failed**. Fires remain
+unwired: native painting/tree replacement, bounded flames/smoke/light, rebuild gates, live triggers
+and fog-safe state integration are still required. No fire Studio pass or live feature is claimed.
+
+## Source fire emission requests prepared (2026-11-11)
+
+Added pure FireEffects, traced against original Ihe.draw/Ohe.draw. It requests flame particles,
+smoke puffs and embers with source lifetime/size/rise, age-dependent catching/dying intensity,
+per-source and total emission rates, roof-pixel house origins, zoom minimum sizes/ember thresholds,
+and night-vision flame palette substitution. Source appearance tables are generated privately as
+FireEffectsRules; the public module holds formulas only. It accepts visibility/view and roof-point
+callbacks, and leaves offscreen/hidden sources' cosmetic accumulators alone.
+
+APPROX port policy: one combined 512-command emission cap per frame, for future routing into the
+existing shared bounded particle pool. Source per-actor catch-up caps and discarded overdue bursts
+are retained. Cosmetic RNG can be supplied independently from authoritative fire progression;
+original draw-reference comparisons use the same supplied stream at the emission-request boundary.
+This batch does not yet connect the native particle atlas/pool, lighting, map paint or live events.
+
+Three focused tests pass: thirty-two original combined emission frames across four frame deltas,
+four zooms and both normal/night-vision palettes, including exact RNG counts and retained actor
+accumulators; combined 200-tree/32-house hitch stress staying at the request cap without a delayed
+burst; and hidden-source suppression without cosmetic RNG consumption. Changed Luau compiles.
+Full Lune suite actually run: **330 passed, 0 failed**; Rojo build passes. Native visual/cost checks are still
+pending live integration; no Studio result is claimed.
+
+## Source house reconstruction gates prepared (2026-11-11)
+
+HouseFire now includes original Ohe.rebuildShells timing: wait for the ruin age threshold, require
+no nearby active house fire, then for a town require the source quiet period since last hit and
+its next reconstruction slot. Slot spacing comes from the town's integrity deficit, original
+full-rebuild duration and count of its remaining ruins, clamped to source min/max. Lone buildings
+use the longer source delay. The check cadence, pending timers and reset behavior are ported.
+Source B4t was traced: this gate checks quiet time, not ownership or garrison. Context callbacks
+provide town membership, live integrity/hit time, game time and the already-exported settlement
+rebuild rules. Restoration still delegates actual artwork to a future adapter.
+
+Two new tests pass, including four original reconstruction trajectories with 36 checkpoints,
+ordered restored IDs/times, remaining ruins and per-town next slots under quiet/recent-hit/nearby-
+fire/lone conditions. Existing house blast/claim/burn/spread/restoration tests still pass. Changed
+Luau compiles; Rojo build passes. Full Lune suite actually run: **332 passed, 0 failed**. Live native fire,
+char/ruin painting, forest art replacement and fog-safe trigger/state integration remain pending.
+
+## Native house char/ruin renderer prepared (2026-11-11)
+
+Added FireScorch and FireScorchRenderer. The prepared API accepts world roof-pixel stage changes
+and restoration, uses FireMap's original atlas IDs/RGBA, and paints only those pixels into disjoint
+eight-cell image tiles. Other pixels stay transparent over existing town art. TownRenderer.sample
+exposes its already-decoded, currently shaded CPU pixels without allocating images; the char layer
+uses that baked shade rather than displaying raw bright source colors. Restoring a stage removes
+the overlay and exposes the unchanged underlying town image.
+
+APPROX renderer policies: 24 nearest tiles, two new small images per 0.2-second update, shared
+detail priority with five-second refusal/reclaim backoff, and a scalar town-shade estimate. At
+current source resolution each full tile is 112x112 (~49 KiB), rather than one image per house.
+Collapsed-height shadows/sky occlusion are not recomputed; absent cached town pixels use unshaded
+source color until available. Only currently visible changed roof texels paint. Native memory
+pressure can temporarily omit this detail while the base map remains. The static city sampler is
+decoded lazily, over yielding source pages, only after a visible patch exists. Wholly hidden or
+empty views allocate nothing. Teardown cancels pending publication, disconnects and releases images.
+
+Corrected the initial quad height during review: town detail's top face is .105 studs above ground,
+so the char part now centres at .12 (top .125), above it. Source roof filtering keeps it off unrelated
+ground. Missing/malformed local source, failed page decode or paint skip only this layer and avoid
+warning loops. No selectable/colliding objects or gameplay changes were introduced.
+
+Six focused tests pass: tile seam/world-pixel identities; real Saddle roof/noise/shade painting and
+clear non-roof texels; actual renderer lazy startup/unchanged-image reuse/restoration; individual
+fog clipping and no hidden-source decode; native refusal/retry/reclamation; parent teardown while
+loads are pending; and failed paint/missing data isolation (some checks combined). Tests mock native
+Roblox image/services and do not prove native appearance. Changed Luau compiles; Rojo build passes.
+Full Lune suite actually run: **338 passed, 0 failed**. The renderer is **not yet started in init**: live
+fire triggers/state and the shared flame/smoke renderer still need to connect as one coherent batch.
+No live char/fire feature or Studio pass is claimed by this preparation.
+
+## Shared native fire particle bridge prepared (2026-11-11)
+
+DeathEffects now accepts source flame/puff/ember requests into its existing 512-particle pool;
+DeathRenderer exposes that bridge using the same 96x96 native atlas already used for vehicle
+deaths. Added the original generic ember primitive and exact fire puff request flags. A local
+map/session tag permits removing its world particles without removing unrelated death particles.
+Cleared native views are hidden immediately, and an empty tagged pool drops its Parts. The small
+shared core atlas remains available for later vehicle effects; no per-fire image is introduced.
+
+Fixed an existing refusal path during integration: DeathRenderer formerly marked loading as tried
+forever after one failed allocation. It now backs off five seconds and retries; one warning remains
+until a successful load, while missing local data disables this layer without a warning loop.
+Hidden requests are refused before allocation, and rendering still checks both birth and current
+particle positions, including smoke crossing a fog boundary. APPROX port CPU/storage cap: skip
+ember work beyond remaining particle capacity as well as bounding the stored pool. Existing flat
+quad rendering, continuous alpha/tint and approximate particle physics remain as documented for
+death effects; this does not claim original additive/erosion shader parity or new ground lighting.
+
+Added a read-only export_fire_particles.cjs for six original puff/ember primitive reference cases;
+generated output stays ignored. Five new tests pass: original primitive spawn fields; one shared
+cap/tag cleanup/input immutability; actual native-renderer atlas sharing and view cleanup; refusal/
+write failure/retry behavior; and hidden births/drifting plumes/missing data. Nine existing death
+effect tests still pass, including vehicle death variants, long-effects budget and cleanup.
+Changed Luau compiles; Rojo build passes. Full Lune suite actually run: **343 passed, 0 failed**. Live fire
+state still needs to connect the prepared progression, char layer and this bridge from the match.
+
+
+## Live authoritative house fires connected (2026-11-11)
+
+HouseWorld now runs the prepared source roof-fire controller on the server, at its fixed quarter-
+second cadence on the simulation clock. Ordinary ground hits, salvo/missile landings and artillery-
+base barrages report their weapon and impact point once. Non-foot vehicle deaths also provide the
+source hot-wreck ignition request. House fires catch, spread over connected roof pixels, change
+through soot/char/ruin stages and rebuild on the original quiet-time/town pacing rules. Opening
+picks/flight and victory stop progression because the simulation clock stops. The day-clock Freeze
+button still freezes the sun only. Rain/Storm suppress spreading and accelerate burnout.
+
+The fire-map exporter now evaluates the original nearest-town membership function with the
+original runtime settlement centres and separately exported scaled RulesMatch radii. Its ignored
+Uint16 town map and 2,000 original sample references let the server link each roof shell to the live
+settlement's integrity/last-hit time. No original atlas pages were changed by this batch. Public
+conversion scripts contain extraction/adaptation logic; original pixels, tables and references stay
+under ignored GameData. Only Saddle has the prepared source house-fire city data at this checkpoint;
+other maps keep their existing view until matching fire data is generated.
+
+MatchService sends per-player visible fire actors and visible changed roof texels over the existing
+reliable state event. Hidden changes are withheld, including hidden rebuilding; cached roof state
+is refreshed when visible again. New visible actors send their roof-point buffer once. Transport
+budgets (port policies, not source gameplay) are 2,048 char texels and 16 KiB of new roof points per
+state update. Only sent entries become known, so excess work retries on later updates. Reset epochs
+clear old client actors/char. Current full actor lists remove actors that leave visibility. Buffers
+use the native RemoteEvent transport; native bandwidth/latency has not been measured.
+
+HouseFireRenderer is now started in init and feeds the shared native DeathRenderer atlas/pool via
+FireEffects. Flames originate at the source roof pixels; smoke uses the source house centre. The
+prepared FireScorchRenderer is now live. Birth/current-position fog checks still apply to shared
+particles. A separate cosmetic RNG preserves server progression. Map teardown disconnects this
+controller, clears its tagged particles and destroys its char layer. No second particle step was
+added: UnitRenderer remains the shared pool's sole per-frame step caller.
+
+The owner/Studio admin panel has **Ignite view centre** (pan closely onto a roof) and **Rebuild fire
+damage**. The server checks ownership, finite map coordinates, missing local data and opening/victory
+state; ordinary clients cannot ignite/reset the world with those commands. These are port testing
+tools, not player abilities. Reset restores fire roof damage only; it does not repair combat HP.
+
+APPROX/remaining: source random behavior is authoritative here but uses a separate map-seeded stream;
+admin rain covers the whole map instead of original spatial fronts. Existing direct projectiles
+follow live targets; a missing target uses the recorded launch aim. Wreck heat starts at the death
+event rather than the source visual sequence's possible delay. Source visual-only ground scarring,
+razed-structure/demolition/mine/other unsupported blast subtypes, dynamic collapsed-height shadows/
+LOS, ruined-window light suppression and source fire light pools remain pending. Existing native
+alpha quads/particle physics are not additive/erosion shader parity. Char uses the already documented
+near-tile/image budget and current-visibility gate; paused particles already emitted into the shared
+pool retain its existing real-time lifetime behavior. No electricity or new combat damage rules
+were enabled by the roof-fire presentation layer.
+
+Validation actually run: **356 passed, 0 failed** in the full Lune suite; changed Luau compiles (syntax
+only); `rojo build default.project.json` succeeds. Thirteen new tests cover direct/rocket impact
+routing; compact packet bounds; fixed clocks/rain; visibility transitions/hidden restoration;
+transport overflow retry; reset epochs; client phase/age/input immutability; actual renderer emission,
+fog/pause/teardown and missing-data replacement; admin authority/bounds; original town decoding.
+Existing original house/forest trajectories, char and shared particle tests remain passing. Native
+Roblox services are mocked in renderer tests. **Studio B164-B168 have not been run.**
+
+## Live forest fires and reversible tree damage connected (2026-11-11)
+
+ForestWorld now advances the original forest controller on the server's fixed quarter-second war
+clock. The existing common ground-impact/wreck callback feeds both roof and forest controllers.
+Tree ignition, wind/dryness spread, rain suppression, source caps, splinter/fallen/stump fates,
+burnout and staged regrowth use the already verified original rules. Source rank-2-and-up sampled
+road cells form firebreaks; deep/shallow/river terrain also stops spread. The complete Saddle road
+mask matches an evaluation of the original G4 function. This is visual world state, with no invented
+unit damage, tree collision, forest cover or pathing changes.
+
+The local tree-damage exporter evaluates the game's own standing/fallen/stump/burnt atlas builder
+and tree-pose function. No original procedural functions or color tables are embedded in public
+scripts. Its PNG, settings and reference outputs stay in ignored docs/private; packed data/art stays
+in ignored GameData and DevAssets. The same build-only @napi-rs/canvas dependency used by the existing
+particle exporter was installed only in the isolated Codex staging folder for this conversion.
+
+The packer retains exactly the current road/canopy clearance result: **12,222 trees**, with original
+quantized root positions, source keys, sizes and cell-query insertion order. It preserves the old
+baked draw alignment. The source artist's damaged shapes and char palette become 218 resized CPU
+sprite families, **300,488 raw sprite bytes**, in one ignored page. Original pose checks cover 60
+standing/charred/fallen/stump/burnt cases; 2,000 generated samples check tree-record storage. The
+server decodes tree records only; sprite pixels decode lazily on the client after visible damage.
+
+New tree-free town/road chunks and their matching roof-lighting patches support replacing canopies,
+not drawing fire over permanently green art. All **432 existing town/base-lighting modules** produced
+by this conversion match the installed versions byte for byte and were not replaced. The existing
+City metadata changed only to reference Forest_saddle. The 432 new tree-free base/light modules,
+three Forest data/reference modules and private conversion inputs are ignored original-derived
+art/data. Public source, tests and conversion logic remain separate from those generated outputs.
+
+TownRenderer recomposes an affected chunk over its tree-free city/road layer, with original-style
+layer order: fallen/stumps, upright shadows, then canopies/burned branches. Roads/buildings beneath
+removed foliage and overlapping surviving trees remain. Reset/regrowth restores intact trees. The
+same native chunk images are rewritten; the far overview's cached pixels also update, including
+when detail images are refused or reclaimed. Untouched chunks retain the existing fast static path.
+At most one dirty chunk repaints per 0.1-second check. Missing art/failed repaint is isolated and
+warns once; existing art remains. Teardown removes the map's CPU-state callbacks/references.
+
+Forest state uses visibility-filtered per-player deltas, capped at 512 tree fates per update, with
+unsent changes retried. Float64 source keys preserve large values; fates/char and float32 fall angle
+use 14 bytes per row. Visible active actors carry age/life/rate, using public map-tree positions on
+the client. Hidden fate changes and regrowth are withheld until seen. Source sight uses the original
+cell, before subpixel root quantization. Reset epochs discard stale state. Trees and houses now use
+one combined FireEffects emitter/request budget and the existing shared native death-particle atlas
+and 512-particle pool; no new tree/fire EditableImage is allocated.
+
+Added a presentation **viewReady** handshake after both client listeners attach. Map loading can
+outlast early state events; fire deltas now wait for readiness, and the first readiness signal resets
+only that player's cached fog/cities/territory/wear/fire view. This also permits spectators to receive
+fresh visual state after loading. Repeated readiness messages do not force repeated full resends or
+grant gameplay/admin privileges. The native late-join scenario still needs B173; mocked renderer and
+pure cache tests do not prove Roblox event delivery.
+
+Admin now offers **Ignite roofs**, **Ignite trees**, and **Rebuild fire damage**, all at the view centre.
+The reset clears both roof and tree fire damage. Server ownership, opening/victory and finite-map
+coordinate checks remain; ordinary players cannot issue those testing actions. The earlier house-
+only tests now skip generated-data cases correctly when private fire data is absent from a clone.
+
+APPROX/remaining: the existing 14px/cell bake, CPU alpha rounding (observed maximum 2/255 channel
+variance against five intact baked chunks), resized sprite/fall resampling and fixed tree shadows
+replace continuous GPU drawing, wind/gusts and lighting. Forest progression uses a separate map-
+seeded RNG stream and map-wide admin rain rather than original shared visual RNG/spatial fronts.
+One changed chunk per check bounds repaint work but may delay a large multi-chunk update. No native
+CPU, bandwidth or GPU benchmark is claimed. Original grass-only/wild/nuclear/windthrow/crushing
+paths, leaf/splinter debris, fire light pools and ground scorch remain pending. Dynamic collapsed-
+roof height/LOS, ruined-window light suppression, and roof-char ordering under overlapping canopies
+also need further integration. Unsupported blast subtypes listed in the house-fire entry remain
+pending. Existing native alpha/particle physics and real-time lifetime of already emitted paused
+particles retain their documented approximations. Only Saddle has this full generated forest/tree-
+free data at this checkpoint. Other maps keep their existing baked views without it.
+
+Regeneration uses existing exported map/tree JSON and source .city/sheet inputs. First evaluate:
+`node tools/conversion/export_tree_damage.cjs <install> <trees-top.png> docs/private <map.json>`.
+Then run pack_city with its existing trees/sheet/map/roads/lighting arguments plus
+`--forest-damage docs/private/tree-damage.json --forest-data src/shared/GameData`. Its ordinary
+non-forest output path remains supported. Generated data must remain ignored.
+
+Validation actually run on installed files: **370 Lune tests passed, 0 failed**; **9 Python tests
+passed** (new deterministic packing/bounds tests plus existing city-lighting and road tests); changed
+Luau compiles (syntax only), Node exporter syntax checks pass, and `rojo build` succeeds. New checks
+cover bounded forest packets; fixed clocks/rain; hidden updates/restoration and retry; client epochs/
+phase/age; canopy removal/overlap/regrowth; original tree records/poses/road barriers; approximate
+bake parity; actual combined emitter; admin authority; and actual TownRenderer repaint, overview,
+lighting, image reuse/refusal, missing-art isolation and teardown. Roblox services/images are mocked
+in native-renderer tests. **Studio B169-B173 have not been run.**

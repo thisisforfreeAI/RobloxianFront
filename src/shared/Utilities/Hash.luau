@@ -20,12 +20,15 @@ function Hash.kc(t: number, e: number): number
 	return bit32.bxor(o, bit32.rshift(o, 16)) / 4294967296
 end
 
--- Original ambient renderer's To/Do seed stream, independent of combat's kc stream.
-function Hash.ambient(id:number,channel:number):number
-	local seed=(id*7919+channel)%4294967296
-	local value=bit32.bxor(imul(bit32.bxor(seed,81),2654435761),2246822507)
+-- Original To/Ui hash, before a particular renderer chooses its seed/channel mapping.
+function Hash.seed(seed:number,salt:number):number
+	local value=bit32.bxor(imul(bit32.bxor(seed%4294967296,salt),2654435761),2246822507)
 	value=imul(bit32.bxor(value,bit32.rshift(value,15)),739982445)
 	value=imul(bit32.bxor(value,bit32.rshift(value,12)),695872825)
 	return bit32.bxor(value,bit32.rshift(value,15))/4294967296
+end
+-- Original ambient Do channel mapping, independent of combat's kc stream.
+function Hash.ambient(id:number,channel:number):number
+	return Hash.seed((id*7919+channel)%4294967296,81)
 end
 return Hash

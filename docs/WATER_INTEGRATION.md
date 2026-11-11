@@ -1,8 +1,14 @@
 # Water visuals: what was built and how to wire it in
 
-Status: built and unit-tested, **not wired in yet** (on purpose: MapRenderer, TownRenderer,
-RoadRenderer, FogOverlay, Sim and MatchService were being edited by another session). Nothing has been
-committed. Not yet run in Studio.
+Status (2026-11-11): **wired into init.client and the full test runner**. The original integration
+recipe below is retained for context. No commit or push was made. Not yet run in Studio. Saddle
+has no water, so this connection does not introduce lakes or change the selected match map.
+
+The integration review also added automatic parent/map teardown, shared WorldLight camera bounds,
+far-zoom daylight invalidation, reclaimer retry backoff, bounded-lifetime deterministic noise caching,
+and one-time isolation of malformed chunks or failed image writes. Ten existing water tests and
+six new tests executing the actual renderer pass locally. B161-B163 cover the required Studio
+water-map/lifecycle checks. Native appearance and performance remain unconfirmed.
 
 ## What it does
 

@@ -314,6 +314,19 @@ if fs.isFile(matchPath) then
 		eq(r:number("rigs.tank"), 440)
 		eq(r:number("trucks.kinds.light.capacity"), 160)
 	end)
+	test("world fire impact hook reports ground aim once and ignores air hits",function()
+		local sim=newSim();local impacts={};sim.worldBlast=function(x,y,w) table.insert(impacts,{x,y,w}) end
+		sim.strikes={{kind="unit",at=0,target=-1,key="units.tank",aimX=70,aimY=20,by=1},
+			{kind="unit",at=0,target=-1,key="units.tank",aimX=75,aimY=20,by=1,airTarget=true}}
+		sim.step(.05);eq(#impacts,1);eq(impacts[1][1],70);eq(impacts[1][2],20);eq(impacts[1][3],"cannon")
+		sim.step(.05);eq(#impacts,1)
+	end)
+	test("world fire impact hook routes salvo and barrage landing coordinates exactly once",function()
+		local sim=newSim();local impacts={};sim.worldBlast=function(x,y,w) table.insert(impacts,{x,y,w}) end
+		sim.strikes={{kind="rocket",at=0,target=-1,key="units.rocket",x=70,y=20,by=1,damage=0},
+			{kind="rocket",at=0,target=-1,key="artyBase.barrage",x=75,y=20,by=1,damage=0}}
+		sim.step(.05);eq(#impacts,2);eq(impacts[1][1],70);eq(impacts[1][3],"salvo");eq(impacts[2][1],75);eq(impacts[2][3],"barrage")
+	end)
 
 	test("setup: 600 oil, 3 idle trucks, 3 infantry 6.2 cells round the HQ, HQ 3000 hp", function()
 		local sim = newSim()
@@ -4290,6 +4303,26 @@ require("./chimney_smoke")(test, eq)
 require("./street_furniture")(test, eq)
 require("./clouds")(test, eq)
 require("./cloud_renderer")(test, eq)
+require("./power_lines")(test, eq)
+require("./power_renderer")(test, eq)
+require("./water")(test, eq)
+require("./water_renderer")(test, eq)
+require("./forest_fire")(test, eq)
+require("./house_fire")(test, eq)
+require("./fire_pixels")(test, eq)
+require("./fire_map")(test, eq)
+require("./fire_effects")(test, eq)
+require("./house_rebuild")(test, eq)
+require("./fire_scorch")(test, eq)
+require("./fire_scorch_renderer")(test, eq)
+require("./fire_particles")(test, eq)
+require("./fire_particle_renderer")(test, eq)
+require("./house_world")(test, eq)
+require("./house_fire_renderer")(test, eq)
+require("./admin_fire")(test, eq)
+require("./forest_world")(test, eq)
+require("./forest_raster")(test, eq)
+require("./forest_town_renderer")(test, eq)
 
 print(`\n{passed} passed, {failed} failed`)
 if failed > 0 then

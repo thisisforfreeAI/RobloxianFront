@@ -51,6 +51,35 @@ function DeathEffects.new(config: any, random: (() -> number)?)
 				falls = true, drag = 0.6, size = pick(N.size), life = pick(life), color = C.hot, color1 = C.ember, align = true })
 		end
 	end
+	-- Original shared effects ember primitive, also used by forest/town fires.
+	function self:embers(x:number,y:number,h:number,count:number,spread:number)
+		-- APPROX pool policy: skip work beyond remaining capacity as well as bounding storage.
+		for _=1,math.min(count,self.maxParticles-#self.particles) do
+			self:spawn({tex="glint",x=x+range(-spread,spread),y=y+range(-spread,spread),h=h,
+				vx=range(-.6,.6),vy=range(-.3,.3),vh=pick(N.emberRise),wind=true,drag=.5,
+				size=pick(N.emberSize),life=pick(N.emberLife),spin=range(-3,3),color=C.fire,color1=C.coal,
+				a0=1,a1=1,glow=true,emit=true,small=true,fine=true,flicker=true})
+		end
+	end
+	-- All world fire and death particles consume the same bounded pool and atlas.
+	function self:request(kind:string,p:any,tag:any?):boolean
+		if #self.particles>=self.maxParticles then return false end
+		local before=#self.particles
+		if kind=="spawn" then self:spawn(table.clone(p))
+		elseif kind=="puff" then
+			self:puff(p.x,p.y,p.h,p.size,p.life,p.color,p.rise,p.vx,p.vy,p.ground==true)
+			for i=before+1,#self.particles do
+				local puff=self.particles[i];puff.small=p.small==true;puff.lean=0;puff.erode=true;puff.swell=true
+			end
+		elseif kind=="embers" then self:embers(p.x,p.y,p.h,p.count,p.spread)
+		else return false end
+		for i=before+1,#self.particles do self.particles[i].worldTag=tag end
+		return #self.particles>before
+	end
+	function self:clearTag(tag:any)
+		if tag==nil then return end
+		local keep={};for _,p in self.particles do if p.worldTag~=tag then table.insert(keep,p) end end;self.particles=keep
+	end
 	function self:blast(x: number, y: number, spec: any)
 		local B, F, n = config.blast, config.look.flash, spec.blast
 		self:spawn({ tex = "disc", x = x, y = y, h = 0.1, size = n * F.share, life = F.sec, color = C.fire, a0 = 0.6, a1 = 0 })

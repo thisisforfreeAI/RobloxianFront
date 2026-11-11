@@ -15,7 +15,7 @@ local engine: any = nil
 local content: Content? = nil
 local atlasImage: EditableImage? = nil -- keep the image alive alongside its Content
 local frame = 24
-local tried = false
+local retryAt,disabled,warnedFailure = 0,false,false
 local slots: { any } = {}
 local root: Folder? = nil
 local FRAMES = { disc = { 1, 0 }, ring = { 2, 0 }, star = { 3, 0 }, spark = { 0, 1 }, chunk = { 1, 1 }, shard = { 2, 1 },
@@ -25,13 +25,15 @@ local FRAMES = { disc = { 1, 0 }, ring = { 2, 0 }, star = { 3, 0 }, spark = { 0,
 local SUPPORTED = { tank = true, ifv = true, artillery = true, rocket = true, scout = true, engineer = true, command = true }
 
 local function load(): boolean
-	if tried then return engine ~= nil end
-	tried = true
+	if engine then return true end
+	if disabled or os.clock()<retryAt then return false end
+	retryAt=os.clock()+5
 	local data = Shared:FindFirstChild("GameData")
 	local config = data and data:FindFirstChild("DeathFx")
 	local assets = script.Parent.Parent:FindFirstChild("DevAssets")
 	local pixels = assets and assets:FindFirstChild("OrigDeathFx")
 	if not config or not pixels then
+		disabled=true
 		warn("[DeathRenderer] Generate local death effects with tools/conversion/export_death_fx.cjs; wrecks still draw")
 		return false
 	end
@@ -47,7 +49,8 @@ local function load(): boolean
 	if not ok then
 		if atlasImage then ImageMemory.release(atlasImage); atlasImage = nil end
 		content, engine = nil, nil
-		warn("[DeathRenderer] Death effects unavailable; wrecks still draw:", err)
+		if not warnedFailure then warnedFailure=true;warn("[DeathRenderer] Death effects unavailable; wrecks still draw:", err) end
+	else warnedFailure=false
 	end
 	return engine ~= nil
 end
@@ -55,6 +58,22 @@ end
 function DeathRenderer.kill(kind: string, x: number, y: number): any
 	if not SUPPORTED[kind] or Fog.hidden(x, y) or not load() then return nil end
 	return engine:kill(kind, x, y)
+end
+
+-- Prepared world-fire bridge: the caller supplies a local map/session tag for cleanup.
+function DeathRenderer.request(kind:string,p:any,tag:any?):boolean
+	if kind~="spawn" and kind~="puff" and kind~="embers" then return false end
+	if Fog.hidden(p.x,p.y) or not load() then return false end
+	return engine:request(kind,p,tag)
+end
+function DeathRenderer.clearTag(tag:any)
+	if tag==nil or not engine then return end;engine:clearTag(tag)
+	-- The next shared render step restores any remaining untagged vehicle particles.
+	for _,v in slots do v.gui.Enabled=false end
+	if #engine.particles==0 then
+		for _,v in slots do v.part:Destroy() end;table.clear(slots)
+		if root then root:Destroy();root=nil end
+	end
 end
 
 local function slot(i: number): any

@@ -28,6 +28,10 @@ local Sim = require(Shared.Simulation.Sim)
 local Refugees = require(Shared.Simulation.Refugees)
 local RefugeeColumn = require(Shared.Presentation.RefugeeColumn)
 local WorldLife = require(Shared.Config.WorldLife)
+local FireMap = require(Shared.Simulation.FireMap)
+local HouseWorld = require(Shared.Simulation.HouseWorld)
+local ForestMap = require(Shared.Simulation.ForestMap)
+local ForestWorld = require(Shared.Simulation.ForestWorld)
 local Hash = require(Shared.Utilities.Hash)
 local UnitStages = require(Shared.Presentation.UnitStages)
 local TerritoryPixels = require(Shared.Presentation.TerritoryPixels)
@@ -54,6 +58,9 @@ local sim: any
 local sideOf: { [Player]: number } = {}
 local bots: { [number]: any } = {}
 local tick = 0
+local sentFires: {[Player]:any} = {}
+local sentForest: {[Player]:any} = {}
+local readyView: {[Player]:boolean} = {}
 
 local OPENING_DROP = true -- the game's opening drop: pick a landing spot, the truck sets up the HQ
 -- each side's army (the game's skirmish setting; its default is the coalition). The republic has no
@@ -78,6 +85,11 @@ end
 
 local function onIntent(player: Player, raw: any)
 	local side = sideOf[player]
+	-- Presentation handshake, including spectators. Loading a map can outlast early state events.
+	if side~=nil and type(raw)=="table" and raw.kind=="viewReady" then
+		if not readyView[player] then readyView[player]=true;MatchService.resetView(player) end
+		return
+	end
 	if not side or side == 0 then
 		return
 	end
@@ -924,6 +936,21 @@ local function privateState()
 		payload.day = { Admin.phaseOf(sim), sim.nightAmount() } -- preserve clock precision for sun/colour changes
 		-- Ambient motion follows the war clock, which pauses during opening picks/flight and victory.
 		payload.civilianTime = { sim.time, not sim.winner and (not sim.drop or sim.drop.phase=="done") }
+		if readyView[player] and sim.houseFires then
+			local fogged=side>0 and sim.fogOn()
+			local sight=if fogged then viewers[side] else nil
+			payload.houseFires,sentFires[player]=sim.houseFires.view(sentFires[player],function(x,y)
+				return not fogged or (sight~=nil and sight.visibleAt(x,y))
+			end)
+		end
+		if readyView[player] and sim.forestFires then
+			local fogged=side>0 and sim.fogOn();local sight=if fogged then viewers[side] else nil
+			payload.forestFires,sentForest[player]=sim.forestFires.view(sentForest[player],function(x,y,cell)
+				-- Source sight uses the original cell, before the tree root's subpixel quantization.
+				if cell then x,y=cell%map.width+.5,math.floor(cell/map.width)+.5 end
+				return not fogged or (sight~=nil and sight.visibleAt(x,y))
+			end)
+		end
 		-- Send current visible actors only. Hidden origins, complete routes and destinations stay server-side.
 		payload.refugees={}
 		if sim.refugees then
@@ -1253,6 +1280,14 @@ local function privateState()
 	table.clear(pendingAlerts)
 end
 
+function MatchService.resetView(player:Player)
+	-- Only this player's visual caches; readiness grants no gameplay command or extra visibility.
+	sentFires[player],sentForest[player]=nil,nil
+	sentVision[player],sentCities[player]=nil,nil
+	sentTerritory[player],sentTerritoryView[player]=nil,nil
+	sentWear[player],wearSentAt[player]=nil,nil
+end
+
 function MatchService.start(mapModule: string)
 	assert(GameData:FindFirstChild("RulesMatch"), "GameData.RulesMatch missing: rerun tools/conversion/generate_all.py")
 	rules = Rules.new(require(GameData.RulesMatch) :: any)
@@ -1306,6 +1341,48 @@ function MatchService.start(mapModule: string)
 		-- the game starts each match with a fresh seed (0 to 999999); here it only draws the opening deck
 		deckSeed = Random.new():NextInteger(0, 999999),
 	})
+	if WorldLife.HOUSE_FIRES then
+		local source=GameData:FindFirstChild("FireMap_"..map.data.id)
+		local settings=GameData:FindFirstChild("FireRules")
+		if source and settings then
+			local ok,world=pcall(function()
+				local meta=require(source);assert(meta.towns,"regenerate fire town membership")
+				assert(meta.width==map.width and meta.height==map.height,"fire map dimensions differ")
+				local sampler=FireMap.new(meta,function(encoded,bytes) return Inflate.raw(MapCodec.base64Decode(encoded),bytes) end,function(name)
+					local page=GameData:FindFirstChild(name);assert(page,"missing fire atlas page");return require(page)
+				end)
+				return HouseWorld.new(require(settings),sampler,{time=function() return sim.time end,weather=Admin.weather,
+					random=Rng.new(map.data.seed),towns=sim.settlements,
+					rebuildRules={quietSec=rules:number("settlements.rebuild.quietSec"),fullSec=rules:number("settlements.rebuild.fullSec")}})
+			end)
+			if ok then
+				sim.houseFires=world
+			else warn("[Match] House fires unavailable:",world) end
+		end
+	end
+	if WorldLife.FOREST_FIRES then
+		local source=GameData:FindFirstChild("Forest_"..map.data.id);local settings=GameData:FindFirstChild("FireRules")
+		if source and settings then
+			local ok,world=pcall(function()
+				local config=require(settings);local meta=require(source)
+				assert(meta.width==map.width and meta.height==map.height,"forest map dimensions differ")
+				local forest=ForestMap.new(meta,function(encoded,bytes) return Inflate.raw(MapCodec.base64Decode(encoded),bytes) end)
+				local breaks=ForestMap.firebreaks(map.width,map.height,map.data.roads,config.forest.firebreakRank)
+				local water={};for _,name in config.forest.water do water[name]=true end
+				return ForestWorld.new(config,forest,{time=function() return sim.time end,weather=Admin.weather,
+					random=Rng.new(map.data.seed),waterAt=function(cell) return water[MapCodec.terrainName(map,cell%w,math.floor(cell/w))]==true end,
+					firebreakAt=function(cell) return cell>=0 and cell<map.width*map.height and buffer.readu8(breaks,cell)>0 end})
+			end)
+			if ok then sim.forestFires=world else warn("[Match] Forest fires unavailable:",world) end
+		end
+	end
+	if sim.houseFires or sim.forestFires then
+		sim.worldBlast=function(x,y,weapon,size)
+			if not x or not y then return end
+			if sim.houseFires then sim.houseFires.blast(x,y,weapon,size) end
+			if sim.forestFires then sim.forestFires.blast(x,y,weapon,size) end
+		end
+	end
 	for _, rig in sim.rigs do
 		if rig.rich > 1 then
 			print(`[Match] rich rig {rig.id} {rig.name or ""} at {rig.x},{rig.y}`)
@@ -1332,6 +1409,9 @@ function MatchService.start(mapModule: string)
 		sentWear[p], wearSentAt[p] = nil, nil
 		sentCities[p] = nil
 		sentVision[p] = nil
+		sentFires[p] = nil
+		sentForest[p] = nil
+		readyView[p] = nil
 		updateBots()
 	end)
 
@@ -1347,10 +1427,14 @@ function MatchService.start(mapModule: string)
 			end
 			Admin.step(sim)
 			sim.step(step)
+			if sim.houseFires then sim.houseFires.advance(sim.time) end
+			if sim.forestFires then sim.forestFires.advance(sim.time) end
 			for _, ev in sim.takeEvents() do
 				alertsFor(ev)
 				if ev.type == "destroyed" and ev.x and rules:has(`units.{ev.kind}.move`) and rules:text(`units.{ev.kind}.move`) ~= "foot" then
 					table.insert(deaths, { ev.id, ev.kind, ev.x, ev.y, ev.heading or 0, ev.turret or ev.heading or 0 })
+					-- APPROX: wreck heat begins on death; the original visual death sequence can delay it.
+					if sim.worldBlast then sim.worldBlast(ev.x,ev.y,"wreck",2) end
 				elseif ev.type == "convoyLost" and ev.x then
 					table.insert(deaths, { ev.id, "truck", ev.x, ev.y, ev.heading or 0, ev.heading or 0 })
 				end

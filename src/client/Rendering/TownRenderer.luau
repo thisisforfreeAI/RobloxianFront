@@ -26,9 +26,20 @@ local Inflate = require(Shared.Utilities.Inflate)
 local ImagePixels = require(Shared.Presentation.ImagePixels)
 local TownDetail = require(Shared.Presentation.TownDetail)
 local TownPatch = require(Shared.Presentation.TownPatch)
+local ForestMap = require(Shared.Simulation.ForestMap)
+local ForestRaster = require(Shared.Presentation.ForestRaster)
 local DaylightController = require(script.Parent.DaylightController)
 
 local TownRenderer = {}
+local sampler: any = nil
+local forestMap: any = nil
+local forestApply: any = nil
+function TownRenderer.getForestMap():any return forestMap end
+function TownRenderer.setForestFates(rows:{any},reset:boolean?) if forestApply then forestApply(rows,reset) end end
+-- CPU source pixels already carry the currently sampled roof shade; this allocates no images.
+function TownRenderer.sample(x:number,y:number):{number}?
+	return if sampler then sampler(x,y) else nil
+end
 
 local S = World.STUDS_PER_CELL
 local HEIGHT = 0.07 -- above the ground (0), under the roads (0.15)
@@ -72,6 +83,8 @@ type Chunk = { cx: number, cy: number, cw: number, ch: number, name: string, mod
 
 -- returns true when the town art was drawn
 function TownRenderer.build(mapId: string, parent: Instance): boolean
+	sampler=nil
+	forestMap,forestApply=nil,nil
 	local assets = script.Parent.Parent:FindFirstChild("DevAssets")
 	local metaModule = assets and assets:FindFirstChild("City_" .. mapId)
 	if not metaModule or not metaModule:IsA("ModuleScript") then
@@ -96,8 +109,68 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 	if #chunks == 0 then
 		return false
 	end
+	local forest:any=nil
+	local fates:any={}
+	local affected:any={}
+	local warnedForest=false
+	if meta.forest then
+		local data=Shared:FindFirstChild("GameData")
+		local module=data and data:FindFirstChild(meta.forest)
+		if module then
+			local ok,value=pcall(function()
+				return ForestMap.new(require(module),function(encoded,bytes) return Inflate.raw(MapCodec.base64Decode(encoded),bytes) end,function(name)
+					local page=data:FindFirstChild(name);assert(page,"missing local forest sprite page");return require(page)
+				end)
+			end)
+			if ok then
+				forest=value;forestMap=forest
+				for _,c in chunks do for _,t in forest.inWindow(c.cx,c.cy,c.cw,c.ch) do
+					local list=affected[t.key];if not list then list={};affected[t.key]=list end;table.insert(list,c)
+				end end
+			else warn("[TownRenderer] Dynamic forest data unavailable:",value) end
+		end
+	end
+	local function applyForest(rows:{any},reset:boolean?)
+		if not forest then return end
+		local changed={}
+		if reset then for key in fates do changed[key]=true end;table.clear(fates) end
+		for _,row in rows do
+			local key,fate=row[1],row[2];if not forest.byKey[key] then continue end
+			fates[key]=fate;changed[key]=true
+		end
+		for key in changed do for _,c in affected[key] or {} do (c :: any).forestDirty=true end end
+	end
+	forestApply=applyForest
+	local function sample(x:number,y:number):{number}?
+		for _,c in chunks do
+			if c.px and x>=c.cx and y>=c.cy and x<c.cx+c.cw and y<c.cy+c.ch then
+				local px,py=math.floor((x-c.cx)*TILE_PX),math.floor((y-c.cy)*TILE_PX)
+				local at=(py*c.w+px)*4
+				if at+3<buffer.len(c.px) and buffer.readu8(c.px,at+3)>0 then
+					return {buffer.readu8(c.px,at),buffer.readu8(c.px,at+1),buffer.readu8(c.px,at+2)}
+				end
+			end
+		end
+		return nil
+	end
+	sampler=sample
 	-- the compressed bytes stay cached (small); inflating is the slow part
+	local function forestPixels(c:Chunk,frame:number):buffer
+		local module=assets:FindFirstChild(c.name.."_Bare");assert(module,"missing tree-free town chunk")
+		local bare=require(module);local px=Inflate.raw(MapCodec.base64Decode(bare.deflate),bare.width*bare.height*4)
+		assert(bare.width==c.cw*TILE_PX and bare.height==c.ch*TILE_PX,"tree-free chunk dimensions differ")
+		if lighting and frame~=baseFrame then
+			local patch=assets:FindFirstChild(c.name.."_BareLight"..frame);assert(patch,"missing tree-free lighting patch")
+			local data=require(patch);local delta=if data.bytes==0 then buffer.create(0) else Inflate.raw(MapCodec.base64Decode(data.deflate),data.bytes)
+			TownPatch.validate(delta,px);TownPatch.apply(px,delta)
+		end
+		return ForestRaster.paint(forest,px,c.cx,c.cy,c.cw,c.ch,fates)
+	end
 	local function decode(c: Chunk): (buffer, number, number)
+		local dynamic=false
+		if forest then for _,t in forest.inWindow(c.cx,c.cy,c.cw,c.ch) do if fates[t.key] then dynamic=true;break end end end
+		(c :: any).dynamicForest=dynamic
+		if dynamic then return forestPixels(c,baseFrame),c.cw*TILE_PX,c.ch*TILE_PX end
 		local chunk = require(c.mod) :: any
 		if not c.packed then
 			c.packed = MapCodec.base64Decode(chunk.deflate)
@@ -107,6 +180,12 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 	local warnedLighting = false
 	local function relight(c: Chunk, frame: number)
 		if not lighting or c.frame == frame then return end
+		if (c :: any).dynamicForest then
+			local ok,px=pcall(forestPixels,c,frame)
+			if ok then c.px=px;c.frame=frame;c.patch=nil;c.missed=nil
+			else c.missed=frame;if not warnedLighting then warnedLighting=true;warn("[TownRenderer] Forest lighting unavailable:",px) end end
+			return
+		end
 		local ok, patch = pcall(function(): buffer
 			if frame == baseFrame then return buffer.create(0) end
 			local mod = assets:FindFirstChild(c.name .. "_Light" .. frame)
@@ -327,6 +406,9 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 	end)
 	local connection: RBXScriptConnection? = nil
 	folder.Destroying:Connect(function()
+		if sampler==sample then sampler=nil end
+		if forestMap==forest then forestMap=nil end
+		if forestApply==applyForest then forestApply=nil end
 		if connection then connection:Disconnect() end
 		unregister()
 		for _, c in chunks do if c.image then unload(c) end end
@@ -366,6 +448,29 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 		local stride = if zoomStride == 0 then 4 else zoomStride
 		local detail = zoomStride ~= 0 or not overviewOk
 		local frame = if lighting then TownDetail.frame(DaylightController.get().phase, lighting.sunUp, lighting.steps) else baseFrame
+		-- One changed source chunk per check, including the far overview. Reuse native images.
+		local dirty:any=nil
+		for _,c in chunks do if (c :: any).forestDirty and (not dirty or c.distance<dirty.distance) then dirty=c end end
+		if dirty then
+			local ok,px,w,h=pcall(decode,dirty)
+			if ok then
+				dirty.px,dirty.w,dirty.h,dirty.frame,dirty.patch,dirty.missed=px,w,h,baseFrame,nil,nil
+				dirty.forestDirty=nil;dirty.used=clock
+				local small=ForestRaster.overview(px,w,h,TILE_PX,OVERVIEW_PX)
+				local sw,sh=dirty.cw*OVERVIEW_PX,dirty.ch*OVERVIEW_PX
+				for row=0,sh-1 do buffer.copy(overviewPixels,((dirty.cy*OVERVIEW_PX+row)*ow+dirty.cx*OVERVIEW_PX)*4,small,row*sw*4,sw*4) end
+				if dirty.image then
+					relight(dirty,frame)
+					local wrote=pcall(function() dirty.image:WritePixelsBuffer(Vector2.zero,Vector2.new(dirty.iw,dirty.ih),pixelsAt(dirty,math.round(w/dirty.iw))) end)
+					if not wrote then unload(dirty);drainPool() end
+				end
+				coverOverview(dirty,dirty.image~=nil);trimPixels()
+			else
+				dirty.forestDirty=nil
+				if not warnedForest then warnedForest=true;warn("[TownRenderer] Forest repaint unavailable:",px) end
+			end
+			return
+		end
 		local want: { Chunk } = {}
 		local keep: { [Chunk]: boolean } = {}
 		if detail then

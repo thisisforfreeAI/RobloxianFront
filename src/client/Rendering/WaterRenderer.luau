@@ -19,7 +19,7 @@
 	see water in the next chunk, and river streamlines are worked out at texel centres rather than per
 	screen pixel.
 
-	Integration (not wired in yet, see docs/WATER_INTEGRATION.md):
+	Integration (wired from init.client; see docs/WATER_INTEGRATION.md):
 	  WaterRenderer.build(mapId, parent) after the map is built; WaterRenderer.destroy() to drop it.
 ]]
 local RunService = game:GetService("RunService")
@@ -32,6 +32,7 @@ local Inflate = require(Shared.Utilities.Inflate)
 local WaterShade = require(Shared.Presentation.WaterShade)
 local ImageMemory = require(script.Parent.ImageMemory)
 local DaylightController = require(script.Parent.DaylightController)
+local WorldLight = require(script.Parent.WorldLight)
 
 local WaterRenderer = {}
 
@@ -52,6 +53,7 @@ type Chunk = {
 	n: number, at: buffer?, base: buffer?, info: buffer?, lots: buffer?, river: buffer?,
 	row: number, -- next row to repaint
 	distance: number, visible: boolean,
+	failed: boolean,
 }
 
 local state: any = nil
@@ -288,11 +290,15 @@ function WaterRenderer.build(mapId: string, parent: Instance): boolean
 			cx = e[1], cy = e[2], cw = e[3], ch = e[4], fine = e[5], wmap = e[6], tw = 0, th = 0,
 			image = nil, part = nil, px = nil, n = 0, at = nil, base = nil, info = nil, lots = nil, river = nil,
 			row = 0, distance = math.huge, visible = false,
+			failed = false,
 		})
 	end
 	local noise = WaterShade.newNoise()
-	local st = { folder = folder, chunks = chunks, connections = {} :: { RBXScriptConnection }, unregister = nil :: (() -> ())? }
+	local st = { folder = folder, chunks = chunks, connections = {} :: { RBXScriptConnection }, unregister = nil :: (() -> ())?, holdUntil = 0 }
 	state = st
+	table.insert(st.connections,folder.Destroying:Connect(function()
+		if state==st then WaterRenderer.destroy() end
+	end))
 
 	local function unload(c: Chunk)
 		if c.part then
@@ -313,6 +319,8 @@ function WaterRenderer.build(mapId: string, parent: Instance): boolean
 		end
 		local okPrep, err = pcall(prepare, c, Sx)
 		if not okPrep then
+			c.px, c.at, c.base, c.info, c.lots, c.river = nil, nil, nil, nil, nil, nil
+			c.failed=true
 			warn("[WaterRenderer] a chunk could not be read:", err)
 			return true -- skip it, not a budget problem
 		end
@@ -328,6 +336,7 @@ function WaterRenderer.build(mapId: string, parent: Instance): boolean
 		return true
 	end
 	st.unregister = ImageMemory.register(RECLAIM_PRIORITY, function(needed: number, _protected: any)
+		st.holdUntil=os.clock()+1.5
 		local before = ImageMemory.stats()
 		local shown = {}
 		for _, c in chunks do
@@ -348,7 +357,7 @@ function WaterRenderer.build(mapId: string, parent: Instance): boolean
 
 	local animate = false
 	local acc = CHECK_SEC
-	local holdUntil = 0
+	local lightStamp = ""
 	table.insert(st.connections, RunService.Heartbeat:Connect(function(dt)
 		acc += dt
 		if acc < CHECK_SEC then
@@ -359,17 +368,17 @@ function WaterRenderer.build(mapId: string, parent: Instance): boolean
 		if not cam then
 			return
 		end
-		-- where the camera looks on the ground and how far it sees (as TownRenderer)
-		local cf = cam.CFrame
-		local dir = cf.LookVector
-		local t = if dir.Y < -1e-3 then (World.GROUND_Y - cf.Position.Y) / dir.Y else 0
-		local focus = cf.Position + dir * math.max(0, t)
-		local dist = math.max(1, (cf.Position - focus).Magnitude)
-		local tanHalf = math.tan(math.rad(cam.FieldOfView) / 2)
-		local cellPx = S * cam.ViewportSize.Y / (2 * dist * tanHalf)
-		animate = cellPx >= ANIMATE_FROM
-		local fx, fy = focus.X / S, focus.Z / S
-		local reach = dist * tanHalf * math.max(1, cam.ViewportSize.X / math.max(1, cam.ViewportSize.Y)) / S * 1.4
+		local view=WorldLight.view(cam)
+		animate = view.cellPixels >= ANIMATE_FROM
+		local fx, fy = view.cx,view.cy
+		local reach = math.max(view.rx,view.ry)*1.4
+		-- Still far-zoom water must also update after daylight changes.
+		local sample=DaylightController.get();local tint=sample.color or {1,1,1}
+		local nextStamp=table.concat({math.floor((sample.night or 0)*32),math.floor((sample.elevation or 1)*32),math.floor(tint[1]*32),math.floor(tint[2]*32),math.floor(tint[3]*32)},":")
+		if nextStamp~=lightStamp then
+			lightStamp=nextStamp
+			for _,c in chunks do if c.row<0 then c.row=0 end end
+		end
 		for _, c in chunks do
 			local nx = math.clamp(fx, c.cx, c.cx + c.cw)
 			local ny = math.clamp(fy, c.cy, c.cy + c.ch)
@@ -377,6 +386,7 @@ function WaterRenderer.build(mapId: string, parent: Instance): boolean
 			c.visible = c.distance <= reach
 		end
 		local order = table.clone(chunks)
+		for i=#order,1,-1 do if order[i].failed then table.remove(order,i) end end
 		table.sort(order, function(a, b)
 			return a.distance < b.distance
 		end)
@@ -391,13 +401,13 @@ function WaterRenderer.build(mapId: string, parent: Instance): boolean
 				unload(c)
 			end
 		end
-		if os.clock() < holdUntil then
+		if os.clock() < st.holdUntil then
 			return
 		end
 		for _, c in order do
 			if c.visible and not c.image and keep[c] then
 				if not load(c) then
-					holdUntil = os.clock() + 1.5 -- the budget is full: try again shortly
+					st.holdUntil = os.clock() + 1.5 -- the budget is full: try again shortly
 				end
 				break -- one chunk a check: preparing one takes a few milliseconds
 			end
@@ -406,6 +416,7 @@ function WaterRenderer.build(mapId: string, parent: Instance): boolean
 
 	-- repaint the chunks on screen, a band at a time
 	local cursor = 1
+	local noiseAt=os.clock()
 	table.insert(st.connections, RunService.RenderStepped:Connect(function()
 		local sample = DaylightController.get()
 		local light = {
@@ -413,6 +424,9 @@ function WaterRenderer.build(mapId: string, parent: Instance): boolean
 			glintK = WaterShade.glintStrength(Sx.glints, sample.night or 0, sample.elevation or 1),
 		}
 		local now = os.clock()
+		-- APPROX CPU cache policy: deterministic noise can be regenerated without retaining
+		-- every lattice point visited during an indefinitely long match.
+		if now-noiseAt>10 then noise=WaterShade.newNoise();noiseAt=now end
 		local t0 = now
 		local skipped = 0
 		while os.clock() - t0 < REPAINT_MS / 1000 and skipped < #chunks do
@@ -431,7 +445,11 @@ function WaterRenderer.build(mapId: string, parent: Instance): boolean
 				local rows = r1 - r0 + 1
 				local band = buffer.create(c.tw * rows * 4)
 				buffer.copy(band, 0, c.px :: buffer, r0 * c.tw * 4, c.tw * rows * 4)
-				c.image:WritePixelsBuffer(Vector2.new(0, r0), Vector2.new(c.tw, rows), band)
+				local wrote,err=pcall(function() c.image:WritePixelsBuffer(Vector2.new(0, r0), Vector2.new(c.tw, rows), band) end)
+				if not wrote then
+					unload(c);c.failed=true;warn("[WaterRenderer] a chunk could not be painted:",err)
+					cursor=cursor % #chunks+1;skipped+=1;continue
+				end
 			end
 			if to >= c.n then
 				c.row = if c.visible and animate then 0 else -1

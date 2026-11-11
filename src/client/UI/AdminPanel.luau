@@ -12,6 +12,7 @@ local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 
 local DaylightController = require(script.Parent.Parent.Rendering.DaylightController)
+local World = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared").Config.World)
 local AdminPanel = {}
 
 local PRESETS = { { "Dawn", 5 }, { "Morning", 8 }, { "Noon", 12 }, { "Evening", 18 }, { "Dusk", 21 }, { "Midnight", 0 } }
@@ -106,7 +107,7 @@ function AdminPanel.start(sendIntent: (any) -> ())
 	toggle.Parent = root
 
 	panel = Instance.new("Frame")
-	panel.Size = UDim2.fromOffset(300, 262)
+	panel.Size = UDim2.fromOffset(300, 344)
 	panel.AnchorPoint = Vector2.new(1, 0)
 	panel.Position = UDim2.new(1, -8, 0.32, 30)
 	panel.BackgroundColor3 = Color3.fromRGB(24, 27, 32)
@@ -170,6 +171,18 @@ function AdminPanel.start(sendIntent: (any) -> ())
 		setOil(true, 10000)
 	end)
 
+	label(panel, "World fires (view centre)", 262)
+	button(panel, "Ignite roofs", 8, 286, 140, function()
+		local camera=workspace.CurrentCamera;if not camera then return end
+		local p=camera.CFrame.Position
+		send({kind="admin",op="townFire",x=p.X/World.STUDS_PER_CELL,y=p.Z/World.STUDS_PER_CELL})
+	end)
+	button(panel, "Ignite trees", 152, 286, 140, function()
+		local camera=workspace.CurrentCamera;if not camera then return end
+		local p=camera.CFrame.Position
+		send({kind="admin",op="forestFire",x=p.X/World.STUDS_PER_CELL,y=p.Z/World.STUDS_PER_CELL})
+	end)
+	button(panel, "Rebuild fire damage", 8, 312, 284, function() send({kind="admin",op="rebuildFires"}) end)
 	toggle.Activated:Connect(function()
 		panel.Visible = not panel.Visible
 	end)
@@ -199,7 +212,7 @@ function AdminPanel.update(state: { [string]: any })
 		clockLabel.Text = string.format("Time %02d:%02d   night %d%%%s", hh, mm, math.floor((state.day[2] or 0) * 100 + 0.5), if frozen then "   (frozen)" else "")
 	end
 	if state.weather then
-		weatherLabel.Text = `Weather: {state.weather} (looks only for now)`
+		weatherLabel.Text = `Weather: {state.weather}`
 	end
 end
 

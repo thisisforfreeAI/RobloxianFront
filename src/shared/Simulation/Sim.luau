@@ -4036,6 +4036,11 @@ function Sim.new(deps: Deps)
 		self.strikes = later
 		for _, s in now do
 			local t = self.entities[s.target]
+			-- APPROX: existing direct shots follow their target; a vanished target leaves the launch aim.
+			-- Air hits never ignite the ground. Rocket impacts are reported by rocketLands exactly once.
+			if self.worldBlast and s.kind~="rocket" and not s.airTarget and r:has(s.key..".weapon") then
+				self.worldBlast(if t and t.alive then t.x else s.aimX,if t and t.alive then t.y else s.aimY,text(s.key..".weapon"))
+			end
 			if s.kind == "rocket" then
 				rocketLands(s.by, s.x, s.y, s.damage, s.key, if t and t.alive then t else nil, s.splash, s.shooter)
 			elseif t and t.alive then
@@ -4188,6 +4193,7 @@ function Sim.new(deps: Deps)
 		local strike: { [string]: any } = {
 			kind = kind, at = self.time + flight(key, e.x, e.y, tx, ty), target = target.id, dps = dps,
 			key = key, secs = secs, by = e.side, fromX = e.x, fromY = e.y, shooter = if e.cat == "unit" then e.id else nil,
+			aimX=tx,aimY=ty,airTarget=target.class=="air",
 		}
 		if kind == "unit" and e.cat == "unit" then
 			strike.splash = numOr(key .. ".splash", 0)
@@ -4333,6 +4339,9 @@ function Sim.new(deps: Deps)
 			return R.pattern(seed, n, stagger, jitter or JITTER)
 		end
 		function rocketLands(by: number, x: number, y: number, damage: number, key: string, aimed: Entity?, splash: number?, shooter: number?)
+			if self.worldBlast then
+				self.worldBlast(x,y,if key=="artyBase.barrage" then "barrage" elseif r:has(key..".missile.splash") then "tbm" else text(key..".weapon"))
+			end
 			local c = splash or num("artillery.rocketSplash")
 			local bunch = bunchFactor(by, x, y)
 			for _, u in self.list do

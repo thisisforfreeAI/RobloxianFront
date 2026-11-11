@@ -29,7 +29,10 @@ local FortRenderer = require(script.Rendering.FortRenderer)
 local NightLightRenderer = require(script.Rendering.NightLightRenderer)
 local StreetFurnitureRenderer = require(script.Rendering.StreetFurnitureRenderer)
 local CloudRenderer = require(script.Rendering.CloudRenderer)
+local PowerLineRenderer = require(script.Rendering.PowerLineRenderer)
+local WaterRenderer = require(script.Rendering.WaterRenderer)
 local CivilianRenderer = require(script.Rendering.CivilianRenderer)
+local HouseFireRenderer = require(script.Rendering.HouseFireRenderer)
 local Rules = require(Shared.Config.Rules)
 local DevFlags = require(script.Dev.DevFlags)
 
@@ -50,10 +53,13 @@ do
 	FogOverlay.start(map.width,map.height,map.terrain)
 	UnitRenderer.start()
 	local mapFolder=MapRenderer.build(map)
+	WaterRenderer.build(map.data.id,mapFolder)
 	NightLightRenderer.start(map,mapFolder)
 	StreetFurnitureRenderer.start(map,mapFolder)
 	CloudRenderer.start(mapFolder)
+	PowerLineRenderer.start(map,mapFolder)
 	CivilianRenderer.start(map,mapFolder)
+	HouseFireRenderer.start(map,mapFolder)
 	TerritoryRenderer.start(map.width,map.height,map.data.id)
 	WeatherGround.start(map)
 	FortRenderer.start(map.data.id)
@@ -97,10 +103,17 @@ do
 	stateEvent.OnClientEvent:Connect(function(state)
 		Hud.update(state, info.side)
 		AdminPanel.update(state)
-		if state.civilianTime then CivilianRenderer.syncClock(state.civilianTime[1],state.civilianTime[2]==true) end
+		if state.civilianTime then
+			CivilianRenderer.syncClock(state.civilianTime[1],state.civilianTime[2]==true)
+			HouseFireRenderer.syncClock(state.civilianTime[1],state.civilianTime[2]==true)
+		end
+		if state.houseFires then HouseFireRenderer.apply(state.houseFires) end
+		if state.forestFires then HouseFireRenderer.applyForest(state.forestFires) end
+		HouseFireRenderer.setNightVision(Hud.nightVisionOn())
 		if state.refugees then CivilianRenderer.applyRefugees(state.refugees) end
 		if state.day or state.weather then
 			Atmosphere.apply(state.day, state.weather)
+			PowerLineRenderer.setWeather(state.weather)
 		end
 		if state.rigs then
 			rigCard.update(state.rigs, state.oil, state.trucksIdle)
@@ -193,4 +206,6 @@ do
 			FogOverlay.apply(vision, seeAll == true)
 		end
 	end)
+	-- Both listeners are attached before the server begins fire deltas/resends cached visual state.
+	send({kind="viewReady"})
 end
