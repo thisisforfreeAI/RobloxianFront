@@ -34,7 +34,7 @@ return function(test:any,eq:any)
 			Enum={NormalId={Top=0},SurfaceGuiSizingMode={FixedSize=0},ResamplerMode={Pixelated=0}},os={clock=function() return h.time end}},{__index=getfenv()})
 		h.renderer=luau.load(fs.readFile("src/client/Rendering/GroundScorchRenderer.luau"),{environment=env})()
 		function h.start() return h.renderer.start({width=64,height=64},h.parent) end
-		function h.apply(rows,epoch,reset) h.renderer.apply({epoch=epoch or 1,reset=reset,rows=Packets.encode(rows)}) end
+		function h.apply(rows,epoch,reset) h.renderer.apply({epoch=epoch or 1,reset=reset,rows=Packets.encode(rows),tones=Packets.tones(rows)}) end
 		function h.paint(dt) dt=dt or .2;h.time+=dt;h.heartbeat:fire(dt) end
 		function h.active(class) local out={};for _,o in h.instances do if o.ClassName==class and not o.dead then table.insert(out,o) end end;return out end
 		return h
@@ -77,5 +77,13 @@ return function(test:any,eq:any)
 		h.paint();eq(h.townUpdates,updates)
 		h.apply({},2,true);eq(next(h.townBuckets),nil);h.paint();eq(h.townSource,nil)
 		h.parent:Destroy();eq(next(h.townBuckets),nil)
+	end)
+	test("actual native ground tiles update earth and ash tones in place and clear them on reset",function()
+		local h=fixture();assert(h.start());local cell=10*64+10
+		h.apply({{cell,255,1}});h.paint();eq(h.created,1)
+		local image=h.active("ImageLabel")[1].ImageContent;local at=(10*32+10)*4;local earth=buffer.readu32(image.pixels,at)
+		h.apply({{cell,255,2}});h.paint();eq(h.created,1);assert(buffer.readu32(image.pixels,at)~=earth)
+		eq(h.townBuckets["0:0"].tones[cell],2)
+		h.apply({},2,true);eq(#h.active("Part"),0);eq(next(h.townBuckets),nil);h.parent:Destroy();eq(h.created,h.released)
 	end)
 end

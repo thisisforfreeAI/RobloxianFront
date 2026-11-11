@@ -116,4 +116,13 @@ return function(test:any,eq:any)
 		h.renderer.setForestFates({},true);h.step();eq(h.renderer.sample(.5,.5)[2],200)
 		h.destroy()
 	end)
+	test("actual town scar tone-only changes repaint existing ground and preserve its tree foreground",function()
+		local h=make();assert(h.renderer.build("test",{}));h.step();local images=#h.images
+		local source={width=1,height=1,tileSize=14,roof=function() return false end}
+		local config={color="#000000",darken=.5,palette={{color="#000000"},{color="#c08040"}}}
+		h.renderer.setGroundScorch({{cells={[0]=255},tones={[0]=0}}},config,source);h.step();local before=h.renderer.sample(.2,.2)[1]
+		h.renderer.setGroundScorch({{cells={[0]=255},tones={[0]=1}}},config,source);h.step();assert(h.renderer.sample(.2,.2)[1]>before)
+		eq(h.renderer.sample(.5,.5)[2],200);eq(#h.images,images)
+		h.renderer.setGroundScorch({},config,nil);h.step();eq(h.renderer.sample(.2,.2)[1],0);h.destroy()
+	end)
 end

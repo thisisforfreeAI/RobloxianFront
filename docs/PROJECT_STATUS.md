@@ -2825,3 +2825,52 @@ Verified on installed files: **431 Lune tests passed, 0 failed**; changed Luau c
 only) and Rojo build passes. Five added regressions cover real window cleanup/strict colors,
 persistent live ruins/manual reset, unchanged roof paint reuse, bounded fair refresh under repeated
 lighting changes and single-compose clean town base reuse. **Studio B190-B192 have not been run.**
+
+## Explosion craters and collapsed-structure ground marks (2026-11-11)
+
+Ground impact presentation now includes the source crater footprint (earth floor, charred rim and
+scattered thrown earth) and rubble footprint (mixed ash/burn tones). Each cell follows the original
+strongest-impulse tone selection, Float32 strength/settlement accumulation, fade and quiet-town
+ground recovery. These are flat ground marks, not terrain deformation, physical debris or restored
+buildings. The owner override keeping burned map buildings ruined remains active; stain recovery
+does not rebuild roofs or restore combat HP.
+
+The common authoritative impact callback now feeds the ground model as well as house/forest
+ignition. Cannon/rocket/shell/mortar/salvo/bomb/barrage/tbm and normal missile impacts use their
+original individual scorch radius/strength, independent of combat splash radius. Mines use the
+existing source shell impact. Demolition trucks select their dedicated source primary crater
+profile, and each delayed shell pop uses its own landing/profile. Razed structures use source
+rubble strength and the existing scaled collapse reach, including HQ scaling. Bullets, flares,
+unknown weapons, excluded recycle/cancel events and unsupported wreck marks add no new stains.
+The existing open-water/road-bridge guard runs before all of these callbacks; air-hit exclusions
+are unchanged. No combat damage or terrain/pathing rules are added.
+
+Fog-filtered scorch packets carry an optional one-byte tone aligned with each existing row. The
+1024-cell cap remains: at most 5 KiB rows plus 1 KiB tones per snapshot. Tone-only changes are
+withheld while hidden and sent on reveal, reset clears them, and malformed tone buffers/palette
+indices are rejected before mutating client state. Old packets without tones remain burn-colored;
+old local profiles without palette/impact data retain the fire-burn layer and skip the new marks.
+Town and lower-ground images reuse their existing allocation/reclaim policy. Matching town ground
+is tinted below roofs and canopy; tone-only changes invalidate it even at unchanged strength.
+No extra native image or particle atlas is allocated by this extension.
+
+`export_ground_scorch.cjs` now evaluates 18 additional original mixed crater/rubble/burn overlap
+scenes and exports the original palette, persistence shares, weapon scorch settings and guarded
+collapse/demo hook profiles. It reads app.asar without modifying the original installation; its
+generated settings/reference tables remain in ignored GameData. Regenerate locally with:
+`node tools/conversion/export_ground_scorch.cjs "A:\SteamLibrary\steamapps\common\WarFront Demo" .`
+
+APPROX/remaining: authoritative visibility-filtered persistence replaces the source client's
+presentation-gated impulses; existing native alpha/8-bit strength, one-second fading clock and
+progressive town/ground refresh remain. Opaque road overlays can still cover marks. Full collapse
+and demolition particles/sounds, wreck/hulk/rust, ruin/scour/nuclear footprints and construction/
+engineer ground restoration are not included. This supersedes the prior missing immediate crater
+and razed-rubble mark limitation only. Power lines/stations remain removed; paid cosmetics remain
+the final milestone.
+
+Verified on installed files: **439 Lune tests passed, 0 failed**; changed Luau compiles (syntax
+only), exporter generation/JavaScript syntax and Rojo build pass. Eight added checks cover all 18
+mixed reference scenes, hidden tone-only updates/deletions, atomic malformed transport rejection,
+per-weapon/legacy behavior, the actual MatchService callback (primary/demo/HQ/delayed pops/water),
+matching town/plane colors, town tone-only repaint with canopy preservation and native tile image
+reuse/reset. Native appearance/frame time still requires Studio. **B193-B195 have not been run.**

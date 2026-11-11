@@ -174,11 +174,11 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 		covers[key]={px=px,members=members};table.insert(coverOrder,key);return px
 	end
 	coverSampler=sampleCover
-	local groundKnown:any={};local groundConfig:any=nil;local groundSource:any=nil
+	local groundKnown:any={};local groundKnownTones:any={};local groundConfig:any=nil;local groundSource:any=nil
 	local function applyGround(buckets:any,config:any,source:any?)
 		-- A matching tree-free bake is required to preserve trees above scars and restore cleanly.
 		if not forest then return end
-		local values={};for _,b in buckets do for cell,value in b.cells do values[cell]=value end end
+		local values,tones={},{};for _,b in buckets do for cell,value in b.cells do values[cell]=value;tones[cell]=if b.tones then b.tones[cell] or 0 else 0 end end
 		if next(values)~=nil then
 			if not source or source.width~=mapW or source.height~=mapH or source.tileSize~=TILE_PX then return end
 			groundSource,groundConfig=source,config
@@ -187,12 +187,13 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 			local x,y=cell%mapW,math.floor(cell/mapW)
 			for _,c in chunks do if x>=c.cx and y>=c.cy and x<c.cx+c.cw and y<c.cy+c.ch then
 				local chunk=c :: any;chunk.groundScars=chunk.groundScars or {};chunk.groundScars[cell]=if value>0 then value else nil
+				chunk.groundTones=chunk.groundTones or {};chunk.groundTones[cell]=if value>0 then tones[cell] else nil
 				chunk.forestDirty=true;break
 			end end
 		end
 		for cell in groundKnown do if not values[cell] then update(cell,0) end end
-		for cell,value in values do if groundKnown[cell]~=value then update(cell,value) end end
-		groundKnown=values
+		for cell,value in values do if groundKnown[cell]~=value or groundKnownTones[cell]~=tones[cell] then update(cell,value) end end
+		groundKnown,groundKnownTones=values,tones
 		if next(groundKnown)==nil then groundConfig,groundSource=nil,nil end
 	end
 	groundApply=applyGround
@@ -230,7 +231,7 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 			TownPatch.validate(delta,px);TownPatch.apply(px,delta)
 		end
 		local scars=(c :: any).groundScars
-		if scars and next(scars) and groundSource then ScorchPixels.apply(px,c.cx,c.cy,c.cw,c.ch,TILE_PX,mapW,scars,groundConfig,groundSource.roof) end
+		if scars and next(scars) and groundSource then ScorchPixels.apply(px,c.cx,c.cy,c.cw,c.ch,TILE_PX,mapW,scars,groundConfig,groundSource.roof,(c :: any).groundTones) end
 		return ForestRaster.paint(forest,px,c.cx,c.cy,c.cw,c.ch,fates)
 	end
 	local function decode(c: Chunk,frame:number?): (buffer, number, number)
@@ -481,7 +482,7 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 		if coverSampler==sampleCover then coverSampler=nil end
 		if groundApply==applyGround then groundApply=nil end
 		appearanceRevision+=1;table.clear(bareCache);table.clear(bareOrder)
-		groundKnown={};groundConfig,groundSource=nil,nil
+		groundKnown,groundKnownTones={},{};groundConfig,groundSource=nil,nil
 		table.clear(covers);table.clear(coverOrder)
 		if connection then connection:Disconnect() end
 		unregister()

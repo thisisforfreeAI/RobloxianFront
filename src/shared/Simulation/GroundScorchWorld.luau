@@ -9,6 +9,18 @@ function World.new(config:any,map:any,context:any):any
 	local townAt=Scorch.towns(config.towns,map.width,map.height,context.towns or {})
 	self.model=Scorch.new(config,map.width,map.height,{townAt=townAt,quiet=function(town) return self.time-town.lastHitAt>=context.quietSec end})
 	function self.scar(x,y,radius,power,kind) self.model.scar(x,y,radius,power,kind) end
+	-- Called only after the common impact adapter's map/water guard; no combat damage is applied.
+	-- Legacy local profiles keep fire burns working until regenerated with impact/palette settings.
+	function self.blast(x:number,y:number,weapon:string,size:number?,preset:string?):boolean
+		local impacts=config.impacts
+		if not impacts or not config.palette or not config.shapes then return false end
+		local profile=if preset then impacts[preset] elseif weapon=="razed" then impacts.razed else impacts.weapons and impacts.weapons[weapon]
+		if not profile or not config.shapes[profile.kind] then return false end
+		local radius=if profile.fromBlastSize then size else profile.radius
+		if type(radius)~="number" or not (radius>=0 and radius<math.huge) or type(profile.power)~="number" or not (profile.power>0 and profile.power<math.huge) then return false end
+		if type(x)~="number" or type(y)~="number" or not (x>=0 and y>=0 and x<map.width and y<map.height) then return false end
+		self.scar(x,y,radius,profile.power,profile.kind);return true
+	end
 	function self.advance(time:number)
 		local dt=time-self.lastTime;assert(dt>=-1e-8 and dt<math.huge,"scorch clock moved backwards");self.lastTime=time;self.acc+=math.max(0,dt)
 		while self.acc+1e-9>=1 do self.acc=math.max(0,self.acc-1);self.time+=1;self.model.fade(1);self.model.heal(1) end
@@ -17,15 +29,18 @@ function World.new(config:any,map:any,context:any):any
 	function self.view(previous:any?,visible:any):(any,any)
 		local reset=not previous or previous.epoch~=self.epoch
 		local known=if reset then {} else table.clone(previous.known);local changes={};local values={}
-		for cell in self.model.cells do values[cell]=math.floor(buffer.readf32(self.model.amount,cell*4)*255+.5) end
+		for cell in self.model.cells do
+			local amount=math.floor(buffer.readf32(self.model.amount,cell*4)*255+.5)
+			values[cell]=if amount>0 then amount+buffer.readu8(self.model.tone,cell)*256 else 0
+		end
 		for cell in known do if not values[cell] then values[cell]=0 end end
 		for cell,value in values do
 			if value~=(known[cell] or 0) and visible(cell%map.width+.5,math.floor(cell/map.width)+.5) then table.insert(changes,cell) end
 		end;table.sort(changes)
 		local rows={};for i=1,math.min(Packets.LIMIT,#changes) do
-			local cell=changes[i];local value=values[cell];table.insert(rows,{cell,value});known[cell]=if value>0 then value else nil
+			local cell=changes[i];local value=values[cell];table.insert(rows,{cell,value%256,math.floor(value/256)});known[cell]=if value>0 then value else nil
 		end
-		return {epoch=self.epoch,reset=reset,rows=Packets.encode(rows)},{epoch=self.epoch,known=known}
+		return {epoch=self.epoch,reset=reset,rows=Packets.encode(rows),tones=if config.palette then Packets.tones(rows) else nil},{epoch=self.epoch,known=known}
 	end
 	return self
 end

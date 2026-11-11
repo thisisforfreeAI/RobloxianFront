@@ -1,5 +1,5 @@
 --!strict
--- Original JLt burn footprint and ZDt fade/heal behavior. Source coefficients are generated locally.
+-- Original JLt burn/crater/rubble footprints and ZDt fade/heal behavior. Coefficients stay local.
 local Hash=if script then require(script.Parent.Parent.Utilities.Hash) else require("../Utilities/Hash")
 local Scorch={}
 function Scorch.towns(config:any,w:number,h:number,towns:{any}):any
@@ -17,23 +17,40 @@ function Scorch.towns(config:any,w:number,h:number,towns:{any}):any
 	return function(cell:number):any local id=buffer.readu16(ids,cell*2);return if id>0 then towns[id] else nil end
 end
 function Scorch.new(config:any,w:number,h:number,context:any):any
-	local self:any={amount=buffer.create(w*h*4),settle=buffer.create(w*h*4),cells={},healing={}}
+	local self:any={amount=buffer.create(w*h*4),settle=buffer.create(w*h*4),tone=buffer.create(w*h),cells={},healing={}}
+	local function mark(cell:number,value:number,tone:number)
+		if value<=0 then return end
+		local at=cell*4;local old=buffer.readf32(self.settle,at)
+		local keep=if config.palette then config.palette[tone+1].keep else config.keep
+		local stain=math.min(1,value)*keep
+		buffer.writef32(self.settle,at,math.min(math.max(old,stain)+math.min(old,stain)*config.settle.deepen,math.max(old,stain,config.settle.cap)))
+		if value>=buffer.readf32(self.amount,at) then buffer.writeu8(self.tone,cell,tone) end
+		buffer.writef32(self.amount,at,math.min(1,math.max(buffer.readf32(self.amount,at),value,buffer.readf32(self.settle,at))))
+		self.cells[cell]=true;self.healing[cell]=true
+	end
 	function self.scar(x:number,y:number,radius:number,power:number,kind:string)
-		assert(kind=="burn","ground scorch currently supports fire burns only")
+		assert(kind=="burn" or (kind=="crater" or kind=="rubble") and config.shapes and config.shapes[kind] and config.palette,"unsupported ground scar kind")
 		assert(x==x and y==y and math.abs(x)<math.huge and math.abs(y)<math.huge and radius>=0 and radius<math.huge and power>=0 and power<math.huge,"invalid scorch impulse")
-		local gx,gy=math.floor(x),math.floor(y);local r=math.max(1,radius);local reach=math.ceil(r*config.burn.stretch+1)
+		local shape=if kind=="burn" then config.burn else config.shapes[kind]
+		local gx,gy=math.floor(x),math.floor(y);local r=math.max(1,radius)
+		local reach=math.ceil(r*(if kind=="burn" then shape.stretch elseif kind=="crater" then shape.throwTo else 1)+1)
 		local wind=if context.wind then context.wind() else config.wind;local wx,wy=wind[1],wind[2];local length=math.sqrt(wx*wx+wy*wy);if length==0 then length=1 end
 		for cy=math.max(0,gy-reach),math.min(h-1,gy+reach) do for cx=math.max(0,gx-reach),math.min(w-1,gx+reach) do
 			local cell=cy*w+cx;local dx,dy=cx-gx,cy-gy
-			local along=(dx*wx+dy*wy)/length;local cross=(dx*wy-dy*wx)/length
-			if along>0 then along/=config.burn.stretch end
-			local distance=math.sqrt(along*along+cross*cross)/(r*(1-config.burn.wobble/2+config.burn.wobble*Hash.seed(cell,119)))
-			if distance>1 then continue end
-			local value=power*config.burn.strength*(1-distance*distance*.6);if value<=0 then continue end
-			local at=cell*4;local old=buffer.readf32(self.settle,at);local stain=math.min(1,value)*config.keep
-			buffer.writef32(self.settle,at,math.min(math.max(old,stain)+math.min(old,stain)*config.settle.deepen,math.max(old,stain,config.settle.cap)))
-			buffer.writef32(self.amount,at,math.min(1,math.max(buffer.readf32(self.amount,at),value,buffer.readf32(self.settle,at))))
-			self.cells[cell]=true;self.healing[cell]=true
+			local noise=Hash.seed(cell,119);local scale=r*(1-shape.wobble/2+shape.wobble*noise)
+			if kind=="burn" then
+				local along=(dx*wx+dy*wy)/length;local cross=(dx*wy-dy*wx)/length
+				if along>0 then along/=shape.stretch end
+				local distance=math.sqrt(along*along+cross*cross)/scale
+				if distance<=1 then mark(cell,power*shape.strength*(1-distance*distance*.6),config.tone) end
+			elseif kind=="crater" then
+				local distance=math.sqrt(dx*dx+dy*dy)/scale
+				if distance<=shape.floor then mark(cell,power*shape.floorStrength,config.tones.earth)
+				elseif distance<=1 then mark(cell,power*shape.rimStrength*(1-(distance-shape.floor)/(1-shape.floor)*.5),config.tones.burnt)
+				elseif distance<=shape.throwTo and noise<shape.throwShare then mark(cell,power*shape.throwStrength,config.tones.earth) end
+			elseif math.max(math.abs(dx),math.abs(dy))/scale<=1 then
+				mark(cell,power*shape.strength*(.7+.3*noise),if noise<shape.burntShare then config.tones.burnt else config.tones.ash)
+			end
 		end end
 	end
 	function self.fade(dt:number)
@@ -56,7 +73,7 @@ function Scorch.new(config:any,w:number,h:number,context:any):any
 			if value<=0 then self.cells[cell]=nil;self.healing[cell]=nil end
 		end
 	end
-	function self.reset() buffer.fill(self.amount,0,0);buffer.fill(self.settle,0,0);table.clear(self.cells);table.clear(self.healing) end
+	function self.reset() buffer.fill(self.amount,0,0);buffer.fill(self.settle,0,0);buffer.fill(self.tone,0,0);table.clear(self.cells);table.clear(self.healing) end
 	return self
 end
 return Scorch

@@ -19,18 +19,18 @@ function Impacts.new(config:any?,width:number,height:number,context:any):any
 	config=if Impacts.valid(config) then config else nil
 	local self:any={hasEvents=config~=nil,pending={},time=if context.time then context.time() else 0}
 	local function point(x,y) return type(x)=="number" and type(y)=="number" and x==x and y==y and x>=0 and y>=0 and x<width and y<height end
-	function self.fire(x:any,y:any,weapon:string,size:number?):boolean
+	function self.fire(x:any,y:any,weapon:string,size:number?,preset:string?):boolean
 		if not point(x,y) then return false end
 		if type(weapon)~="string" or #weapon==0 or (size~=nil and (type(size)~="number" or not (size>=0 and size<math.huge))) then return false end
 		if context.water and context.water(x,y) then return false end
-		context.emit(x,y,weapon,size);return true
+		context.emit(x,y,weapon,size,preset);return true
 	end
 	function self.event(ev:any):boolean
 		if not config then return false end
 		if ev.type=="mineBlast" then return self.fire(ev.x,ev.y,config.mineWeapon)
 		elseif ev.type=="demoBlast" then
 			if not point(ev.x,ev.y) then return false end
-			local emitted=self.fire(ev.x,ev.y,config.demoWeapon,config.demoSize)
+			local emitted=self.fire(ev.x,ev.y,config.demoWeapon,config.demoSize,"demo")
 			local pops=config.pops
 			if pops then
 				local random=context.random or math.random

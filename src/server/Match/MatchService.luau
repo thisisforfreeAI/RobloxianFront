@@ -1398,7 +1398,7 @@ function MatchService.start(mapModule: string)
 			if ok then sim.forestFires=world else warn("[Match] Forest fires unavailable:",world) end
 		end
 	end
-	if sim.houseFires or sim.forestFires then
+	if sim.houseFires or sim.forestFires or sim.groundScorch then
 		local config:any=nil;local source=GameData:FindFirstChild("FireImpactRules")
 		if source then
 			local ok,value=pcall(require,source)
@@ -1412,9 +1412,10 @@ function MatchService.start(mapModule: string)
 				if sim.roads.isRoad(cell) then return false end
 				local kind=MapCodec.terrainName(map,x,y);return kind=="deep" or kind=="shallow" or kind=="river"
 			end,
-			emit=function(x,y,weapon,size)
+			emit=function(x,y,weapon,size,preset)
 				if sim.houseFires then sim.houseFires.blast(x,y,weapon,size) end
 				if sim.forestFires then sim.forestFires.blast(x,y,weapon,size) end
+				if sim.groundScorch then sim.groundScorch.blast(x,y,weapon,size,preset) end
 			end,
 		})
 		sim.worldBlast=sim.fireImpacts.fire

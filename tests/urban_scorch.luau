@@ -17,4 +17,14 @@ return function(test:any,eq:any)
 		eq(buffer.readu8(a,0),200);eq(buffer.readu8(a,2*4),math.floor(200*(1-128/255)+.5));eq(buffer.readu8(b,0),0);eq(buffer.readu8(b,2*4),200)
 		assert(not pcall(Pixels.apply,buffer.create(1),0,0,2,2,2,4,cells,config,roof))
 	end)
+	test("urban ground and ground-plane scars use the same per-cell earth ash and burn palette",function()
+		local View=require("../src/shared/Presentation/GroundScorchView");local Packets=require("../src/shared/Protocol/GroundScorchPackets")
+		-- Synthetic palette: original colors are loaded only from ignored local profiles.
+		local config={color="#0a1428",darken=.5,palette={{color="#0a1428"},{color="#78461e"},{color="#506478"}}}
+		local rows={{0,255,0},{1,255,1},{2,255,2}};local view=View.new(3,1,config);view.apply({epoch=1,rows=Packets.encode(rows),tones=Packets.tones(rows)})
+		local b=view.buckets["0:0"];local plane,n=view.pixels(b,function() return true end);eq(n,3)
+		local px=buffer.create(12);for cell=0,2 do for c=0,2 do buffer.writeu8(px,cell*4+c,100) end;buffer.writeu8(px,cell*4+3,128) end
+		Pixels.apply(px,0,0,3,1,1,3,b.cells,config,function() return false end,b.tones)
+		for cell=0,2 do for c=0,2 do eq(buffer.readu8(px,cell*4+c),math.floor(100+(buffer.readu8(plane,cell*4+c)-100)*.5+.5)) end;eq(buffer.readu8(px,cell*4+3),128) end
+	end)
 end

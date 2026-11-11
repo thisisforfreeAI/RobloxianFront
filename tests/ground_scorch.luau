@@ -27,6 +27,75 @@ return function(test:any,eq:any)
 		local townAt=Scorch.towns(config.towns,refs.width,refs.height,refs.towns)
 		for cell,id in refs.townCells do eq(townAt(cell-1),if id>0 then refs.towns[id] else nil) end
 	end)
+	test("mixed crater rubble and burn overlap match original cell strengths settlement and tone",function()
+		assert(refs.impacts and #refs.impacts==18,"regenerate GroundScorchVectors")
+		for _,scene in refs.impacts do
+			local model=Scorch.new(config,refs.width,refs.height,{})
+			local impulse=0
+			for _,state in scene.states do
+				if state.label=="impulse" then impulse+=1;model.scar(table.unpack(scene.impulses[impulse])) else model.fade(tonumber(string.sub(state.label,6))) end
+				local seen={}
+				for _,row in state.rows do
+					seen[row[1]]=true;close(buffer.readf32(model.amount,row[1]*4),row[2]);close(buffer.readf32(model.settle,row[1]*4),row[3]);eq(buffer.readu8(model.tone,row[1]),row[4])
+				end
+				for cell=0,refs.width*refs.height-1 do if not seen[cell] then eq(buffer.readf32(model.amount,cell*4),0) end end
+			end
+		end
+	end)
+	test("tone-only changes obey fog deltas and restoration carries a clean tone",function()
+		local world=World.new(config,{width=4,height=4},{time=function() return 0 end})
+		world.scar(1.5,1.5,0,.7,"burn");local packet,known=world.view(nil,function() return true end)
+		local view=View.new(4,4,config);view.apply(packet);local amount=buffer.readf32(world.model.amount,5*4)
+		buffer.writeu8(world.model.tone,5,config.tones.earth)
+		local hidden,hiddenKnown=world.view(known,function() return false end);eq(buffer.len(hidden.rows),0)
+		local changed;changed,known=world.view(hiddenKnown,function() return true end)
+		local rows=Packets.decode(changed.rows,16,changed.tones);eq(#rows,1);eq(rows[1][1],5);eq(rows[1][3],config.tones.earth)
+		eq(buffer.readf32(world.model.amount,5*4),amount);view.apply(changed);eq(view.buckets["0:0"].tones[5],config.tones.earth)
+		world.model.reset();local reset=world.view(known,function() return true end);view.apply(reset);eq(next(view.buckets),nil)
+		for _,row in Packets.decode(reset.rows,16,reset.tones) do eq(row[2],0);eq(row[3],0) end
+	end)
+	test("tone transport rejects malformed lengths and palettes before mutating the live view",function()
+		local rows={{5,200,config.tones.ash}};local bytes=Packets.encode(rows);local tones=Packets.tones(rows)
+		local view=View.new(4,4,config);view.apply({epoch=1,rows=bytes,tones=tones});local prior=view.buckets["0:0"]
+		for _,bad in {buffer.create(0),buffer.create(2),"invalid"} do
+			assert(not pcall(function() view.apply({epoch=2,reset=true,rows=bytes,tones=bad}) end));eq(view.epoch,1);eq(view.buckets["0:0"],prior)
+		end
+		buffer.writeu8(tones,0,255);assert(not pcall(function() view.apply({epoch=2,reset=true,rows=bytes,tones=tones}) end));eq(view.buckets["0:0"],prior)
+		for _,tone in {-1,256,.5,math.huge} do assert(not pcall(Packets.tones,{{0,200,tone}})) end
+		local legacy=View.new(4,4,{color=config.color,darken=config.darken});legacy.apply({epoch=1,rows=bytes});eq(legacy.buckets["0:0"].tones[5],0)
+	end)
+	test("impact scars use source weapon presets and legacy profiles retain their burn layer",function()
+		local world=World.new(config,{width=20,height=16},{time=function() return 0 end})
+		for weapon,profile in config.impacts.weapons do
+			world.reset();local expected=Scorch.new(config,20,16,{})
+			if profile.power>0 then expected.scar(10.5,8.5,profile.radius,profile.power,profile.kind) end
+			eq(world.blast(10.5,8.5,weapon),profile.power>0);eq(buffer.tostring(world.model.amount),buffer.tostring(expected.amount));eq(buffer.tostring(world.model.tone),buffer.tostring(expected.tone))
+		end
+		world.reset();assert(world.blast(10.5,8.5,"missile",9,"demo"));local demo=buffer.tostring(world.model.amount)
+		world.reset();world.blast(10.5,8.5,"missile");assert(buffer.tostring(world.model.amount)~=demo)
+		for _,args in {{-1,0,"shell"},{math.huge,0,"shell"},{0/0,0,"shell"},{1,1,"missing"},{1,1,"razed"},{1,1,"razed",-1}} do eq(world.blast(table.unpack(args)),false) end
+		local legacy=table.clone(config);legacy.palette=nil;legacy.shapes=nil;legacy.impacts=nil
+		local old=World.new(legacy,{width=20,height=16},{time=function() return 0 end});eq(old.blast(10,8,"shell"),false);old.scar(10,8,1,.5,"burn");assert(next(old.model.cells))
+	end)
+	test("actual match impact callback feeds guarded shell demo rubble and delayed-pop ground marks",function()
+		local luau=require("@lune/luau");local code=fs.readFile("src/server/Match/MatchService.luau")
+		local a=assert(string.find(code,"sim.fireImpacts=WorldFireImpacts.new",1,true));a=assert(string.find(code,"emit=function",a,true))+#"emit="
+		local b=assert(string.find(code,"\n\t\t\tend,",a,true))+#"\n\t\t\tend"
+		local factory=luau.load("return function(sim) return "..string.sub(code,a,b-1).." end")()
+		local fire=require("../src/shared/GameData/FireImpactRules");local Impacts=require("../src/shared/Simulation/WorldFireImpacts")
+		local world=World.new(config,{width=20,height=16},{time=function() return 0 end});local marks={};local scar=world.scar
+		world.scar=function(...) table.insert(marks,{...});scar(...) end
+		local house,forest=0,0;local emit=factory({groundScorch=world,houseFires={blast=function() house+=1 end},forestFires={blast=function() forest+=1 end}})
+		local wet=false;local adapter=Impacts.new(fire,20,16,{time=function() return 0 end,random=function() return .5 end,water=function() return wet end,emit=emit})
+		adapter.fire(10,8,"shell");eq(#marks,1);eq(marks[1][3],config.impacts.weapons.shell.radius);eq(marks[1][5],"crater");eq(house,1);eq(forest,1)
+		adapter.event({type="demoBlast",x=10,y=8});eq(#marks,2);eq(marks[2][3],config.impacts.demo.radius);eq(marks[2][4],config.impacts.demo.power)
+		adapter.event({type="destroyed",cat="structure",kind="hq",x=10,y=8});eq(#marks,3);eq(marks[3][3],fire.razedSize*fire.hqScale);eq(marks[3][5],"rubble")
+		adapter.advance(fire.pops.to+1);eq(#marks,3+fire.pops.count)
+		for i=4,#marks do eq(marks[i][3],config.impacts.weapons[fire.pops.weapon].radius) end
+		local count=#marks;wet=true;adapter.fire(10,8,"shell");adapter.event({type="destroyed",cat="structure",kind="factory",x=10,y=8});eq(#marks,count)
+		wet=false;adapter.event({type="demolished",cat="structure",kind="factory",x=10,y=8});eq(#marks,count)
+		adapter.fire(10,8,"bullets");eq(#marks,count)
+	end)
 	test("rural fire stains settle without inventing automatic ground restoration",function()
 		local model=Scorch.new(config,20,16,{townAt=function() return nil end})
 		model.scar(10.5,8.5,2,.9,"burn");model.fade(1000);model.heal(1000)
