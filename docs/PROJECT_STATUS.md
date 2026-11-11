@@ -2035,3 +2035,46 @@ run: **275 passed, 0 failed**.
 Manual checks B150-B152 are new and not run. Restart Play after Rojo sync for both renderer changes
 and the regenerated local light atlas.
 
+## Cloud renderer runtime correction after repeated camera feedback (2026-11-10)
+
+Owner reported the cloud attachment problem still occurring after the prior correction. The
+previous math-only tests missed a concrete renderer bug: the local pcall success flag named
+painted shadowed the outer painted-view cache, so the render callback never received that cache.
+The flag is now named success, and the cache is published only after a successful image write.
+The old WorldLight image also still baked cloud shadows into a screen-fixed overlay; it now
+renders only the intended screen-space light wash and vignette, with no cloud sampling.
+
+CloudRenderer now owns both cloud bodies and shadows. One neutral density EditableImage supplies
+two GUI layers: a tinted sky above the scene and a black shadow below the screen wash. The body
+uses source colour/night/zoom strength; the shadow uses source shadow strength, daylight fade and
+sun-dependent offset. Both cached labels reproject after the camera every frame and move only
+with elapsed wind in world space. The sun offset is applied to the shadow label, not another
+screen-fixed noise image. Two GUI labels share the same single native image; no second shadow
+image is allocated. Image refusal/retry, reclamation, idle release and teardown cover both layers.
+
+APPROX cache policy: the padded world bounds include both the sky view and the view displaced by
+the shadow offset. Sampling spacing is quantized in quarter-cell increments, and the cache origin
+snaps to a global lattice advected by wind. Small camera pans therefore cannot shift the sample
+grid at each 0.15-second repaint. Existing small/full texture resolution and hysteresis remain.
+Cloud parallax remains disabled in the runtime per the owner's request; the source-reference
+projection is still retained for numerical comparisons. Source half thickness is quantized to
+128/255 in the neutral image. Native filtering/tonemapping and exact final appearance still need
+Studio comparison. The brighter city-light/facade work and unrelated files were preserved.
+
+Added tests/cloud_renderer.luau, which executes the actual CloudRenderer and WorldLight module
+source using Lune's loader with mocked Roblox service/image boundaries. Four targeted tests were
+first run against the pre-fix renderer and all failed, including cache publication and the old
+seven-argument world-light call retaining screen-fixed cloud sampling. After the correction,
+five actual-renderer tests pass: paint-to-render cache publication; camera pan/zoom/wind movement
+without another image write; shared body/shadow texture and night fade; image refusal/retry/
+reclamation/teardown; no cloud sampling in WorldLight; and stable repaint texel-grid alignment
+(some checks are combined in a single test). Another pure test covers white-mask half coverage.
+These tests exercise renderer control flow, not Roblox's native GUI rasterizer.
+
+Verification actually run: full Lune suite **281 passed, 0 failed**; changed Luau compiles; Rojo
+build passes. Independent original cloud shader/colour/projection references still pass. Studio
+inspection was attempted with the Windows computer-use skill, but a game-view pan test was not
+completed: the UI input guard detected user activity and the subsequent capture was not a usable
+Studio game view. No successful local restart or visual pass is claimed. B153-B154 remain pending.
+Restart Play after sync to load the corrected renderer rather than its cached ModuleScript.
+

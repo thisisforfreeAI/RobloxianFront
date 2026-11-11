@@ -97,4 +97,14 @@ return function(test:any,eq:any)
 		assert(not Clouds.project(painted,{cx=200,cy=80,rx=20,ry=15,time=10},config).covered)
 		assert(not Clouds.project(painted,{cx=100,cy=80,rx=70,ry=50,time=10},config).covered)
 	end)
+	test("shared cloud mask contains neutral RGB and source half-thickness coverage",function()
+		local view={cx=0,cy=0,rx=10,ry=8,time=0,cellPixels=10}
+		local halfway=config.cover+config.step/2
+		local pixels,count=Clouds.mask(config,8,6,view,function() return halfway end)
+		eq(count,48)
+		for i=0,47 do
+			for ch=0,2 do eq(buffer.readu8(pixels,i*4+ch),255) end
+			eq(buffer.readu8(pixels,i*4+3),128)
+		end
+	end)
 end

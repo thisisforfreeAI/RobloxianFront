@@ -21,24 +21,36 @@ function Renderer.start(parent:Instance)
 	local ok,config=pcall(require,module :: ModuleScript)
 	if not ok then warn("[Clouds] Local cloud settings unavailable:",config);return end
 	local gui=Instance.new("ScreenGui");gui.Name="Clouds";gui.IgnoreGuiInset=true;gui.ResetOnSpawn=false;gui.DisplayOrder=-15
+	local shadowGui=Instance.new("ScreenGui");shadowGui.Name="CloudShadows";shadowGui.IgnoreGuiInset=true;shadowGui.ResetOnSpawn=false;shadowGui.DisplayOrder=-21
 	local label=Instance.new("ImageLabel");label.BackgroundTransparency=1;label.Size=UDim2.fromScale(1,1)
 	label.AnchorPoint=Vector2.new(.5,.5);label.Position=UDim2.fromScale(.5,.5)
 	label.Active=false;label.Visible=false;label.ResampleMode=Enum.ResamplerMode.Default;label.Parent=gui
-	gui.Parent=Players.LocalPlayer:WaitForChild("PlayerGui");current=gui
+	local shadow=Instance.new("ImageLabel");shadow.BackgroundTransparency=1;shadow.AnchorPoint=Vector2.new(.5,.5)
+	shadow.Active=false;shadow.Visible=false;shadow.ResampleMode=Enum.ResamplerMode.Default
+	shadow.ImageColor3=Color3.new(0,0,0);shadow.Parent=shadowGui
+	local playerGui=Players.LocalPlayer:WaitForChild("PlayerGui")
+	shadowGui.Parent=playerGui;gui.Parent=playerGui;current=gui
 	local image:EditableImage?=nil
 	local painted:any=nil
 	local full=false
 	local retry,nextUpdate,idle=0,0,os.clock()
 	local disabled=false
 	local function clear()
-		label.Visible=false;Memory.release(image);image=nil;painted=nil
+		label.Visible=false;shadow.Visible=false;Memory.release(image);image=nil;painted=nil
+	end
+	local function place(target:any,p:any,alpha:number)
+		target.Position=UDim2.fromScale(p.x,p.y);target.Size=UDim2.fromScale(p.width,p.height)
+		target.ImageTransparency=1-alpha;target.Visible=p.covered and alpha>0
 	end
 	local function project(view:any)
-		if not painted or not image then label.Visible=false;return end
-		local p=Clouds.project(painted,view,config)
-		label.Position=UDim2.fromScale(p.x,p.y);label.Size=UDim2.fromScale(p.width,p.height)
-		-- A teleport/large zoom may outrun the cache: hide its edge until the next paint.
-		label.Visible=p.covered and Clouds.share(config,view.cellPixels)>0
+		if not painted or not image then label.Visible=false;shadow.Visible=false;return end
+		local light=Daylight.get()
+		if not light.mul or not light.add or not light.color then label.Visible=false;shadow.Visible=false;return end
+		local color,alpha=Clouds.tone(config,light,view.cellPixels)
+		label.ImageColor3=Color3.new(color[1],color[2],color[3])
+		place(label,Clouds.project(painted,view,config),alpha)
+		local sx,sy=Clouds.offset(config,light)
+		place(shadow,Clouds.project(painted,view,config,sx,sy),config.shadow*(1-light.night)*Clouds.share(config,view.cellPixels))
 	end
 	-- CameraController runs at Camera+1. Reproject AFTER it, without re-evaluating noise each frame.
 	RunService:BindToRenderStep("WarFrontClouds",Enum.RenderPriority.Camera.Value+2,function()
@@ -62,26 +74,29 @@ function Renderer.start(parent:Instance)
 		local light=Daylight.get()
 		if not light.mul or not light.add or not light.color then clear();return end
 		-- APPROX cache padding covers ordinary panning between 0.15 s noise repaints.
-		local field=table.clone(view);field.rx*=1.75;field.ry*=1.75
-		local pixels,count=Clouds.pixels(config,light,width,height,field,Wetness.valueNoise,0)
+		-- Cover both the sky view and the ground view displaced by the sun's shadow offset.
+		local sx,sy=Clouds.offset(config,light)
+		local field=Clouds.bounds(config,view,width,height,sx,sy)
+		local pixels,count=Clouds.mask(config,width,height,field,Wetness.valueNoise)
 		if count==0 then
-			label.Visible=false;painted=nil
+			label.Visible=false;shadow.Visible=false;painted=nil
 			if image and os.clock()-idle>3 then clear() end
 			return
 		end
 		if not image then
 			image=Memory.create(Vector2.new(width,height),"detail")
 			if not image then retry=os.clock()+5;return end
-			label.ImageContent=Content.fromObject(image)
+			label.ImageContent=Content.fromObject(image);shadow.ImageContent=Content.fromObject(image)
 		end
 		local target=image :: EditableImage
-		local painted,err=pcall(function() target:WritePixelsBuffer(Vector2.zero,Vector2.new(width,height),pixels) end)
-		if not painted then clear();disabled=true;warn("[Clouds] Sky image unavailable:",err);return end
+		local success,err=pcall(function() target:WritePixelsBuffer(Vector2.zero,Vector2.new(width,height),pixels) end)
+		if not success then clear();disabled=true;warn("[Clouds] Sky image unavailable:",err);return end
 		idle=os.clock();painted=field;project(view)
 	end)
 	local parentConnection=parent.Destroying:Connect(function() gui:Destroy() end)
 	gui.Destroying:Connect(function()
 		connection:Disconnect();RunService:UnbindFromRenderStep("WarFrontClouds");parentConnection:Disconnect();unregister();clear()
+		shadowGui:Destroy()
 		if current==gui then current=nil end
 	end)
 end

@@ -4289,6 +4289,7 @@ require("./refugees")(test, eq)
 require("./chimney_smoke")(test, eq)
 require("./street_furniture")(test, eq)
 require("./clouds")(test, eq)
+require("./cloud_renderer")(test, eq)
 
 print(`\n{passed} passed, {failed} failed`)
 if failed > 0 then

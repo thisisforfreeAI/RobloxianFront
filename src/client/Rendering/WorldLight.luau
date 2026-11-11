@@ -6,8 +6,6 @@ local Shared=ReplicatedStorage:WaitForChild("Shared")
 local Pixels=require(Shared.Presentation.ScreenLight)
 local Memory=require(script.Parent.ImageMemory)
 local Daylight=require(script.Parent.DaylightController)
-local Wetness=require(Shared.Presentation.GroundWetness)
-local Clouds=require(Shared.Presentation.CloudField)
 local World=require(Shared.Config.World)
 local WorldLight={}
 local image: EditableImage?=nil
@@ -29,11 +27,6 @@ function WorldLight.start()
 	local module=data and data:FindFirstChild("WorldLook")
 	if not module then warn("[WorldLight] Generate source look with export_world_look.cjs");return end
 	config=require(module :: ModuleScript)
-	local cloudModule=data and data:FindFirstChild("CloudLook")
-	if cloudModule then
-		local ok,look=pcall(require,cloudModule :: ModuleScript)
-		if ok then config=table.clone(config);config.cloud=look end
-	end
 	image=Memory.create(Vector2.new(192,128))
 	if not image then return end
 	local gui=Instance.new("ScreenGui")
@@ -55,6 +48,7 @@ function WorldLight.update()
 	local nextStamp=table.concat({math.floor(light.phase*512),math.floor(view.cx),math.floor(view.cy),math.floor(view.rx),math.floor(view.ry),if light.night<1 then math.floor(view.time*2) else 0},",")
 	if nextStamp==stamp then return end
 	stamp=nextStamp
-	image:WritePixelsBuffer(Vector2.zero,Vector2.new(192,128),Pixels.pixels(config,light,192,128,view,Wetness.valueNoise,Clouds))
+	-- CloudRenderer owns the moving shadow mask. This screen-fixed layer is only wash/vignette.
+	image:WritePixelsBuffer(Vector2.zero,Vector2.new(192,128),Pixels.pixels(config,light,192,128))
 end
 return WorldLight
