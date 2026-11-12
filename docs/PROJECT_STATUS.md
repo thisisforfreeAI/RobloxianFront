@@ -3175,3 +3175,61 @@ The bounded selection regression also compares the 4096 nearest results against 
 **Studio B211-B213 have not been run.** These changes address concrete transition and composition
 problems; automated fixtures do not establish native FPS, eliminate every flash, or prove a
 pixel-identical night appearance. Restart Play after Rojo sync before comparing the reported view.
+
+## Combat map-detail protection and incremental city population (2026-11-11)
+
+The owner reported that the map becomes blurred during a large battle while unit art stays sharp
+(initially typed as "blue", then clarified with the same screenshot). A confirmed pressure path
+was terrain's priority-10 reclaimer running before unused sprite art at priority 20. Wreck/soot
+sheets also requested core allocations, so a new damaged-unit type could reclaim the detailed map
+to load its large cosmetic atlas. This is a reproducible code path, not a measured native trace
+of the supplied screenshot; texture/display behavior still needs the checks below.
+
+Town chunks now use a separately accounted "terrain" detail kind. The existing shared 16 MiB
+detail pool reserves a 4 MiB allowance for terrain: optional detail cannot spend any missing part
+of that allowance, either against the detail limit or learned global/native headroom. Terrain
+requests may use it. This is a port policy, not Roblox's reported limit, and does not allocate
+4 MiB in advance or increase the 48 MiB soft ceiling, 16 MiB detail limit or 8 MiB core reserve.
+Terrain and optional detail still share the same pool. Release decrements both terrain and total
+detail accounting, so an empty/reclaimed view cannot leave a phantom allowance in use.
+
+Under core pressure, optional layers at priority 10 and unused sprite images at priority 20 now
+yield before town detail at priority 30. Detail admission visits only priority 20; moving terrain
+later in the order must not make one detail request evict another visible chunk. Wreck/soot sheets,
+including their wreck rims/shadows, now use optional detail admission. Figure rim/shadow masks and
+the shared death/fire particle atlas do too. Main live-unit body/paint sheets stay core. Refused
+cosmetic art follows the existing absent-art/retry behavior instead of clearing the map. These
+changes do not stop simulation deaths, burning, damage, ruins, or explicit rebuild behavior.
+SpriteBank also requests image admission before decoding the full pixel buffer. A refused optional
+wreck sheet now skips that CPU/allocation cost; a later decode/write failure releases its admitted
+native image through the existing guarded cleanup. Original sprite pixels and dimensions stay intact.
+
+ImageMemory.pressureStats() reports used/detail/terrain bytes, terrainReserve, detailLimit and the
+effective ceiling for native diagnosis. Core art/fog can still force a last-resort terrain reclaim
+when the device cannot fit essential images after other reclamation. A 4 MiB allowance cannot
+promise full-resolution coverage for every viewport/device. Optional details, including some wreck
+or soot art, may be omitted under pressure. Other causes of native blur or stalls are not excluded.
+
+City windows also continue populating between selection ticks. A nearest-first queue admits up to
+24 fragments per Heartbeat under a soft 1 ms creation target, replacing the former 3 ms burst once
+each 0.1 s. A single fragment's construction is indivisible and may exceed that target. Existing
+parts stay bound; source transitions keep their per-frame fades. Camera/zoom/damage changes replace
+obsolete pending work, and zoom-out/daylight/map teardown stops it. Static eight-cell spatial buckets
+limit candidate searches to the camera rectangle. Stationary, unchanged views reuse their selection;
+source occupancy/color/clock updates still run. Exact clipping, nearest/id tie order and the 4096
+cap remain. NightWindowRenderer's returned state.stats() adds pending, selectionQueries and candidates.
+
+Verified on installed files: **493 Lune tests passed, 0 failed**, all changed Luau compiles (syntax
+only), and Rojo build passes. Nine new regressions cover spatial/full-scan equivalence with negative
+coordinates, ties/caps, filters and empty views; between-tick bounded population and stale-work
+cancellation; reserved terrain accounting/admission; idle-art-before-terrain reclamation; native
+refusal without map eviction/retry loops; safe terrain admission; actual SpriteBank damage-sheet
+refusal while live art/map survive; and actual TownRenderer budget/reclaimer wiring.
+**Studio B214-B216 have not been run; Roblox player comparison has not been run.**
+
+Roblox documents that Studio runs client and server together and uses more memory than a normal
+player, while EditableImage has strict client-specific memory budgets and one displayed image
+update per frame. The player may reduce local Studio overhead but is not a fix for this policy or
+a guarantee of more editable-image memory. Native Studio/player/device comparisons remain required:
+https://create.roblox.com/docs/performance-optimization/design
+https://create.roblox.com/docs/reference/engine/classes/EditableImage

@@ -33,15 +33,31 @@ function Windows.damaged(item:any,pixelsPerCell:number,fine:number,blocked:any):
 		end
 	end;return false
 end
-function Windows.visible(items:{any},pixelsPerCell:number,cx:number,cy:number,rx:number,ry:number,eligible:any?):{any}
+-- Static spatial buckets avoid scanning every city's fragments for a small camera view.
+-- Indexing changes candidate lookup only; exact clipping, cap and distance/id order stay below.
+function Windows.index(items:{any},pixelsPerCell:number):any
+	local index:any={items=items,pixelsPerCell=pixelsPerCell,size=8,rows={},lastVisited=0}
+	for _,item in items do
+		local x,y=math.floor((item.point[1]+6)/pixelsPerCell/index.size),math.floor((item.point[2]+6)/pixelsPerCell/index.size)
+		local row=index.rows[y];if not row then row={};index.rows[y]=row end
+		local bucket=row[x];if not bucket then bucket={};row[x]=bucket end
+		table.insert(bucket,item)
+		index.minX=if index.minX then math.min(index.minX,x) else x;index.maxX=if index.maxX then math.max(index.maxX,x) else x
+		index.minY=if index.minY then math.min(index.minY,y) else y;index.maxY=if index.maxY then math.max(index.maxY,y) else y
+	end
+	return index
+end
+function Windows.visible(items:{any},pixelsPerCell:number,cx:number,cy:number,rx:number,ry:number,eligible:any?,spatial:any?):{any}
 	local out={}
 	local function farther(a:any,b:any):boolean
 		return if a.distance==b.distance then a.item.id>b.item.id else a.distance>b.distance
 	end
-	for _,item in items do
+	local visited=0
+	local function consider(item:any)
+		visited+=1
 		local x,y=(item.point[1]+6)/pixelsPerCell,(item.point[2]+6)/pixelsPerCell
 		if math.abs(x-cx)<=rx+1 and math.abs(y-cy)<=ry+1 then
-			if eligible and not eligible(item) then continue end
+			if eligible and not eligible(item) then return end
 			local distance=(x-cx)^2+(y-cy)^2
 			if #out<Windows.MAX_VISIBLE then
 				table.insert(out,{item=item,distance=distance})
@@ -61,6 +77,20 @@ function Windows.visible(items:{any},pixelsPerCell:number,cx:number,cy:number,rx
 				end
 			end
 		end
+	end
+	if spatial and spatial.items==items and spatial.pixelsPerCell==pixelsPerCell then
+		if spatial.minX then
+			local size=spatial.size
+			local x0,x1=math.max(spatial.minX,math.floor((cx-rx-1)/size)),math.min(spatial.maxX,math.floor((cx+rx+1)/size))
+			local y0,y1=math.max(spatial.minY,math.floor((cy-ry-1)/size)),math.min(spatial.maxY,math.floor((cy+ry+1)/size))
+			for y=y0,y1 do
+				local row=spatial.rows[y];if not row then continue end
+				for x=x0,x1 do local bucket=row[x];if bucket then for _,item in bucket do consider(item) end end end
+			end
+		end
+		spatial.lastVisited=visited
+	else
+		for _,item in items do consider(item) end
 	end
 	table.sort(out,function(a,b) return if a.distance==b.distance then a.item.id<b.item.id else a.distance<b.distance end)
 	return out

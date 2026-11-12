@@ -91,11 +91,14 @@ local function page(name: string): any
 	local allocated: EditableImage? = nil
 	local ok, result = pcall(function()
 		local meta = require(mod) :: any
-		local pixels = PixelCodec.decode(MapCodec.base64Decode(meta.rle), meta.width, meta.height)
 		local size = Vector2.new(meta.width, meta.height)
-		local image = ImageMemory.create(size)
+		-- Battle-only wreck/soot pages are optional detail. They must not evict the visible map
+		-- merely because the first damaged unit of another type asks for its large wreck sheet.
+		local image = ImageMemory.create(size,if string.find(name,"Wreck",1,true) then "detail" else "core")
 		assert(image, "EditableImage memory unavailable after reclaiming unused art")
 		allocated = image
+		-- Admission precedes the expensive decode; refused optional pages should cost no full pixel buffer.
+		local pixels = PixelCodec.decode(MapCodec.base64Decode(meta.rle), meta.width, meta.height)
 		image:WritePixelsBuffer(Vector2.zero, size, pixels)
 		return { image = image, content = Content.fromObject(image), meta = meta, at = os.clock() }
 	end)

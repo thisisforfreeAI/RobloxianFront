@@ -52,15 +52,16 @@ return function(test: any, eq: any)
 		for _ = 1, 100 do eq(b:create(1, 1, "detail"), nil) end
 		eq(state.attempts, 2)
 	end)
-	test("reclamation visits detail before unused sprites and passes active-image protection", function()
+	test("reclamation visits optional detail then unused sprites before terrain and passes active-image protection", function()
 		local create = factory(1000)
 		local b = Budget.new(create, { ceiling = 100, detailLimit = 100, reserve = 0 })
 		local protected = {}; local called = {}
 		b.guard = function() return protected end
 		b:register(20, function(_, guard) table.insert(called, "sprites"); eq(guard, protected) end)
-		b:register(10, function() table.insert(called, "town") end)
+		b:register(30, function() table.insert(called, "town") end)
+		b:register(10, function() table.insert(called, "effects") end)
 		b:reclaim(1)
-		eq(called[1], "town"); eq(called[2], "sprites")
+		eq(called[1], "effects"); eq(called[2], "sprites");eq(called[3],"town")
 	end)
 	test("image release is idempotent and notifies failed-cache retry listeners", function()
 		local create, state = factory(100)
@@ -69,6 +70,63 @@ return function(test: any, eq: any)
 		local image = b:create(2, 2)
 		b:release(image); b:release(image)
 		eq(state.destroyed, 1); eq(released, 1); eq(b.epoch, 1); eq(b.used, 0)
+	end)
+	test("battle detail cannot spend the reserved terrain floor before the map arrives",function()
+		local create,state=factory(100)
+		local b=Budget.new(create,{ceiling=100,detailLimit=80,reserve=0,terrainReserve=32})
+		local battle=b:create(4,3,"detail");assert(battle);eq(b:detailHeadroom(),0);eq(b:detailHeadroom(nil,"terrain"),32)
+		eq(b:create(1,1,"detail"),nil);eq(state.attempts,1)
+		local terrain=b:create(4,2,"terrain");assert(terrain);eq(b.terrain,32);eq(b.detail,80)
+		b:release(battle);eq(b.detail,32);eq(b.terrain,32);assert(b:create(4,3,"detail"))
+		b:release(terrain);eq(b.terrain,0);eq(b.detail,48);eq(b:create(1,1,"detail"),nil)
+	end)
+	test("a new unit image frees idle art before removing visible terrain",function()
+		local create,state=factory(100)
+		local b=Budget.new(create,{ceiling=100,detailLimit=80,reserve=0,terrainReserve=20})
+		local terrain=b:create(3,5,"terrain");local idle=b:create(2,4,"core");local townEvicted=false
+		b:register(30,function() townEvicted=true;b:release(terrain) end)
+		b:register(20,function() b:release(idle) end)
+		assert(b:create(2,5,"core"));eq(townEvicted,false);eq(b.terrain,60);eq(b.used,100);eq(state.destroyed,1)
+	end)
+	test("a refused battle image never reclaims the map or retries the native allocator immediately",function()
+		local create,state=factory(80)
+		local b=Budget.new(create,{ceiling=1000,detailLimit=1000,reserve=0,terrainReserve=20})
+		local terrain=b:create(3,5,"terrain");local townEvicted=false
+		b:register(30,function() townEvicted=true;b:release(terrain) end)
+		eq(b:create(2,5,"detail"),nil);eq(townEvicted,false);eq(state.attempts,2);eq(b.terrain,60)
+		for _=1,20 do eq(b:create(2,5,"detail"),nil) end;eq(state.attempts,2)
+	end)
+	test("terrain admission never invokes the last-resort visible-map reclaimer",function()
+		local create,state=factory(100)
+		local b=Budget.new(create,{ceiling=100,detailLimit=100,reserve=20,terrainReserve=20})
+		local terrain=b:create(3,5,"terrain");assert(b:create(1,5,"core"));local called=false
+		b:register(30,function() called=true;b:release(terrain) end)
+		eq(b:prepareDetail(24,"terrain"),false);eq(called,false);eq(state.attempts,2);eq(b.terrain,60)
+	end)
+	test("actual damaged-unit atlas admission keeps the live unit and terrain when its wreck sheet cannot fit",function()
+		local fs=require("@lune/fs");local luau=require("@lune/luau")
+		local create,state=factory(100)
+		local b=Budget.new(function(w,h) local image=create(w,h);if image then image.WritePixelsBuffer=function() end end;return image end,
+			{ceiling=100,detailLimit=60,reserve=0,terrainReserve=24})
+		local terrain=b:create(2,5,"terrain");local evicted=false;b:register(30,function() evicted=true;b:release(terrain) end)
+		local function module(meta) return {meta=meta,IsA=function() return true end} end
+		local assets={OrigTank=module({width=1,height=7,frame=1,columns=1,rle="",strips={hull_colour=0,hull_paint=0,turret_colour=0,turret_paint=0}}),
+			OrigTankWreck=module({width=3,height=4,frame=1,columns=1,rle="",strips={wreck_hull_colour=0,wreck_hull_paint=0,wreck_turret_colour=0,wreck_turret_paint=0}})}
+		local memory={create=function(size,kind) return b:create(size.X,size.Y,kind) end,release=function(image) b:release(image) end,
+			register=function(priority,fn) return b:register(priority,fn) end,onRelease=function(fn) b:onRelease(fn) end,stats=function() return b.used end}
+		local decodes=0
+		local modules={memory=memory,codec={base64Decode=function() return buffer.create(0) end},pixels={decode=function(_data,w,h) decodes+=1;return buffer.create(w*h*4) end}}
+		local shared={Maps={MapCodec="codec"},Assets={PixelCodec="pixels"}}
+		local env=setmetatable({game={GetService=function() return {WaitForChild=function() return shared end} end},
+			script={Parent={ImageMemory="memory",Parent={FindFirstChild=function() return {FindFirstChild=function(_,name) return assets[name] end} end}}},
+			require=function(key) return if type(key)=="table" then key.meta else modules[key] end,
+			Content={fromObject=function(image) return image end},Vector2={new=function(x,y) return {X=x,Y=y} end},warn=function() end},{__index=getfenv()})
+		local bank=luau.load(fs.readFile("src/client/Rendering/SpriteBank.luau"),{environment=env})()
+		local live=bank.look("tank");assert(live);local image=live.body.content
+		b.guard=function() return {[image]=true} end
+		eq(bank.soot("tank"),nil);eq(evicted,false);eq(b.terrain,40);eq(b.used,68);eq(state.attempts,2)
+		eq(decodes,1,"refused wreck art must not decode an unused full pixel buffer")
+		eq(bank.look("tank").body.content,image);eq(b.records[image].kind,"core")
 	end)
 	test("releasing core storage lets detail use learned free capacity again", function()
 		local create = factory(100)
@@ -112,7 +170,7 @@ return function(test: any, eq: any)
 		assert(b:create(2, 5)) -- active art: 40 bytes
 		local unused = b:create(2, 5)
 		local townEvicted = false
-		b:register(10, function() townEvicted = true end)
+		b:register(30, function() townEvicted = true end)
 		b:register(20, function() b:release(unused) end)
 		assert(b:prepareDetail(24))
 		eq(townEvicted, false); eq(state.attempts, 2)

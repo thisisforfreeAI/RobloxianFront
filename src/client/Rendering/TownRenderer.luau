@@ -92,7 +92,7 @@ local function imagePart(name: string, cx: number, cy: number, cw: number, ch: n
 end
 
 local function newImage(size: Vector2, kind: string?): any
-	return ImageMemory.create(size, kind or "detail")
+	return ImageMemory.create(size, kind or "terrain")
 end
 
 type Chunk = { cx: number, cy: number, cw: number, ch: number, name: string, mod: ModuleScript, part: Part?, image: any, packed: buffer?, px: buffer?, w: number, h: number, iw: number, ih: number, distance: number, used: number, frame: number, patch: buffer?, missed: number? }
@@ -586,7 +586,8 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 		pooled = 0
 		pooledBytes = 0
 	end
-	local unregister = ImageMemory.register(10, function(needed: number, _protected: any)
+	-- Core image pressure first drops optional layers (10) and unused art (20).
+	local unregister = ImageMemory.register(30, function(needed: number, _protected: any)
 		local before = ImageMemory.stats()
 		drainPool()
 		local used = ImageMemory.stats()

@@ -2,7 +2,7 @@
 return function(test:any,eq:any)
 	local fs=require("@lune/fs");local luau=require("@lune/luau");local roblox=require("@lune/roblox")
 	local function fixture():any
-		local h:any={time=0,created=0,released=0,instances={},blocked=false,warnings=0}
+		local h:any={time=0,created=0,released=0,instances={},blocked=false,warnings=0,night=1}
 		local function signal():any
 			local s:any={items={}};function s:Connect(fn) local c:any={fn=fn};function c:Disconnect() self.dead=true end;table.insert(self.items,c);return c end
 			function s:fire(dt) for _,c in table.clone(self.items) do if not c.dead then c.fn(dt) end end end;return s
@@ -17,7 +17,8 @@ return function(test:any,eq:any)
 		local shared:any={Presentation={NightWindows="windows",NightLightPixels="pixels",GroundWetness="noise"},Maps={MapCodec="codec"},Utilities={Inflate="inflate"},Config={World="world"}}
 		local modules:any={windows=require("../src/shared/Presentation/NightWindows"),pixels={compensate=function() return {brightness=4,color={1,1,1}} end},
 			noise={hash21=function() return .2 end},codec={base64Decode=function() return buffer.create(4) end},inflate={raw=function() return buffer.create(4) end},
-			world={STUDS_PER_CELL=4,GROUND_Y=0,TOP_GUI_YAW=-math.pi/2},memory=memory,daylight={get=function() return {night=1} end,postEffect=function() return {} end}}
+			world={STUDS_PER_CELL=4,GROUND_Y=0,TOP_GUI_YAW=-math.pi/2},memory=memory,daylight={get=function() return {night=h.night} end,postEffect=function() return {} end}}
+		h.camera={CFrame=roblox.CFrame.new(28,100,28),FieldOfView=30,ViewportSize=roblox.Vector2.new(800,800)}
 		local env:any=setmetatable({game={GetService=function(_,key) return if key=="RunService" then {Heartbeat=h.heartbeat} else {WaitForChild=function() return shared end} end},
 			script={Parent={ImageMemory="memory",DaylightController="daylight"}},require=function(key) return assert(modules[key],key) end,
 			Instance={new=instance},Vector2=roblox.Vector2,Vector3=roblox.Vector3,CFrame=roblox.CFrame,
@@ -28,7 +29,7 @@ return function(test:any,eq:any)
 			end},warn=function() h.warnings+=1 end,
 			UDim2={fromScale=function(x,y) return {x,y} end},Content={fromObject=function(img) return img end},
 			Enum={NormalId={Top=0},SurfaceGuiSizingMode={FixedSize=0},ResamplerMode={Default=0}},
-			workspace={CurrentCamera={CFrame=roblox.CFrame.new(28,100,28),FieldOfView=30,ViewportSize=roblox.Vector2.new(800,800)}},os={clock=function() return h.time end}},{__index=getfenv()})
+			workspace={CurrentCamera=h.camera},os={clock=function() return h.time end}},{__index=getfenv()})
 		h.renderer=luau.load(fs.readFile("src/client/Rendering/NightWindowRenderer.luau"),{environment=env})()
 		function h.start(points:any?)
 			h.state=h.renderer.start({points=points or {{95,95,21,21,0,1,1}},slot=12,pixelsPerCell=14,perRow=1,width=1,height=1,deflate=""},
@@ -59,7 +60,8 @@ return function(test:any,eq:any)
 	test("dense city fragments share clipped canvases and compose every facade below the glow",function()
 		local h=fixture();local points={}
 		for y=0,31 do for x=0,31 do table.insert(points,{20+x*5,20+y*5,x,y,0,1,1}) end end
-		h.start(points);h.paint();eq(h.state.stats().fragments,1024);assert(h.parts()<=16);eq(h.created,1)
+		h.start(points);h.paint();for _=1,60 do if h.state.stats().pending==0 then break end;h.paint(1/60) end
+		eq(h.state.stats().fragments,1024);assert(h.parts()<=16);eq(h.created,1)
 		local faces,lights=0,0
 		for _,o in h.instances do
 			if o.ClassName=="ImageLabel" and not o.dead then
@@ -89,6 +91,23 @@ return function(test:any,eq:any)
 		for _=1,120 do h.paint(1/60) end
 		eq(h.state.stats().animating,0);local after=label.ImageTransparency;h.paint(1/60);eq(label.ImageTransparency,after)
 		h.parent:Destroy()
+	end)
+	test("city window population progresses between selection ticks without an unbounded instance burst",function()
+		local h=fixture();local points={};for i=1,60 do points[i]={95,95,i,21,0,1,1} end
+		h.start(points);h.paint();eq(h.state.stats().fragments,24);eq(h.state.stats().pending,36)
+		local queries=h.state.stats().selectionQueries;h.paint(1/60);eq(h.state.stats().fragments,48);eq(h.state.stats().pending,12)
+		eq(h.state.stats().selectionQueries,queries);h.paint(1/60);eq(h.state.stats().fragments,60);eq(h.state.stats().pending,0)
+		h.paint();eq(h.state.stats().selectionQueries,queries);h.parent:Destroy();eq(h.state.stats().pending,0)
+	end)
+	test("camera and damage changes invalidate cached selection and cancel obsolete window work",function()
+		local h=fixture();local points={};for i=1,60 do points[i]={95,95,i,21,0,1,1} end
+		h.start(points);h.paint();local queries=h.state.stats().selectionQueries
+		h.camera.CFrame=roblox.CFrame.new(10000,100,10000);h.paint();eq(h.parts(),0);eq(h.state.stats().pending,0)
+		eq(h.state.stats().selectionQueries,queries+1);h.paint(1/60);eq(h.parts(),0)
+		h.camera.CFrame=roblox.CFrame.new(28,100,28);h.blocked=true;h.paint();eq(h.state.stats().fragments,0)
+		h.blocked=false;h.paint();eq(h.state.stats().fragments,24)
+		h.camera.CFrame=roblox.CFrame.new(28,10000,28);h.paint();eq(h.state.stats().pending,0)
+		h.night=0;h.paint();eq(h.parts(),0);eq(h.created,h.released);h.paint(1/60);eq(h.parts(),0);h.parent:Destroy()
 	end)
 	test("window colors avoid unsupported Color3 arithmetic and unexpected failures stop cleanly once",function()
 		local h=fixture();h.start();h.paint();eq(h.parts(),1);eq(h.warnings,0)

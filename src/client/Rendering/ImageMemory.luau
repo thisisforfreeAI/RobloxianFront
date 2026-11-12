@@ -7,7 +7,7 @@ local Budget = require(ReplicatedStorage:WaitForChild("Shared").Presentation.Ima
 local Uploads = require(ReplicatedStorage:WaitForChild("Shared").Presentation.ImageUploads)
 local budget = Budget.new(function(w: number, h: number)
 	return AssetService:CreateEditableImage({ Size = Vector2.new(w, h) })
-end)
+end,{terrainReserve=4*1024*1024}) -- APPROX: carve terrain coverage from the existing 16 MiB detail pool.
 local ImageMemory = {}
 local trimAt = 0
 local uploadConnection:any=nil
@@ -49,13 +49,16 @@ function ImageMemory.register(priority: number, fn: (number, any) -> ()) return 
 function ImageMemory.onRelease(fn: () -> ()) budget:onRelease(fn) end
 function ImageMemory.setGuard(fn: () -> any) budget.guard = fn end
 function ImageMemory.stats(): (number, number) return budget.used, budget.detail end
-function ImageMemory.detailHeadroom(replacing:number?):number return budget:detailHeadroom(replacing) end
+function ImageMemory.pressureStats():any
+	return {used=budget.used,detail=budget.detail,terrain=budget.terrain,terrainReserve=budget.terrainReserve,detailLimit=budget.detailLimit,ceiling=math.min(budget.ceiling,budget.knownCeiling or math.huge)}
+end
+function ImageMemory.detailHeadroom(replacing:number?):number return budget:detailHeadroom(replacing,"terrain") end
 function ImageMemory.canDetail(size: Vector2): boolean
 	local bytes = size.X * size.Y * 4
-	if budget:canDetail(bytes) then return true end
+	if budget:canDetail(bytes,"terrain") then return true end
 	if os.clock() < trimAt then return false end
 	trimAt = os.clock() + 0.5
-	return budget:prepareDetail(bytes)
+	return budget:prepareDetail(bytes,"terrain")
 end
 
 return ImageMemory

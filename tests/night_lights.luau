@@ -103,6 +103,21 @@ return function(test:any,eq:any)
 		local none=Lights.paint(state,config,0,1,1,function() return .9 end,nil,0)
 		eq(alpha(none,0),0);eq(alpha(none,1),0);eq(alpha(none,2),alpha(full,2))
 	end)
+	test("spatial window lookup matches a full scan across boundaries, caps, filters and empty views",function()
+		local points={}
+		for y=-10,99 do for x=-10,99 do table.insert(points,{x*14,y*14,x*3,y*3,0}) end end
+		local items=Windows.prepare(points,config,function() return .2 end);local spatial=Windows.index(items,14)
+		for _,v in {{0,0,3,4},{-8,-8,1,1},{51,58,48,49},{300,300,5,5},{7.57,8.57,0,0}} do
+			local function eligible(item) return item.id%5~=0 end
+			local expected=Windows.visible(items,14,v[1],v[2],v[3],v[4],eligible)
+			local actual=Windows.visible(items,14,v[1],v[2],v[3],v[4],eligible,spatial)
+			eq(#actual,#expected);for i,entry in actual do eq(entry.item.id,expected[i].item.id);eq(entry.distance,expected[i].distance) end
+		end
+		Windows.visible(items,14,0,0,3,4,nil,spatial);assert(spatial.lastVisited<#items/10)
+		local empty={};eq(#Windows.visible(empty,14,0,0,3,4,nil,Windows.index(empty,14)),0)
+		local other=Windows.prepare({{0,0,0,0,0}},config,function() return .2 end)
+		eq(#Windows.visible(other,14,0,0,3,4,nil,spatial),1,"a foreign index must safely fall back")
+	end)
 	if not fs.isFile("src/shared/GameData/WorldLook.luau") or not fs.isFile("src/shared/GameData/Daylight.luau") then return end
 	local look=require("../src/shared/GameData/WorldLook") ::any
 	local daylight=require("../src/shared/GameData/Daylight") ::any

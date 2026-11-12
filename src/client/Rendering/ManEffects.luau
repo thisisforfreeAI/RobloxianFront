@@ -40,7 +40,7 @@ local function page(kind: string): any
 	local ok, value = pcall(function()
 		local meta = require(mod :: ModuleScript) :: any
 		local size = Vector2.new(meta.width, meta.height)
-		local created = ImageMemory.create(size)
+		local created = ImageMemory.create(size,"detail") -- Optional figure rims/shadows preserve terrain coverage.
 		assert(created, "EditableImage budget refused figure masks")
 		image = created
 		created:WritePixelsBuffer(Vector2.zero, size, PixelCodec.decode(MapCodec.base64Decode(meta.rle), meta.width, meta.height))

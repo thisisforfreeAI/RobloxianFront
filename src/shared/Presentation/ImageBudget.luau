@@ -7,6 +7,7 @@ function ImageBudget.new(factory: (number, number) -> any, options: any?)
 	local o = options or {}
 	local self: any = { used = 0, detail = 0, ceiling = o.ceiling or 48 * 1024 * 1024,
 		detailLimit = o.detailLimit or 16 * 1024 * 1024, reserve = o.reserve or 8 * 1024 * 1024,
+		terrain = 0, terrainReserve = o.terrainReserve or 0,
 		records = {}, reclaimers = {}, listeners = {}, epoch = 0, guard = nil, knownCeiling = nil, reclaiming = false }
 	function self:protect(): any
 		return if self.guard then self.guard() else {}
@@ -27,11 +28,12 @@ function ImageBudget.new(factory: (number, number) -> any, options: any?)
 		self.records[image] = nil
 		image:Destroy() -- EditableImage.Destroy immediately returns its native image storage.
 		self.used -= record.bytes
-		if record.kind == "detail" then self.detail -= record.bytes end
+		if record.kind == "detail" or record.kind == "terrain" then self.detail -= record.bytes end
+		if record.kind == "terrain" then self.terrain -= record.bytes end
 		self.epoch += 1
 		for _, fn in self.listeners do fn() end
 	end
-	function self:reclaim(bytes: number, minimumPriority: number?)
+	function self:reclaim(bytes: number, minimumPriority: number?, maximumPriority: number?)
 		if bytes <= 0 or self.reclaiming then return end
 		self.reclaiming = true
 		local ok, protected = pcall(self.protect, self)
@@ -39,6 +41,7 @@ function ImageBudget.new(factory: (number, number) -> any, options: any?)
 		local before = self.used
 		for _, r in self.reclaimers do
 			if r.priority < (minimumPriority or 0) then continue end
+			if maximumPriority and r.priority > maximumPriority then continue end
 			local needed = bytes - (before - self.used)
 			if needed <= 0 then break end
 			local reclaimed, err = pcall(r.fn, needed, protected)
@@ -46,31 +49,37 @@ function ImageBudget.new(factory: (number, number) -> any, options: any?)
 		end
 		self.reclaiming = false
 	end
-	function self:canDetail(bytes: number): boolean
+	function self:terrainGap(kind:string?):number
+		return if kind=="terrain" then 0 else math.max(0,self.terrainReserve-self.terrain)
+	end
+	function self:canDetail(bytes: number,kind:string?): boolean
 		local ceiling = math.min(self.ceiling, self.knownCeiling or math.huge)
-		return self.detail + bytes <= self.detailLimit and self.used + bytes + self.reserve <= ceiling
+		local gap=self:terrainGap(kind)
+		return self.detail + bytes + gap <= self.detailLimit and self.used + bytes + self.reserve + gap <= ceiling
 	end
 	-- Read-only headroom for an aggregate LOD plan; no allocation, reclamation or native probe.
-	function self:detailHeadroom(replacing:number?):number
+	function self:detailHeadroom(replacing:number?,kind:string?):number
 		local ceiling=math.min(self.ceiling,self.knownCeiling or math.huge)
 		local credit=math.clamp(replacing or 0,0,self.detail)
-		return math.max(0,math.min(self.detailLimit-self.detail+credit,ceiling-self.used-self.reserve+credit))
+		local gap=self:terrainGap(kind)
+		return math.max(0,math.min(self.detailLimit-self.detail+credit-gap,ceiling-self.used-self.reserve+credit-gap))
 	end
-	function self:prepareDetail(bytes: number): boolean
-		if self:canDetail(bytes) then return true end
-		if self.detail + bytes > self.detailLimit then return false end
+	function self:prepareDetail(bytes: number,kind:string?): boolean
+		if self:canDetail(bytes,kind) then return true end
+		local gap=self:terrainGap(kind)
+		if self.detail + bytes + gap > self.detailLimit then return false end
 		local ceiling = math.min(self.ceiling, self.knownCeiling or math.huge)
 		-- Only unused art yields here; never evict one visible town chunk to load another.
-		self:reclaim(math.max(0, self.used + bytes + self.reserve - ceiling), 20)
-		return self:canDetail(bytes)
+		self:reclaim(math.max(0, self.used + bytes + self.reserve + gap - ceiling), 20, 20)
+		return self:canDetail(bytes,kind)
 	end
 	function self:create(w: number, h: number, kind: string?): any
 		kind = kind or "core"
 		assert(w > 0 and h > 0 and w <= 1024 and h <= 1024 and w % 1 == 0 and h % 1 == 0, "invalid image dimensions")
 		local bytes = w * h * 4
-		if kind == "detail" then
+		if kind == "detail" or kind == "terrain" then
 			-- Do not repeatedly probe Roblox when our policy already knows there is no headroom.
-			if not self:prepareDetail(bytes) then return nil end
+			if not self:prepareDetail(bytes,kind) then return nil end
 		else
 			local ceiling = math.min(self.ceiling, self.knownCeiling or math.huge)
 			self:reclaim(math.max(0, self.used + bytes - ceiling))
@@ -81,7 +90,7 @@ function ImageBudget.new(factory: (number, number) -> any, options: any?)
 			-- First native refusal teaches a conservative ceiling. Release reusable detail and unused
 			-- art before retrying a core image; do not retry an identical allocation without freeing.
 			self.knownCeiling = math.min(self.knownCeiling or math.huge, self.used)
-			if kind == "detail" then return nil end
+			if kind == "detail" or kind == "terrain" then return nil end
 			local before = self.used
 			self:reclaim(math.huge)
 			if self.used < before then ok, image = pcall(factory, w, h) end
@@ -89,7 +98,8 @@ function ImageBudget.new(factory: (number, number) -> any, options: any?)
 		end
 		self.records[image] = { bytes = bytes, kind = kind }
 		self.used += bytes
-		if kind == "detail" then self.detail += bytes end
+		if kind == "detail" or kind == "terrain" then self.detail += bytes end
+		if kind == "terrain" then self.terrain += bytes end
 		return image
 	end
 	return self

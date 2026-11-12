@@ -53,7 +53,7 @@ return function(test:any,eq:any)
 		end}
 		local dataMap={Forest_test=module(metadata),pixels=module({deflate="sprites"})};local data={FindFirstChild=function(_,name) return dataMap[name] end}
 		local memory={};function memory.create(size,kind) if h.refuse and kind~="core" then return nil end
-			local image:any={size=size};function image:WritePixelsBuffer(position,extent,px) assert(not self.dead);if h.failNextWrite then h.failNextWrite=false;error("synthetic replacement failure") end;self.last=buffer.tostring(px);self.writes=(self.writes or 0)+1 end
+			local image:any={size=size,kind=kind};function image:WritePixelsBuffer(position,extent,px) assert(not self.dead);if h.failNextWrite then h.failNextWrite=false;error("synthetic replacement failure") end;self.last=buffer.tostring(px);self.writes=(self.writes or 0)+1 end
 			table.insert(h.images,image);return image
 		end
 		h.uploads=require("../src/shared/Presentation/ImageUploads").new(function(image,x,y,w,h,px) image:WritePixelsBuffer(vec(x,y),vec(w,h),px) end,function() return h.now end)
@@ -63,7 +63,7 @@ return function(test:any,eq:any)
 		end
 		function memory.cancelUploads(image) h.uploads.cancel(image) end
 		function memory.release(image) if image then h.uploads.cancel(image);assert(not image.dead);image.dead=true;h.releases+=1 end end
-		function memory.register(_,fn) h.reclaim=fn;return function() h.unregistered=true end end
+		function memory.register(priority,fn) h.reclaim=fn;h.reclaimPriority=priority;return function() h.unregistered=true end end
 		function memory.stats() return 0 end;function memory.canDetail() return true end
 		function memory.detailHeadroom() return h.headroom or math.huge end
 		local shared:any={Config={World="world"},Maps={MapCodec="codec"},Utilities={Inflate="inflate"},Simulation={ForestMap="forest"},Presentation={ImagePixels="pixels",TownDetail="detail",TownPatch="patch",TownLods="lods",ForestRaster="raster",GroundScorchPixels="scorch"},FindFirstChild=function() return data end}
@@ -95,6 +95,10 @@ return function(test:any,eq:any)
 		h.reclaim(1,nil);eq(h.images[1].dead,nil);local changed=h.images[1].last
 		h.renderer.setForestFates({},true);h.step();eq(h.renderer.sample(.5,.5)[2],200);assert(h.images[1].last~=changed)
 		h.destroy();eq(h.renderer.getForestMap(),nil);eq(h.renderer.sample(.5,.5),nil);eq(h.unregistered,true);local releases=h.releases;h.step();eq(h.releases,releases);eq(h.warnings,0)
+	end)
+	test("actual town overview stays core and close detail uses the protected terrain budget and last-resort reclaimer",function()
+		local h=make();assert(h.renderer.build("test",{}));h.step()
+		eq(h.images[1].kind,"core");eq(h.images[2].kind,"terrain");eq(h.reclaimPriority,30);h.destroy()
 	end)
 	test("actual town forest repaint updates the overview under detail refusal and isolates missing bare art once",function()
 		local h=make();h.refuse=true;assert(h.renderer.build("test",{}));h.step();eq(#h.images,1)

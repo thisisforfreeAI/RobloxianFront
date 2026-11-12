@@ -15,6 +15,8 @@ local Daylight=require(script.Parent.DaylightController)
 local Renderer={}
 local EMISSION_GAIN=2.4 -- APPROX owner request: more noticeable window/lamp glow.
 local PAGE=64 -- APPROX canvas batching; shared atlas and source fragment positions stay unchanged.
+local CREATE_SECONDS=.001 -- APPROX soft per-Heartbeat budget, not a native frame-time guarantee.
+local CREATE_LIMIT=24 -- A fast clock must not admit an unbounded burst of instance creation.
 function Renderer.start(data:any,profile:any,parent:Instance,born:number,damage:any?):any
 	local state:any={ready=false,fade=0}
 	local coverage={}
@@ -25,13 +27,17 @@ function Renderer.start(data:any,profile:any,parent:Instance,born:number,damage:
 	if not data or not profile.city then return state end
 	local folder=Instance.new("Folder");folder.Name="BuildingWindows";folder.Parent=parent
 	local items=Windows.prepare(data.points,profile,Noise.hash21)
+	local spatial=Windows.index(items,data.pixelsPerCell)
 	local views:{[number]:any}={}
 	local pages:{[string]:any}={}
 	local changing:{[number]:any}={}
+	local pending:{any}={};local cursor=1
+	local selected:{any}={};local selection:any=nil
+	local appearance:any=nil;local selectionQueries=0
 	state.stats=function()
 		local fragments,canvases,animating=0,0,0
 		for _ in views do fragments+=1 end;for _ in pages do canvases+=1 end;for _ in changing do animating+=1 end
-		return {fragments=fragments,canvases=canvases,animating=animating,limit=Windows.MAX_VISIBLE}
+		return {fragments=fragments,canvases=canvases,animating=animating,limit=Windows.MAX_VISIBLE,pending=math.max(0,#pending-cursor+1),selectionQueries=selectionQueries,candidates=spatial.lastVisited}
 	end
 	local damageCache:any={}
 	local image:EditableImage?=nil
@@ -41,6 +47,7 @@ function Renderer.start(data:any,profile:any,parent:Instance,born:number,damage:
 	local creating:Part?=nil
 	local function release()
 		coverage={}
+		pending={};cursor=1;selected={};selection=nil;appearance=nil
 		for _,page in pages do page.part:Destroy() end
 		table.clear(pages);table.clear(views);table.clear(changing)
 		Memory.release(image);image=nil;state.ready=false;state.fade=0
@@ -62,6 +69,7 @@ function Renderer.start(data:any,profile:any,parent:Instance,born:number,damage:
 		local clip=Instance.new("Frame");clip.BackgroundTransparency=1;clip.BorderSizePixel=0
 		clip.Size=UDim2.fromScale(1,1);clip.ClipsDescendants=true;clip.Parent=gui
 		local page={part=part,gui=gui,clip=clip,x=x,y=y,key=key,refs=0}
+		if appearance then page.brightness=appearance.correction.brightness;gui.Brightness=page.brightness*EMISSION_GAIN end
 		pages[key]=page;creating=nil;return page
 	end
 	local function create(item:any):any
@@ -110,12 +118,32 @@ function Renderer.start(data:any,profile:any,parent:Instance,born:number,damage:
 			end
 		end
 	end
+	local function style(v:any)
+		local c=appearance.correction.color
+		if not v.color or c[1]~=v.color[1] or c[2]~=v.color[2] or c[3]~=v.color[3] then
+			local color=Color3.new(c[1],c[2],c[3]);v.color=c
+			for _,layer in v.layers do layer.label.ImageColor3=color end
+		end
+		local target=if Windows.on(v.item,profile,appearance.clock,Noise.hash21) then 1 else 0
+		if v.target~=target or v.opacity~=appearance.opacity then changing[v.item.id]=v end
+		v.target=target;v.opacity=appearance.opacity
+	end
+	local function fill()
+		if not appearance or not image or cursor>#pending then return end
+		local began=os.clock();local created=0
+		while cursor<=#pending do
+			local item=pending[cursor];cursor+=1
+			local view=create(item);views[item.id]=view;style(view);created+=1
+			if created>=CREATE_LIMIT or os.clock()-began>=CREATE_SECONDS then break end
+		end
+		state.fade=if cursor>#pending then appearance.fade else 0
+	end
 	local acc=0
 	local function update(dt:number)
 		acc+=dt;if acc<.1 then return end;acc=0
 		local night=Daylight.get().night
 		if night<=0 then if image then release() end;return end
-		local camera=workspace.CurrentCamera;if not camera then return end
+		local camera=workspace.CurrentCamera;if not camera then appearance=nil;pending={};cursor=1;selection=nil;return end
 		local dist=math.max(1,camera.CFrame.Position.Y-World.GROUND_Y)
 		local ry=dist*math.tan(math.rad(camera.FieldOfView/2))/World.STUDS_PER_CELL
 		local rx=ry*camera.ViewportSize.X/math.max(1,camera.ViewportSize.Y)
@@ -123,6 +151,7 @@ function Renderer.start(data:any,profile:any,parent:Instance,born:number,damage:
 		local fade=Windows.fade(px,profile.city)
 		if fade<=0 then
 			coverage={}
+			appearance=nil;pending={};cursor=1;selection=nil
 			state.fade=0
 			for _,page in pages do page.gui.Enabled=false end
 			return
@@ -141,52 +170,47 @@ function Renderer.start(data:any,profile:any,parent:Instance,born:number,damage:
 			if not ok then release();retry=math.huge;warn("[NightWindows] Local atlas unavailable:",err);return end
 			state.ready=true
 		end
-		local wanted={};local nextCoverage={}
-		local eligible:any=nil
-		if damage and damage.any() then
-			local version=damage.version()
-			eligible=function(item)
-				local cached=damageCache[item.id]
-				if not cached or cached.version~=version then
-					cached={version=version,blocked=Windows.damaged(item,data.pixelsPerCell,profile.fine,damage.blocked)};damageCache[item.id]=cached
+		local cx,cy=camera.CFrame.Position.X/World.STUDS_PER_CELL,camera.CFrame.Position.Z/World.STUDS_PER_CELL
+		local version=if damage and damage.any() then damage.version() else nil
+		if not selection or selection.cx~=cx or selection.cy~=cy or selection.rx~=rx or selection.ry~=ry or selection.version~=version then
+			local blocked={};local eligible:any=nil
+			if version~=nil then
+				eligible=function(item)
+					local cached=damageCache[item.id]
+					if not cached or cached.version~=version then
+						cached={version=version,blocked=Windows.damaged(item,data.pixelsPerCell,profile.fine,damage.blocked)};damageCache[item.id]=cached
+					end
+					if cached.blocked then blocked[item.point[3]..":"..item.point[4]]=1 end
+					return not cached.blocked
 				end
-				if cached.blocked then nextCoverage[item.point[3]..":"..item.point[4]]=1 end
-				return not cached.blocked
 			end
+			selected=Windows.visible(items,data.pixelsPerCell,cx,cy,rx,ry,eligible,spatial);selectionQueries+=1
+			selection={cx=cx,cy=cy,rx=rx,ry=ry,version=version,blocked=blocked}
 		end
-		local selected=Windows.visible(items,data.pixelsPerCell,camera.CFrame.Position.X/World.STUDS_PER_CELL,camera.CFrame.Position.Z/World.STUDS_PER_CELL,rx,ry,eligible)
-		local began=os.clock()
+		local wanted={};local nextCoverage=table.clone(selection.blocked)
+		pending={};cursor=1
 		for _,entry in selected do
 			local item=entry.item;wanted[item.id]=true
-			if not views[item.id] and os.clock()-began<.003 then views[item.id]=create(item) end
+			if not views[item.id] then table.insert(pending,item) end
 		end
 		for id,v in views do if not wanted[id] then remove(id,v) end end
 		local clock=os.clock()-born
 		local correction=Pixels.compensate(Daylight.postEffect(),profile.color)
+		appearance={clock=clock,opacity=night*fade,fade=fade,correction=correction}
 		for _,page in pages do
 			page.gui.Enabled=true
 			if page.brightness~=correction.brightness then page.gui.Brightness=correction.brightness*EMISSION_GAIN;page.brightness=correction.brightness end
 		end
 		for _,v in views do
-			local c=correction.color
-			if not v.color or c[1]~=v.color[1] or c[2]~=v.color[2] or c[3]~=v.color[3] then
-				local color=Color3.new(c[1],c[2],c[3]);v.color=c
-				for _,layer in v.layers do layer.label.ImageColor3=color end
-			end
-			local target=if Windows.on(v.item,profile,clock,Noise.hash21) then 1 else 0
-			-- APPROX temporal adaptation: soften occupancy switches and camera-entry pop-in.
-			if v.target~=target or v.opacity~=night*fade then changing[v.item.id]=v end
-			v.target=target;v.opacity=night*fade
+			style(v)
 			if v.item.phase>=0 then nextCoverage[v.item.point[3]..":"..v.item.point[4]]=fade*v.strength end
 		end
 		coverage=nextCoverage
 		-- Keep coarse coverage until all selected fragments exist; no empty camera-pan interval.
-		local complete=true
-		for _,entry in selected do if not views[entry.item.id] then complete=false;break end end
-		state.fade=if complete then fade else 0
+		state.fade=if #pending==0 then fade else 0
 	end
 	local connection=RunService.Heartbeat:Connect(function(dt)
-		local ok,err=pcall(function() update(dt);animate(dt) end)
+		local ok,err=pcall(function() update(dt);fill();animate(dt) end)
 		if not ok then
 			if creating then creating:Destroy();creating=nil end
 			-- Stop this optional layer once, releasing partial views, instead of failing every heartbeat.
