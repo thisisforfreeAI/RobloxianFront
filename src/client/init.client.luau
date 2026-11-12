@@ -75,7 +75,8 @@ do
 	local function send(payload: any)
 		intent:FireServer(payload)
 	end
-	BuildController.start(map.width, send)
+	local rigRules = Rules.new(require(Shared:WaitForChild("GameData").RulesMatch) :: any)
+	BuildController.start(map.width, send,{map=map,rules=rigRules.data,structures=StructureRenderer.each,side=info.side})
 	DropController.start(send)
 	-- N switches your night operations towers on or off (the game's nvOff); with bomb trucks
 	-- selected N blows them up instead
@@ -93,7 +94,6 @@ do
 		end,
 		build = BuildController.begin,
 	})
-	local rigRules = Rules.new(require(Shared:WaitForChild("GameData").RulesMatch) :: any)
 	UnitRenderer.configure({ mortarSetupSec = rigRules:number("mortar.setupSec"), mortarPackSec = rigRules:number("mortar.packSec") })
 	local rigCard = RigCard.start(send, {
 		truck = rigRules:number("trucks.kinds.light.cost"), pump = rigRules:number("rigs.upgrades.pump.cost"),
@@ -103,6 +103,7 @@ do
 	AdminPanel.start(send) -- the owner's test panel; stays hidden unless the server says admin
 	Atmosphere.start()
 	stateEvent.OnClientEvent:Connect(function(state)
+		BuildController.update(state)
 		Hud.update(state, info.side)
 		AdminPanel.update(state)
 		if state.civilianTime then

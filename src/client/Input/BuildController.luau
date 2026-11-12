@@ -2,14 +2,14 @@
 --[[
 	BuildController: placing a barracks, factory, bunker or AT gun.
 	Start placing from the HUD (or B / F / K / G, PROVISIONAL keys until WarFront's bindings are confirmed); a
-	3 x 3 cell ghost follows the cursor, snapped to cells. Green: every footprint cell is inside your
-	territory (from the server's state); red: it is not. Left click asks the server to build there
+	3 x 3 cell ghost follows the cursor, snapped to cells. Its source-style art and local checks use
+	public terrain/roads, own resources/territory and known structure snapshots. Left click asks the server to build there
 	(Shift keeps placing); right click or Esc cancels. The server runs the game's full placement check
 	(roads, rigs, spacing, territory, enemy gap, requirements, oil) and answers with a notice if refused.
 	Minefield (Republic only, - key or the HUD): hold the left button and drag a line across the map
 	(the game's drawMineStroke: a point every cell, at most 600); letting go asks the server to lay it.
 	The server works out which cells take mines and the price. Right click or Esc cancels.
-	PLACEHOLDER visuals (TEMP-003).
+	Placement visuals share the source building atlas. Local validity is advisory; the server decides.
 ]]
 
 local UserInputService = game:GetService("UserInputService")
@@ -17,6 +17,9 @@ local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local World = require(ReplicatedStorage:WaitForChild("Shared").Config.World)
+local Hint=require(ReplicatedStorage.Shared.Presentation.PlacementHint)
+local Roads=require(ReplicatedStorage.Shared.Simulation.Roads)
+local Preview=require(script.Parent.Parent.Rendering.BuildPreview)
 
 local BuildController = {}
 
@@ -34,18 +37,28 @@ local lastPlaced = -1
 local ghost: Part
 local inside: { [number]: boolean } = {}
 local width = 0
+local height=0
+local connections:{any}={}
+local model:any=nil
+local preparing:any=nil
+local side=0
+local army="coalition"
+local privateState:any=nil
+local structures:any=function() return {} end
 local sendIntent: (any) -> () = function(_p: any) end
 
 local function groundPoint(screen: Vector2): Vector3?
 	local camera = workspace.CurrentCamera
-	local ray = camera:ViewportPointToRay(screen.X, screen.Y)
+	if not camera then return nil end
+	local ray = camera:ViewportPointToRay(screen.X, screen.Y) -- Preserve the existing raw mouse/viewport coordinates.
 	local map = workspace:FindFirstChild("WarFrontMap")
 	if not map then
 		return nil
 	end
+	local ground=map:FindFirstChild("Ground");if not ground then return nil end
 	local params = RaycastParams.new()
 	params.FilterType = Enum.RaycastFilterType.Include
-	params.FilterDescendantsInstances = { map:FindFirstChild("Ground") :: Instance }
+	params.FilterDescendantsInstances = { ground }
 	local hit = workspace:Raycast(ray.Origin, ray.Direction * 5000, params)
 	return if hit then hit.Position else nil
 end
@@ -62,6 +75,7 @@ end
 local function allInside(cx: number, cy: number): boolean
 	for y = cy - FOOT, cy + FOOT do
 		for x = cx - FOOT, cx + FOOT do
+			if x<0 or y<0 or x>=width or height>0 and y>=height then return false end
 			if not inside[y * width + x] then
 				return false
 			end
@@ -70,19 +84,43 @@ local function allInside(cx: number, cy: number): boolean
 	return true
 end
 
-function BuildController.start(mapWidth: number, send: (any) -> ())
+local function connect(signal:any,fn:any) table.insert(connections,signal:Connect(fn)) end
+function BuildController.destroy()
+	for _,connection in connections do connection:Disconnect() end;table.clear(connections)
+	Preview.destroy();if ghost then ghost:Destroy();ghost=nil :: any end
+	for _,part in strokeParts do part:Destroy() end;table.clear(strokeParts);table.clear(stroke);table.clear(inside)
+	placing=nil;drawing=false;model=nil;preparing=nil;privateState=nil;structures=function() return {} end;trenchIds={};lastPlaced=-1
+end
+function BuildController.start(mapWidth: number, send: (any) -> (),options:any?)
+	BuildController.destroy()
 	width = mapWidth
+	height=if options and options.map then options.map.height else 0;side=if options then options.side or 0 else 0;army="coalition"
+	if options and options.structures then structures=options.structures end
+	if options and options.map and options.rules then
+		preparing=coroutine.create(function()
+			local count=0;local deadline=os.clock()+.002
+			model=Hint.prepare(options.map,options.rules,Roads.line,function()
+				count+=1;if count%64==0 and os.clock()>=deadline then coroutine.yield();deadline=os.clock()+.002 end
+			end)
+		end)
+	end
 	sendIntent = send
 	ghost = Instance.new("Part")
 	ghost.Name = "BuildGhost"
 	ghost.Anchored, ghost.CanCollide, ghost.CanQuery, ghost.CanTouch, ghost.CastShadow = true, false, false, false, false
-	ghost.Size = Vector3.new((FOOT * 2 + 1) * S, 1.2, (FOOT * 2 + 1) * S)
+	ghost.Size = Vector3.new((FOOT * 2 + 1) * S, .02, (FOOT * 2 + 1) * S)
 	ghost.Material = Enum.Material.Neon
 	ghost.Transparency = 1
 	ghost.Parent = workspace
 
-	RunService.RenderStepped:Connect(function()
+	connect(RunService.RenderStepped,function()
+		if preparing then
+			local ok,err=coroutine.resume(preparing)
+			if not ok then warn("[BuildController] Local preview checks unavailable:",err) end
+			if not ok or coroutine.status(preparing)=="dead" then preparing=nil end
+		end
 		if placing == "minefield" or placing == "trench" then
+			Preview.hide()
 			ghost.Transparency = 1
 			if drawing then
 				local hit = groundPoint(UserInputService:GetMouseLocation())
@@ -112,20 +150,26 @@ function BuildController.start(mapWidth: number, send: (any) -> ())
 			p.Transparency = 1
 		end
 		if not placing then
+			Preview.hide()
 			ghost.Transparency = 1
 			return
 		end
 		local cx, cy = cursorCell()
 		if not cx or not cy then
+			Preview.hide()
 			ghost.Transparency = 1
 			return
 		end
-		ghost.CFrame = CFrame.new(World.toWorld(cx + 0.5, cy + 0.5, 0.7))
-		ghost.Color = if allInside(cx, cy) then Color3.fromRGB(110, 230, 120) else Color3.fromRGB(235, 90, 80)
-		ghost.Transparency = 0.45
+		ghost.CFrame = CFrame.new(World.toWorld(cx + 0.5, cy + 0.5, 0.7))*CFrame.Angles(0,World.TOP_GUI_YAW,0)
+		local hint=if model then Hint.check(model,cx,cy,FOOT,inside,structures(),side,placing,privateState) else {ok=allInside(cx,cy),blocked={},clashes={}}
+		local camera=workspace.CurrentCamera
+		local pixels=math.max(1,(FOOT*2+1)*S*camera.ViewportSize.Y/(2*math.max(1,camera.CFrame.Position.Y-World.GROUND_Y)*math.tan(math.rad(camera.FieldOfView/2))))
+		local rendered=Preview.update(ghost,placing,army,side,hint,pixels)
+		ghost.Color = if hint.ok then Color3.fromRGB(110, 230, 120) else Color3.fromRGB(235, 90, 80)
+		ghost.Transparency = if rendered then 1 else .45
 	end)
 
-	UserInputService.InputBegan:Connect(function(input, processed)
+	connect(UserInputService.InputBegan,function(input, processed)
 		if not placing then
 			if not processed and KEYS[input.KeyCode] then
 				BuildController.begin(KEYS[input.KeyCode])
@@ -154,7 +198,7 @@ function BuildController.start(mapWidth: number, send: (any) -> ())
 		end
 	end)
 
-	UserInputService.InputEnded:Connect(function(input)
+	connect(UserInputService.InputEnded,function(input)
 		if (placing == "minefield" or placing == "trench") and drawing and input.UserInputType == Enum.UserInputType.MouseButton1 then
 			drawing = false
 			local pts = {}
@@ -179,13 +223,21 @@ function BuildController.start(mapWidth: number, send: (any) -> ())
 end
 
 function BuildController.begin(kind: string)
+	drawing=false
 	placing = kind
 end
 
 -- engineers dig a trench along the line dragged next
 function BuildController.beginTrench(ids: { number })
+	Preview.hide()
+	drawing=false
 	trenchIds = ids
 	placing = "trench"
+end
+function BuildController.update(state:any)
+	privateState=privateState or {}
+	for _,key in {"oil","kills","lost","winner"} do if state[key]~=nil then privateState[key]=state[key] end end
+	if state.army=="coalition" or state.army=="republic" then army=state.army end
 end
 
 -- the next trench kind (key 9); returns its name

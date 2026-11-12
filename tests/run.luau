@@ -4376,6 +4376,10 @@ require("./artillery_motion")(test, eq)
 require("./artillery_renderer")(test, eq)
 require("./site_motion")(test, eq)
 require("./site_renderer")(test, eq)
+require("./placement_motion")(test, eq)
+require("./placement_hint")(test, eq)
+require("./build_preview")(test, eq)
+require("./build_controller")(test, eq)
 
 print(`\n{passed} passed, {failed} failed`)
 if failed > 0 then

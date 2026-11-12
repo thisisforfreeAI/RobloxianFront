@@ -100,7 +100,7 @@ return function(test:any,eq:any)
 		local shared:any={Config={World="world"},Presentation={StructureLabels="labels",SiteMotion="siteMotion"}}
 		local rep={Shared=shared,WaitForChild=function() return shared end}
 		local modules:any={world=world,labels=require("../src/shared/Presentation/StructureLabels"),siteMotion=require("../src/shared/Presentation/SiteMotion"),daylight={get=function() return {} end},
-			art={reset=function() h.resets+=1 end,step=function() end,attach=function() return {gui=instance("SurfaceGui")} end,update=function() end}}
+			art={reset=function() h.resets+=1 end,step=function() end,scale=function(kind) return if kind=="bunker" then h.scale or 1 else 1 end,attach=function() return {gui=instance("SurfaceGui")} end,update=function() end}}
 		local services={ReplicatedStorage=rep,RunService={Heartbeat=h.heartbeat},UserInputService={GetMouseLocation=function() return h.mouse end},GuiService={GetGuiInset=function() return roblox.Vector2.zero end}}
 		local env:any=setmetatable({game={GetService=function(_,name) return services[name] end},script={Parent={StructureArt="art",DaylightController="daylight"}},
 			require=function(name) return assert(modules[name],name) end,workspace={CurrentCamera=h.camera},Instance={new=instance},
@@ -208,6 +208,18 @@ return function(test:any,eq:any)
 		h.time=30;h.renderer.apply(4,{row(1,1),row(2,1,1)});eq(h.renderer.each()[2].site.hidden,true)
 		h.time=40;h.renderer.apply(5,{row(1,1),row(2,1)});eq(h.renderer.each()[2].site.done,-math.huge)
 		h.renderer.start();h.renderer.apply(1,{row(1,.01)});eq(h.renderer.each()[1].site.placed,-math.huge)
+	end)
+	test("cursor shares the faction core page and original defence scale without requesting weapon pages",function()
+		local h=fixture();h.data.site={preview={defenceShare=.75}};h.data.armies.coalition.looks.hq.defence=true
+		eq(h.art.scale("hq"),.75);eq(h.art.scale("missing"),1)
+		local resource=h.art.preview("hq","coalition",1);eq(resource.sheet,nil);assert(resource.meta);eq(h.created,1)
+		h:flush(true);resource=h.art.preview("hq","coalition",1);assert(resource.sheet)
+		local art=h.art.attach({},"hq","coalition");eq(resource.sheet,art.sheet)
+		for _=1,100 do h.art.preview("hq","coalition",1) end;eq(h.created,1)
+	end)
+	test("placed defence quads use the same visual scale while production structures keep their footprint art",function()
+		local h=renderer();h.scale=.75;h.renderer.apply(1,{{1,"bunker",1,5,5,100,100,0,0,0,1,0,"coalition"},{2,"factory",1,10,10,100,100,0,0,0,1,0,"coalition"}})
+		eq(h.renderer.each()[1].block.Size.X,9);eq(h.renderer.each()[2].block.Size.X,12)
 	end)
 	test("weapon snapshot tails preserve the factory slot and are discarded for fog memories",function()
 		local h=renderer();local packet={1,1,.5,2,.02,.5}

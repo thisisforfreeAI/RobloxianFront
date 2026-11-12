@@ -90,6 +90,17 @@ local function rectLabel(gui:SurfaceGui,s:any,key:any,frame:number,cells:number,
 	image.Position=UDim2.fromScale((x or 0)+rect[5]/frame*cells,(y or 0)+rect[6]/frame*cells)
 	image.Parent=gui;return image
 end
+-- The cursor shares the existing core page; it never allocates a separately coloured sprite.
+function Art.scale(kind:string):number
+	local meta=data and data.armies.coalition and data.armies.coalition.looks[kind]
+	return if meta and meta.defence and data.site and data.site.preview then data.site.preview.defenceShare else 1
+end
+function Art.preview(kind:string,army:string,side:number):any
+	if not data then return nil end
+	local core=sheet(army)
+	local meta=data.armies[army] and data.armies[army].looks[kind]
+	return {sheet=core,meta=meta,style=data.site,tint=palette and palette[side] or {1,1,1}}
+end
 function Art.attach(part:Part,kind:string,army:string):any
 	local s=sheet(army);if not s then return nil end
 	local meta=s.meta.looks[kind];if not meta then return nil end
@@ -116,7 +127,7 @@ function Art.attach(part:Part,kind:string,army:string):any
 	end
 	gui.Parent=part
 	local origin=if meta.artillery then {part.Position.X/World.STUDS_PER_CELL,part.Position.Z/World.STUDS_PER_CELL,part.Size.X/World.STUDS_PER_CELL} else nil
-	return {gui=gui,sheet=s,meta=meta,body=body,paint=paint,night=night,shadow=shadow,dish=dish,army=army,effects=Effects.attach(gui,meta,{body,paint}),factory=Factory.attach(gui,meta,s),gun=Gun.attach(gui,meta,s),artillery=Artillery.attach(gui,meta,s,origin),site=Site.attach(gui,meta,s,data.site,if part.Size then part.Size.X/World.STUDS_PER_CELL else meta.cells)}
+	return {gui=gui,sheet=s,meta=meta,body=body,paint=paint,night=night,shadow=shadow,dish=dish,army=army,effects=Effects.attach(gui,meta,{body,paint}),factory=Factory.attach(gui,meta,s),gun=Gun.attach(gui,meta,s),artillery=Artillery.attach(gui,meta,s,origin),site=Site.attach(gui,meta,s,data.site,if part.Size then math.floor(part.Size.X/World.STUDS_PER_CELL/Art.scale(kind)+.5) else meta.cells)}
 end
 function Art.update(art:any,side:number,stale:boolean,built:number,light:any,id:number,hp:number?,maxHp:number?,importance:number?,production:any?,weapon:any?,artillery:any?,site:any?,screenSide:number?)
 	local rgb=palette and palette[side] or {1,1,1}

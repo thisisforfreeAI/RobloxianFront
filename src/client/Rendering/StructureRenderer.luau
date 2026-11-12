@@ -43,7 +43,7 @@ local function create(id: number, kind: string, x: number, y: number): View
 	local ring: Part? = nil
 	local block: Part? = nil
 	if NAMES[kind] then
-		local size = (if kind == "hq" then 5 else FOOT * 2 + 1) * S
+		local size = (if kind == "hq" then 5 else FOOT * 2 + 1) * S * Art.scale(kind)
 		local tall = .02
 		block = part(Vector3.new(size, tall, size), CFrame.new(World.toWorld(x, y, .35))*CFrame.Angles(0,World.TOP_GUI_YAW,0), Color3.new(0.7, 0.7, 0.7), 0)
 		if DEFENCE[kind] then
@@ -109,7 +109,7 @@ local function present()
 			if v.art then
 				v.block.Transparency=1
 				local importance=if focus==id then 1000 elseif hover==id then 900 else 1/(1+(Vector2.new(point.X,point.Y)-size/2).Magnitude/100)
-				Art.update(v.art,v.side,v.stale,v.built,light,id,v.hp,v.maxHp,importance,v.production,v.weapon,v.artillery,v.site,(if v.kind=="hq" then 5 else 3)*pixels)
+				Art.update(v.art,v.side,v.stale,v.built,light,id,v.hp,v.maxHp,importance,v.production,v.weapon,v.artillery,v.site,v.block.Size.X/S*pixels)
 			end
 		end
 		local detail=Labels.detail(v,pixels,focus==id,hover==id)
