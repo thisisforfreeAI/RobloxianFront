@@ -171,7 +171,7 @@ function BuildController.start(mapWidth: number, send: (any) -> (),options:any?)
 		local hint=if model then Hint.check(model,cx,cy,FOOT,inside,known,side,placing,privateState) else {ok=allInside(cx,cy),blocked={},clashes={}}
 		local camera=workspace.CurrentCamera
 		local pixels=math.max(1,(FOOT*2+1)*S*camera.ViewportSize.Y/(2*math.max(1,camera.CFrame.Position.Y-World.GROUND_Y)*math.tan(math.rad(camera.FieldOfView/2))))
-		local rendered=Preview.update(ghost,placing,army,side,hint,pixels)
+		local rendered=Preview.update(ghost,placing,army,side,hint,pixels,placementRules)
 		Coverage.update(placing,cx,cy,side,placementRules,known,pixels/(FOOT*2+1))
 		ghost.Color = if hint.ok then Color3.fromRGB(110, 230, 120) else Color3.fromRGB(235, 90, 80)
 		ghost.Transparency = if rendered then 1 else .45

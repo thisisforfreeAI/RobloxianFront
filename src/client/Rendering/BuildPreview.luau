@@ -5,6 +5,7 @@ local Players=game:GetService("Players")
 local Shared=ReplicatedStorage:WaitForChild("Shared")
 local Motion=require(Shared.Presentation.PlacementMotion)
 local SiteMotion=require(Shared.Presentation.SiteMotion)
+local CoverageMotion=require(Shared.Presentation.CoverageMotion)
 local Art=require(script.Parent.StructureArt)
 local Preview={}
 local current:any=nil
@@ -12,8 +13,10 @@ local function ink(hex:string):Color3
 	local n=tonumber(string.sub(hex,2),16) or 0
 	return Color3.fromRGB(bit32.band(bit32.rshift(n,16),255),bit32.band(bit32.rshift(n,8),255),bit32.band(n,255))
 end
-local function image(parent:any,z:number):ImageLabel
-	local item=Instance.new("ImageLabel");item.BackgroundTransparency=1;item.Visible=false;item.ZIndex=z;item.ResampleMode=Enum.ResamplerMode.Pixelated;item.Parent=parent;return item
+local function image(parent:any,z:number,smooth:boolean?):ImageLabel
+	local item=Instance.new("ImageLabel");item.BackgroundTransparency=1;item.Visible=false;item.ZIndex=z
+	if not smooth then item.ResampleMode=Enum.ResamplerMode.Pixelated end
+	item.Parent=parent;return item
 end
 local function bind(h:any,item:any,sheet:any,key:any,frame:number,alpha:number,color:any,x:number?,y:number?,scale:number?)
 	local r=key and sheet.meta.rects[tostring(key)];item.Visible=r~=nil and alpha>0
@@ -31,6 +34,8 @@ local function attach(part:any):any
 	local root=Instance.new("Frame");root.BackgroundTransparency=1;root.ClipsDescendants=false;root.Parent=gui
 	local sprite=Instance.new("Frame");sprite.BackgroundTransparency=1;sprite.ClipsDescendants=false;sprite.ZIndex=3;sprite.Parent=root
 	local h:any={part=part,gui=gui,root=root,sprite=sprite,pool={},previous={},bands={},body=image(sprite,1),paint=image(sprite,2),shadow=image(root,2),scan=image(sprite,4)}
+	local badge=Instance.new("Frame");badge.BackgroundTransparency=1;badge.ClipsDescendants=false;badge.Size=UDim2.fromScale(1,1);badge.ZIndex=5;badge.Parent=root
+	h.badgeBack=image(badge,1,true);h.badgeInk=image(badge,2,true);h.badgeBack.Name="BadgeBacking";h.badgeInk.Name="BadgeInk"
 	h.gradient=Instance.new("UIGradient");h.gradient.Rotation=90;h.gradient.Parent=h.scan
 	current=h;gui.Destroying:Connect(function() if h.partConnection then h.partConnection:Disconnect();h.partConnection=nil end;if current==h then current=nil end end)
 	if part.Destroying then h.partConnection=part.Destroying:Connect(function() if current==h then Preview.destroy() end end) end
@@ -51,7 +56,7 @@ local function geometry(h:any,pose:any)
 	end
 	for i=#pose.rects+1,#h.pool do h.pool[i].Visible=false;h.previous[i]=nil end
 end
-function Preview.update(part:any,kind:string,army:string,side:number,hint:any,pixels:number):boolean
+function Preview.update(part:any,kind:string,army:string,side:number,hint:any,pixels:number,rules:any?):boolean
 	pixels=math.max(1,pixels)
 	local resource=Art.preview(kind,army,side);local cfg=resource and resource.style
 	local camera=workspace.CurrentCamera
@@ -67,10 +72,21 @@ function Preview.update(part:any,kind:string,army:string,side:number,hint:any,pi
 	local pose=Motion.geometry(cfg,pixels,3,os.clock(),hint.ok,hint,share)
 	geometry(h,pose);h.sprite.Position=UDim2.fromScale(pose.offset+pose.jitter/pixels,pose.offset-pose.lift/pixels);h.sprite.Size=UDim2.fromScale(pose.share,pose.share)
 	local full=not cfg.preview or pixels/3>=cfg.preview.from+cfg.preview.fadePx
-	h.body.Visible=false;h.paint.Visible=false;h.shadow.Visible=false;h.scan.Visible=false
+	h.body.Visible=false;h.paint.Visible=false;h.shadow.Visible=false;h.scan.Visible=false;h.badgeBack.Visible=false;h.badgeInk.Visible=false
 	for _,band in h.bands do band.Visible=false end
-	if not meta or not sheet or not full then return true end
+	if not meta or not sheet then return true end
 	if h.image~=sheet.image then h.image=sheet.image;h.content=Content.fromObject(sheet.image) end
+	if not full then
+		if meta.badge and cfg.coverage then
+			local definition=(rules and rules[`structures.{kind}.kind`]) or (if kind=="hq" then "hq" else "facility")
+			local size=CoverageMotion.token(cfg.coverage,definition or "facility",pixels/3,if rules then rules["production.spacing"] or 0 else 0)
+			local share=size/pixels;local offset=(1-share)/2
+			-- Tokens stay centred on the ground footprint, above the hover/refusal drawing.
+			bind(h,h.badgeBack,sheet,meta.badge.back,meta.badge.frame,1,Color3.new(1,1,1),offset,offset,share)
+			bind(h,h.badgeInk,sheet,meta.badge.ink,meta.badge.frame,1,ink(pose.ink),offset,offset,share)
+		end
+		return true
+	end
 	local tone=ink(pose.ink);local tint=resource.tint;local team=Color3.new(tint[1],tint[2],tint[3])
 	-- APPROX: native multiplicative tint/layer alpha replaces the source's precomposited source-atop copy.
 	bind(h,h.body,sheet,meta.base,meta.frame,pose.alpha,Color3.new(1,1,1):Lerp(tone,cfg.hover.tint))

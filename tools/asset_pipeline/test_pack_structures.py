@@ -1,9 +1,24 @@
 """Synthetic regression coverage: ground must never enter a building's caster mask."""
-import unittest,base64,zlib
+import unittest,base64,zlib,io,random
 from PIL import Image
-from pack_structures import caster_mask,effect_source,factory_layout,weapon_parts,pack,KINDS
+from pack_structures import caster_mask,effect_source,factory_layout,weapon_parts,pack,pack_tiles,KINDS
 
 class CasterTests(unittest.TestCase):
+    def test_compact_atlas_preserves_all_pixels_offsets_and_nonoverlapping_guards(self):
+        rng=random.Random(91);tiles=[]
+        for i in range(32):
+            image=Image.new('RGBA',(rng.randrange(8,90),rng.randrange(8,90)),(i*7%256,i*11%256,i*17%256,128+i))
+            tiles.append((image,(i%3,i%5)))
+        result=pack_tiles(tiles,256,compact=True);old=pack_tiles(tiles,256)
+        self.assertLessEqual(result['height'],old['height']);self.assertLessEqual(result['height'],1024)
+        page=Image.frombytes('RGBA',(result['width'],result['height']),zlib.decompress(base64.b64decode(result['deflate']),-15));occupied=Image.new('L',page.size)
+        for i,(image,box) in enumerate(tiles,1):
+            x,y,w,h,ox,oy=result['rects'][i];self.assertEqual((ox,oy),box)
+            self.assertEqual(page.crop((x,y,x+w,y+h)).tobytes(),image.tobytes())
+            self.assertIsNone(occupied.crop((x-2,y-2,x+w+2,y+h+2)).getbbox());occupied.paste(255,(x-2,y-2,x+w+2,y+h+2))
+            self.assertIsNone(page.crop((x-2,y-2,x+w+2,y)).getbbox());self.assertIsNone(page.crop((x-2,y+h,x+w+2,y+h+2)).getbbox())
+            self.assertIsNone(page.crop((x-2,y,x,y+h)).getbbox());self.assertIsNone(page.crop((x+w,y,x+w+2,y+h)).getbbox())
+
     def test_dirt_and_paint_are_not_casters(self):
         sheet=Image.new('RGBA',(40,8),(0,0,0,0))
         sheet.paste((120,90,50,255),(0,0,8,8));sheet.paste((255,255,255,255),(8,0,16,8))
@@ -107,5 +122,20 @@ class CasterTests(unittest.TestCase):
                 mask=look['siteMask'];self.assertEqual(mask['frame'],2);r=page['rects'][mask['tile']]
                 at=(r[1]*page['width']+r[0])*4;self.assertEqual(pixels[at:at+4],bytes((255,255,255,255)))
                 body=page['rects'][look['base']];at=(body[1]*page['width']+body[0])*4;self.assertEqual(pixels[at:at+4],bytes((60,80,70,255)))
+
+        def png(colour):
+            out=io.BytesIO();Image.new('RGBA',(8,8),colour).save(out,format='PNG');return base64.b64encode(out.getvalue()).decode()
+        data['badges']={'mapping':{kind:'one' if kind=='hq' else 'two' for kind in KINDS},'images':{
+            'one':{'frame':8,'back':png((8,11,15,190)),'ink':png((255,255,255,255))},
+            'two':{'frame':8,'back':png((8,11,15,190)),'ink':png((255,255,255,128))}}}
+        result=pack(data,sheet)
+        for page in result['armies'].values():
+            looks=page['looks'];self.assertEqual(looks['hq']['badge']['back'],looks['factory']['badge']['back'])
+            self.assertEqual(looks['factory']['badge'],looks['artybase']['badge']);self.assertNotEqual(looks['hq']['badge']['ink'],looks['factory']['badge']['ink'])
+            raw=zlib.decompress(base64.b64decode(page['deflate']),-15)
+            for kind,look in looks.items():
+                for layer in ('back','ink'):
+                    r=page['rects'][look['badge'][layer]];self.assertEqual((r[2],r[3]),(8,8))
+                    at=(r[1]*page['width']+r[0])*4;self.assertEqual(raw[at+3],190 if layer=='back' else 255 if kind=='hq' else 128)
 
 if __name__=='__main__':unittest.main()

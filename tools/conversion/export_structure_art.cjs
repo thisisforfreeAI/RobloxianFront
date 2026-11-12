@@ -1,5 +1,6 @@
 // Extract local sprite metadata. Output is private input for pack_structures.py.
 // node export_structure_art.cjs <app.asar> <private.json>
+// Requires @napi-rs/canvas (or set NODE_PATH). All captured art stays in local ignored outputs.
 const fs=require('fs'),vm=require('vm');
 const bytes=fs.readFileSync(process.argv[2]);
 const header=JSON.parse(bytes.subarray(16,16+bytes.readUInt32LE(12)));
@@ -40,5 +41,34 @@ site.yardShare=Number(yard[0][1]);site.survey={ink:survey.string,alpha:survey.st
 function gradientInks(name,next){const at=source.indexOf('function '+name+'('),end=source.indexOf('function '+next+'(',at);if(at<0||end<0)throw Error('Missing site gradient');return [...source.slice(at,end).matchAll(/rgba\((\d+),(\d+),(\d+),[01]\)/g)].map(m=>m.slice(1).map(Number));}
 const laser=gradientInks('Hte','Tte'),done=gradientInks('Rte','Pte');if(laser.length!==3||done.length!==3)throw Error('Changed site gradient inks');
 site.site.laserInks=laser;site.done.inks=done;
-fs.writeFileSync(process.argv[3],JSON.stringify({atlas,positions:{coalition,republic},dish:look.dish,gun:look.gun,gunMotion,factory:look.factory,factoryFps:look.stepFps,artillery,site,shadow:object('$7'),nightAlpha:look.nightAlpha,construction:survey,damage}));
-console.log('Exported local structure metadata');
+async function exportMetadata(){
+ const {createCanvas,loadImage}=require('@napi-rs/canvas');
+ const mapping=object('C4'),icons=object('bkt'),images={};
+ const size=Number(source.match(/function GT\([^)]*n=(\d+)\)/)?.[1]);
+ const stroke=Number(source.match(/const Uj=(\d+);function My/)?.[1]);
+ const fill=source.slice(screenStart).match(/fill:"(rgba\([\d, .]+\))",border:p,symbol:p,outline:Je.rim/)?.[1];
+ if(!size||!stroke||!fill)throw Error('Changed source building-token styles');
+ // Keep the original token painter order, split into stable dark backing and tintable ink.
+ // This permits any side/refusal colour without per-colour images in the client.
+ for(const id of new Set(Object.values(mapping))){
+  const icon=icons[id];if(!icon)throw Error('Missing building token '+id);
+  const paths=icon.body.replace(/#D9D9D9/gi,'currentColor').match(/<path\b[^>]*\/>|<svg\b[\s\S]*<\/svg>/g);
+  if(!paths||paths.length<2)throw Error('Changed building token layers '+id);
+  const [border,back,...symbol]=paths;
+  const outline=shape=>shape.replace(/\s(?:fill|stroke|stroke-width|fill-opacity)="[^"]*"/g,'').replace(/\/>$/,` fill="none" stroke="${ui.rim}" stroke-width="${stroke}" stroke-linejoin="round"/>`);
+  const [x,y,w,h]=icon.viewBox.split(/\s+/).map(Number),pad=stroke/2;
+  const box=[x-pad,y-pad,w+2*pad,h+2*pad].join(' ');
+  const bodies={back:outline(back)+outline(border)+back.replace(/currentColor/g,fill).replace(/fill-opacity="[^"]*"/,'fill-opacity="1"'),ink:[border,...symbol].join('').replace(/currentColor/g,'#ffffff')};
+  const layers={frame:size};
+  for(const [layer,body] of Object.entries(bodies)){
+   const svg=`<svg xmlns="http://www.w3.org/2000/svg" viewBox="${box}" width="${size}" height="${size}">${body}</svg>`;
+   const image=await loadImage(Buffer.from(svg)),canvas=createCanvas(size,size);canvas.getContext('2d').drawImage(image,0,0,size,size);
+   layers[layer]=canvas.toBuffer('image/png').toString('base64');
+  }
+  images[id]=layers;
+ }
+ const badges={mapping,images};
+ fs.writeFileSync(process.argv[3],JSON.stringify({atlas,positions:{coalition,republic},dish:look.dish,gun:look.gun,gunMotion,factory:look.factory,factoryFps:look.stepFps,artillery,site,shadow:object('$7'),nightAlpha:look.nightAlpha,construction:survey,damage,badges}));
+ console.log('Exported local structure metadata and',Object.keys(images).length,'original building tokens');
+}
+exportMetadata().catch(error=>{console.error(error.message);process.exitCode=1;});

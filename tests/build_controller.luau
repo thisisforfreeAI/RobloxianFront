@@ -10,7 +10,7 @@ return function(test:any,eq:any)
 		local function instance(class) local o:any={ClassName=class};function o:Destroy() self.dead=true end;table.insert(h.instances,o);return o end
 		local world={STUDS_PER_CELL=4,GROUND_Y=0,TOP_GUI_YAW=-math.pi/2,toWorld=function(x,y,z) return rb.Vector3.new(x*4,z or 0,y*4) end,toCell=function(p) return p.X/4,p.Z/4 end}
 		local shared={Config={World="world"},Presentation={PlacementHint="hint"},Simulation={Roads="roads"}}
-		local modules={world=world,hint=H,roads=Roads,coverage={update=function(kind,cx,cy,side,rules,views,pixels) h.coverage={kind=kind,cx=cx,cy=cy,side=side,rules=rules,views=views,pixels=pixels} end,hide=function() h.coverageHidden=(h.coverageHidden or 0)+1 end,destroy=function() h.coverageDestroyed=(h.coverageDestroyed or 0)+1 end},preview={update=function(part,kind,army,side,hint,pixels) h.preview={part=part,kind=kind,army=army,side=side,hint=hint,pixels=pixels};return h.previewEnabled end,hide=function() h.hidden=(h.hidden or 0)+1 end,destroy=function() h.destroyed=(h.destroyed or 0)+1 end}}
+		local modules={world=world,hint=H,roads=Roads,coverage={update=function(kind,cx,cy,side,rules,views,pixels) h.coverage={kind=kind,cx=cx,cy=cy,side=side,rules=rules,views=views,pixels=pixels} end,hide=function() h.coverageHidden=(h.coverageHidden or 0)+1 end,destroy=function() h.coverageDestroyed=(h.coverageDestroyed or 0)+1 end},preview={update=function(part,kind,army,side,hint,pixels,rules) h.preview={part=part,kind=kind,army=army,side=side,hint=hint,pixels=pixels,rules=rules};return h.previewEnabled end,hide=function() h.hidden=(h.hidden or 0)+1 end,destroy=function() h.destroyed=(h.destroyed or 0)+1 end}}
 		local camera={CFrame=rb.CFrame.new(0,100,0),ViewportSize=rb.Vector2.new(800,600),FieldOfView=30,ViewportPointToRay=function(_,x,y) h.ray={x,y};return {Origin=rb.Vector3.zero,Direction=rb.Vector3.new(0,-1,0)} end}
 		local workspace={CurrentCamera=camera,FindFirstChild=function() return if h.noMap then nil else {FindFirstChild=function() return if h.noGround then nil else {} end} end,Raycast=function() return if h.hit then {Position=h.hit} else nil end}
 		local services={UserInputService=input,RunService={RenderStepped=h.render},ReplicatedStorage={Shared=shared,WaitForChild=function() return shared end}}
@@ -25,7 +25,7 @@ return function(test:any,eq:any)
 	test("placement controller preserves cursor rays and sends exactly one server build even when locally refused",function()
 		local h=fixture();h.controller.update({army="republic",oil=0});h.input.InputBegan:fire({KeyCode="B"},false);h.render:fire()
 		eq(h.ray[1],200);eq(h.ray[2],100);eq(h.preview.kind,"barracks");eq(h.preview.army,"republic");eq(h.preview.hint.ok,false)
-		eq(h.coverage.kind,"barracks");eq(h.coverage.rules,h.options.rules);eq(h.coverage.cx,2);eq(h.coverage.cy,2)
+		eq(h.preview.rules,h.options.rules);eq(h.coverage.kind,"barracks");eq(h.coverage.rules,h.options.rules);eq(h.coverage.cx,2);eq(h.coverage.cy,2)
 		h:click("left");eq(#h.sent,1);eq(h.sent[1].kind,"build");eq(h.sent[1].x,2);eq(h.sent[1].y,2)
 		h:click("left");eq(#h.sent,1);h.render:fire();assert(h.hidden>0);assert(h.coverageHidden>0)
 	end)
@@ -60,3 +60,4 @@ return function(test:any,eq:any)
 		h.controller.destroy();h.time=1;eq(h.controller.busy(),false);h.controller.begin("barracks");h:click("left");eq(#h.sent,1)
 	end)
 end
+

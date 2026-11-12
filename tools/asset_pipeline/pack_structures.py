@@ -3,7 +3,7 @@
 python pack_structures.py <private.json> <buildings-top.png> <ignored-output.luau>
 Original sprite coordinates/configuration stay in generated, ignored modules.
 """
-import base64,copy,json,pathlib,sys,zlib
+import base64,copy,io,json,pathlib,sys,zlib
 from PIL import Image,ImageChops,ImageFilter
 
 KINDS=('hq','barracks','factory','bunker','atgun','radar','sam','artybase','nightops')
@@ -54,15 +54,41 @@ def factory_layout(config,positions,cells,frame,republic,fps):
     result.update(craneOff=republic,cells=cells,frame=frame,fps=fps)
     return result
 
-def pack_tiles(tiles,width=1024):
-    # Two transparent guard pixels prevent neighbouring bleed.
-    heights=[0]*width;rects={};canvas=Image.new('RGBA',(width,1024))
-    for index,(image,box) in sorted(enumerate(tiles,1),key=lambda item:-max(item[1][0].size)):
-        w,h=image.size;best=min((max(heights[x:x+w+4]),x) for x in range(width-w-3));y,x=best
-        if y+h+4>1024:raise ValueError('Sprite atlas exceeds one image')
-        canvas.paste(image,(x+2,y+2));heights[x:x+w+4]=[y+h+4]*(w+4)
-        rects[index]=[x+2,y+2,w,h,box[0],box[1]]
-    height=max(heights);canvas=canvas.crop((0,0,width,height))
+def pack_tiles(tiles,width=1024,compact=False):
+    # Two transparent guard pixels prevent neighbouring bleed. Never rotate/resample art.
+    ordered=sorted(enumerate(tiles,1),key=lambda item:-max(item[1][0].size))
+    heights=[0]*width;placements={};candidates=[]
+    for index,(image,box) in ordered:
+        w,h=image.size
+        if w+4>width:break
+        y,x=min((max(heights[x:x+w+4]),x) for x in range(width-w-3))
+        if y+h+4>1024:break
+        placements[index]=(x,y);heights[x:x+w+4]=[y+h+4]*(w+4)
+    else:candidates.append((max(heights),placements))
+    if compact:
+        # Offline maximal free rectangles reclaim holes the skyline cannot use. Try stable
+        # orderings and retain the shortest valid layout, including the old skyline candidate.
+        for key in (lambda v:-max(v[1][0].size),lambda v:-v[1][0].width*v[1][0].height,lambda v:-v[1][0].height):
+            free=[(0,0,width,1024)];placements={};height=0
+            for index,(image,box) in sorted(enumerate(tiles,1),key=key):
+                w,h=image.width+4,image.height+4
+                fits=[(min(fw-w,fh-h),max(fw-w,fh-h),fy,fx) for fx,fy,fw,fh in free if fw>=w and fh>=h]
+                if not fits:break
+                _,_,y,x=min(fits);placements[index]=(x,y);height=max(height,y+h);split=[]
+                for fx,fy,fw,fh in free:
+                    if x>=fx+fw or x+w<=fx or y>=fy+fh or y+h<=fy:split.append((fx,fy,fw,fh));continue
+                    if x>fx:split.append((fx,fy,x-fx,fh))
+                    if x+w<fx+fw:split.append((x+w,fy,fx+fw-x-w,fh))
+                    if y>fy:split.append((fx,fy,fw,y-fy))
+                    if y+h<fy+fh:split.append((fx,y+h,fw,fy+fh-y-h))
+                split=list(dict.fromkeys(split));free=[]
+                for i,(fx,fy,fw,fh) in enumerate(split):
+                    if not any(i!=j and fx>=ax and fy>=ay and fx+fw<=ax+aw and fy+fh<=ay+ah for j,(ax,ay,aw,ah) in enumerate(split)):free.append((fx,fy,fw,fh))
+            else:candidates.append((height,placements))
+    if not candidates:raise ValueError('Sprite atlas exceeds one image')
+    height,placements=min(candidates,key=lambda candidate:candidate[0]);rects={};canvas=Image.new('RGBA',(width,height))
+    for index,(image,box) in enumerate(tiles,1):
+        x,y=placements[index];w,h=image.size;canvas.paste(image,(x+2,y+2));rects[index]=[x+2,y+2,w,h,box[0],box[1]]
     return {'width':width,'height':height,'deflate':packed(canvas.tobytes()),'rects':rects}
 
 def weapon_parts(data,sheet,names=None,width=512):
@@ -85,7 +111,7 @@ def pack(data,sheet,normal=None):
     atlas=data['atlas'];output={}
     def latest(name,group):return name+'@2' if name+'@2' in group else name
     for army in ('coalition','republic'):
-        tiles=[];looks={}
+        tiles=[];looks={};badges={};badge_tiles={}
         def tile(image,trim=True):
             box=image.getbbox() if trim else (0,0,image.width,image.height)
             if not box:return None
@@ -176,7 +202,20 @@ def pack(data,sheet,normal=None):
                     db,dp,_=part(partname,heading);frames.append({'base':tile(db),'paint':tile(dp)})
                 look['dish']={'frames':frames,'frame':meta['frame'],'cells':meta['cells'],'x':(point['x']-.5)*cells,'y':(point['y']-.5)*cells,'speed':cfg['turnsPerSec']}
             looks[kind]=look
-        output[army]=pack_tiles(tiles)
+            if data.get('badges'):
+                icon=data['badges']['mapping'][kind]
+                if icon not in badges:
+                    source=data['badges']['images'][icon]
+                    badges[icon]={'frame':source['frame']}
+                    for layer in ('back','ink'):
+                        key=(source['frame'],source[layer])
+                        if key not in badge_tiles:
+                            image=Image.open(io.BytesIO(base64.b64decode(source[layer]))).convert('RGBA')
+                            if image.size!=(source['frame'],source['frame']):raise ValueError('Bad building token dimensions')
+                            badge_tiles[key]=tile(image)
+                        badges[icon][layer]=badge_tiles[key]
+                look['badge']=badges[icon]
+        output[army]=pack_tiles(tiles,compact=True)
         output[army]['looks']=looks
         print(army,len(tiles),'tiles',output[army]['width'],output[army]['height'],'RGBA bytes',output[army]['width']*output[army]['height']*4)
     launchers=None
