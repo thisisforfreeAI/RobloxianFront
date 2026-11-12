@@ -14,6 +14,7 @@ local HttpService = game:GetService("HttpService")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Rules = require(Shared.Config.Rules)
+local FactoryMotion=require(Shared.Presentation.FactoryMotion)
 local MapCodec = require(Shared.Maps.MapCodec)
 local Movement = require(Shared.Simulation.Movement)
 local Pathing = require(Shared.Simulation.Pathing)
@@ -463,13 +464,13 @@ end
 local viewers: { [number]: any } = {}
 local sentVision: { [Player]: string } = {}
 
-local function structureRow(e: any, owner: number, details: boolean): { any }
+local function structureRow(e: any, owner: number, details: boolean, production:any?): { any }
 	return {
 		e.id, e.kind, owner, e.x, e.y, e.hp, e.maxHp,
 		if details then e.capSide or 0 else 0,
 		if details then e.capProgress or 0 else 0,
 		if details then e.store or 0 else 0,
-		e.built or 1, 0, sim.armyOf(owner),
+		e.built or 1, 0, sim.armyOf(owner), production,
 	}
 end
 
@@ -636,7 +637,12 @@ local function unitLook(e: any): (number, number, number, number)
 	return flags, 0, 0, since
 end
 
+local factoryViews: {[number]:any}={}
+local factorySim:any=nil
 local function viewFor(side: number): ({ any }, { any }, { number }?)
+	if factorySim~=sim then factoryViews={};factorySim=sim end
+	local previousFactory=factoryViews[side] or {}
+	local nextFactory={}
 	local viewer = if side > 0 then viewers[side] else nil
 	if side > 0 and not viewer then
 		viewer = Fog.newViewer(sim, side)
@@ -660,7 +666,9 @@ local function viewFor(side: number): ({ any }, { any }, { number }?)
 		else
 			local state = if viewer then viewer.structureState(e) else "seen"
 			if state == "seen" then
-				table.insert(structures, structureRow(e, e.side, true))
+				local production,known=FactoryMotion.snapshot(e,true,if e.kind=="factory" then sim.inactiveReason(e)==nil else false,previousFactory[e.id])
+				if known then nextFactory[e.id]=known end
+				table.insert(structures, structureRow(e, e.side, true,production))
 				listed[e.id] = true
 			end
 		end
@@ -673,6 +681,7 @@ local function viewFor(side: number): ({ any }, { any }, { number }?)
 			end
 		end
 	end
+	factoryViews[side]=nextFactory
 	return units, structures, if viewer then viewer.runs() else nil
 end
 

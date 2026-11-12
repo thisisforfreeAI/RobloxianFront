@@ -182,7 +182,7 @@ function AdminPanel.start(sendIntent: (any) -> ())
 		local p=camera.CFrame.Position
 		send({kind="admin",op="forestFire",x=p.X/World.STUDS_PER_CELL,y=p.Z/World.STUDS_PER_CELL})
 	end)
-	button(panel, "Rebuild fire damage", 8, 312, 284, function() send({kind="admin",op="rebuildFires"}) end)
+	button(panel, "Reset forest / ground damage", 8, 312, 284, function() send({kind="admin",op="rebuildFires"}) end)
 	toggle.Activated:Connect(function()
 		panel.Visible = not panel.Visible
 	end)

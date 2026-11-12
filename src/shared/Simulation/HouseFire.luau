@@ -128,6 +128,7 @@ function HouseFire.new(settings:any,context:any):any
 		end
 	end
 	function self.raise(shell:any)
+		if context.permanentRuins then return false end
 		for _,p in shell.px do if self.mark[p]==2 then self.mark[p]=nil;self.burnt-=1 end end
 		self.scarred[shell.cell]=nil
 		local i=table.find(self.scarOrder,shell.cell);if i then table.remove(self.scarOrder,i) end
@@ -135,6 +136,7 @@ function HouseFire.new(settings:any,context:any):any
 		if context.onRestore then context.onRestore(shell) end
 	end
 	function self.rebuildShells()
+		if context.permanentRuins then return false end
 		local r=c.rebuild;local current=table.clone(self.shells);local towns={};local count={}
 		for i,shell in current do
 			local town=if context.townAt then context.townAt(shell.cell) else nil
@@ -161,13 +163,14 @@ function HouseFire.new(settings:any,context:any):any
 	function self.tick(dt:number)
 		assert(dt==dt and dt<math.huge and dt>=0,"invalid fire time step");if dt==0 then return end
 		self.time+=dt
-		if context.autoRebuild~=false and #self.shells>0 then
+		if not context.permanentRuins and context.autoRebuild~=false and #self.shells>0 then
 			self.rebuildAcc+=dt
 			if self.rebuildAcc>=c.rebuild.everySec then self.rebuildAcc=0;self.rebuildShells() end
 		end
 		burnDown(dt);spread()
 	end
 	function self.reset()
+		if context.permanentRuins then return false end
 		if context.onReset then context.onReset() end
 		self.time=0;self.houses={};self.shells={};self.mark={};self.burnt=0;self.turn=0;self.scarred={};self.scarOrder={};self.nextUp={};self.rebuildAcc=0
 	end

@@ -3,7 +3,7 @@
 python pack_structures.py <private.json> <buildings-top.png> <ignored-output.luau>
 Original sprite coordinates/configuration stay in generated, ignored modules.
 """
-import base64,json,pathlib,sys,zlib
+import base64,copy,json,pathlib,sys,zlib
 from PIL import Image,ImageChops,ImageFilter
 
 KINDS=('hq','barracks','factory','bunker','atgun','radar','sam','artybase','nightops')
@@ -46,13 +46,21 @@ def effect_source(sheet,normal,meta,config):
          sheet.crop((x+3*f,y,x+4*f,y+f)).getchannel('A').tobytes())
     return {'n':n,'top':height.getextrema()[1],'size':len(raw),'deflate':packed(raw)}
 
+def factory_layout(config,positions,cells,frame,republic,fps):
+    result=copy.deepcopy(config);door=positions['door'];x=(door['x']-.5)*cells;y=(door['y']-.5)*cells;thickness=.34
+    result['doors']=[[x+side*door['w']*cells/4,y-thickness/2,door['w']*cells/2,thickness] for side in (-1,1)]
+    result['crane'].update(x=(positions['crane']['x']-.5)*cells,y=(positions['crane']['y']-.5)*cells,run=positions['crane']['run']*cells)
+    weld=positions['weld'];result['weld'].update(x0=(weld['x']-.5)*cells,y0=(weld['y']-.5)*cells,x1=(weld['x']+weld['w']-.5)*cells,y1=(weld['y']+weld['h']-.5)*cells)
+    result.update(craneOff=republic,cells=cells,frame=frame,fps=fps)
+    return result
+
 def pack(data,sheet,normal=None):
     atlas=data['atlas'];output={}
     def latest(name,group):return name+'@2' if name+'@2' in group else name
     for army in ('coalition','republic'):
         tiles=[];looks={}
-        def tile(image):
-            box=image.getbbox()
+        def tile(image,trim=True):
+            box=image.getbbox() if trim else (0,0,image.width,image.height)
             if not box:return None
             key=len(tiles)+1;tiles.append((image.crop(box),box));return key
         def part(name,heading=0):
@@ -81,7 +89,7 @@ def pack(data,sheet,normal=None):
                     partname=cfg['parts'][key][0];meta=atlas['parts'][latest(partname,atlas['parts'])]
                     heading=round((cfg['rest']%(2*3.141592653589793))/(2*3.141592653589793)*meta['headings'])%meta['headings']
                     paste_part(b,p,partname,tuple(v/cells for v in cfg[key]),cells,heading)
-            if kind=='factory':
+            if kind=='factory' and not data.get('factory'):
                 door=pos['door'];db,dp,dm=part('factory-door');ratio=f/cells
                 # Source door art occupies a centred subrect; closed doors are the resting pose.
                 crop=(round((dm['frame']-.72*dm['frame']/dm['cells'])/2),round((dm['frame']-.32*dm['frame']/dm['cells'])/2))
@@ -97,6 +105,12 @@ def pack(data,sheet,normal=None):
             look['shadow']={'tile':tile(shadow),'frame':shadow.width}
             look['defence']=kind in ('bunker','atgun','radar','sam','nightops')
             if normal is not None:look['effects']=effect_source(sheet,normal,m,data['construction'])
+            if kind=='factory' and data.get('factory'):
+                factory=factory_layout(data['factory'],pos,cells,f,name.startswith('rep_'),data['factoryFps'])
+                db,dp,dm=part('factory-door');factory['door']={'base':tile(db,False),'paint':tile(dp,False),'frame':dm['frame'],'cells':dm['cells']}
+                if not factory['craneOff']:
+                    cb,cp,cm=part('factory-crane');factory['craneArt']={'base':tile(cb,False),'paint':tile(cp,False),'frame':cm['frame'],'cells':cm['cells']}
+                look['factory']=factory
             if kind in data['dish'] and not (name.startswith('rep_') and kind=='sam'):
                 cfg=data['dish'][kind];partname=('rep_' if name.startswith('rep_') else '')+cfg['part'];meta=atlas['parts'][latest(partname,atlas['parts'])]
                 point=pos['dish'];frames=[]

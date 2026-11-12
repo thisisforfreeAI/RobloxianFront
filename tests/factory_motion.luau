@@ -1,0 +1,41 @@
+--!strict
+return function(test:any,eq:any)
+	local Motion=require("../src/shared/Presentation/FactoryMotion")
+	local Rng=require("../src/shared/Utilities/Rng")
+	local config={doorSec=.5,doorHoldSec=2,cells=3,frame=144,fps=12,door={frame=48,cells=1},doors={{-.4,.3,.6,.3},{.4,.3,.6,.3}},
+		crane={x=.6,y=.1,run=.5,sec=6},weld={x0=-.3,y0=.2,x1=.2,y1=.5,count=2,px=1.5,inks={"#ffffff","#ffcc88"}}}
+	test("factory snapshots expose only visible activity and visible completion pulses, not queues or hidden production counts",function()
+		local entity={kind="factory",built=1,made=70,queue={"tank","ifv"}}
+		local row,known=Motion.snapshot(entity,true,true,nil);eq(#row,2);eq(row[1],1);eq(row[2],0)
+		entity.made=75;row,known=Motion.snapshot(entity,true,true,known);eq(row[2],1)
+		row=Motion.snapshot(entity,false,true,known);eq(row,nil)
+		entity.made=120;row,known=Motion.snapshot(entity,true,true,nil);eq(row[2],0)
+		row=Motion.snapshot(entity,true,false,known);eq(row[1],0)
+		entity.kind="barracks";eq(Motion.snapshot(entity,true,true,known),nil)
+	end)
+	test("factory doors open for work and hold briefly after an observed completion",function()
+		local state=Motion.new();Motion.advance(state,config,{1,0},0,0,true)
+		for i=1,5 do Motion.advance(state,config,{1,0},i*.1,.1,true) end;assert(math.abs(state.open-1)<1e-9)
+		Motion.advance(state,config,{0,1},.6,.1,true);eq(state.open,1)
+		Motion.advance(state,config,{0,1},2.5,.1,true);eq(state.open,1)
+		Motion.advance(state,config,{0,1},2.7,.1,true);assert(state.open<1)
+		for i=1,5 do Motion.advance(state,config,{0,1},2.7+i*.1,.1,true) end;eq(state.open,0)
+	end)
+	test("initial/revealed completion counters never replay hidden work and long frames stay bounded",function()
+		local state=Motion.new();Motion.advance(state,config,{0,20},50,.1,true);eq(state.open,0)
+		Motion.advance(state,config,{1,20},51,10,true);assert(state.open<=.2+1e-9)
+		Motion.advance(state,config,{1,21},52,.1,false);eq(state.open,0);eq(state.sequence,nil)
+		Motion.advance(state,config,{0,100},53,.1,true);eq(state.open,0);eq(state.hold,0)
+	end)
+	test("factory door crop and world extent retract together while idle cranes stay fixed",function()
+		local closed=Motion.door(config,0,1);local half=Motion.door(config,.5,1);local open=Motion.door(config,1,1)
+		eq(half.h,closed.h/2);eq(half.sh,closed.sh/2);eq(half.x,closed.x);eq(half.y,closed.y);eq(open.visible,false)
+		local state=Motion.new();local a=Motion.crane(config,state,1,7);local b=Motion.crane(config,state,10,7);eq(a.y,b.y)
+		state.busy=true;assert(Motion.crane(config,state,1,7).y~=Motion.crane(config,state,2,7).y)
+	end)
+	test("source weld samples are stable inside each source animation frame and stay inside the work area",function()
+		local first=Motion.weld(config,1,7,Rng.imul);local again=Motion.weld(config,1.01,7,Rng.imul);eq(#first,#again)
+		for i,p in first do eq(p.x,again[i].x);eq(p.y,again[i].y) end
+		for t=0,20 do for _,p in Motion.weld(config,t*.1,7,Rng.imul) do assert(p.x>=config.weld.x0 and p.x<=config.weld.x1 and p.y>=config.weld.y0 and p.y<=config.weld.y1);assert(p.size>0) end end
+	end)
+end

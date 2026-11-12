@@ -14,12 +14,17 @@ return function(test:any,eq:any)
 		return h
 	end
 	local function visible() return true end
-	test("live fire ruins persist past original rebuild timers until an explicit reset",function()
+	test("live fire ruins persist through timers and direct restoration attempts for the entire match",function()
 		local h=make();assert(h.world.model.ignite(7,7));h.world.model.houses[1].life=.01;h.world.advance(.25)
 		local points=table.clone(h.world.model.shells[1].px);assert(#points>0)
 		h.time=math.max(settings.houses.rebuild.afterSec,settings.houses.rebuild.loneSec)+600;h.world.advance(h.time)
 		for _,p in points do eq(h.world.paint[p],3);eq(h.world.model.mark[p],2) end
-		h.world.reset();eq(next(h.world.paint),nil);eq(#h.world.model.shells,0)
+		local epoch=h.world.epoch
+		eq(h.world.model.raise(h.world.model.shells[1]),false);eq(h.world.model.rebuildShells(),false)
+		eq(h.world.model.reset(),false);eq(h.world.reset(),false);eq(h.world.epoch,epoch)
+		h.weather="storm";h.time+=600;h.world.advance(h.time)
+		for _,p in points do eq(h.world.paint[p],3);eq(h.world.model.mark[p],2) end
+		eq(#h.world.model.shells,1);eq(h.world.model.ignite(7,7),false)
 	end)
 	test("fire packets bound pixel/roof buffers and reject malformed lengths, stages and coordinates",function()
 		local rows={{0,0},{27,1},{88,3}};local out=Packets.readPixels(Packets.pixels(rows),100)
@@ -64,12 +69,30 @@ return function(test:any,eq:any)
 		packet,cache=h.world.view(cache,visible);assert(#packet.actors>first)
 		local bytes=0;for _,row in packet.actors do if row.points then bytes+=buffer.len(row.points) end end;assert(bytes<=Packets.ROOF_BYTES_PER_PACKET)
 	end)
-	test("fire reset clears damage and forces a fresh epoch while actor ids remain monotonic",function()
-		local h=make();assert(h.world.model.ignite(7,7));local id=h.world.model.houses[1].id;h.world.paint[1]=3
-		local _,cache=h.world.view(nil,visible);h.world.reset()
-		local packet,nextCache=h.world.view(cache,visible);eq(packet.reset,true);eq(next(nextCache.known),nil);eq(#packet.actors,0)
-		assert(h.world.model.ignite(7,7));assert(h.world.model.houses[1].id>id)
+	test("a mid-match reset preserves the ruin epoch while a newly created match starts clean",function()
+		local h=make();assert(h.world.model.ignite(7,7));h.world.model.houses[1].life=.01;h.world.advance(.25)
+		local _,cache=h.world.view(nil,visible);local epoch=h.world.epoch;eq(h.world.reset(),false)
+		local packet,nextCache=h.world.view(cache,visible);eq(packet.reset,false);eq(h.world.epoch,epoch)
+		assert(next(nextCache.known));eq(buffer.len(packet.pixels),0)
+		local fresh=make();eq(next(fresh.world.paint),nil);eq(#fresh.world.model.shells,0);assert(fresh.world.model.ignite(7,7))
 	end)
+	test("admin forest and ground reset cannot restore houses or erase ruins for late joiners",function()
+		local fs=require("@lune/fs");local luau=require("@lune/luau")
+		local env:any=setmetatable({game={CreatorType="user",CreatorId=1,GetService=function(_,key)
+			return if key=="RunService" then {IsStudio=function() return false end} else {PlayerRemoving={Connect=function() end}} end},
+			Enum={CreatorType={User="user",Group="group"}},task={spawn=function(fn) fn() end},warn=function() end},{__index=getfenv()})
+		local admin=luau.load(fs.readFile("src/server/Match/Admin.luau"),{environment=env})()
+		local h=make();assert(h.world.model.ignite(7,7));h.world.model.houses[1].life=.01;h.world.advance(.25)
+		local calls={house=0,forest=0,ground=0,impacts=0};local original=h.world.reset
+		h.world.reset=function() calls.house+=1;return original() end
+		local sim={time=0,sides={},houseFires=h.world,forestFires={reset=function() calls.forest+=1 end},groundScorch={reset=function() calls.ground+=1 end},fireImpacts={reset=function() calls.impacts+=1 end}}
+		admin.handle(sim,{UserId=2,Name="other"},1,{op="rebuildFires"});eq(calls.forest,0)
+		admin.handle(sim,{UserId=1,Name="owner"},1,{op="rebuildFires"})
+		eq(calls.house,0);eq(calls.forest,1);eq(calls.ground,1);eq(calls.impacts,1)
+		local packet=h.world.view(nil,visible);local rows=Packets.readPixels(packet.pixels,1e9);assert(#rows>0)
+		for _,row in rows do eq(row[2],3) end
+	end)
+
 	test("client fire views preserve phase, reject stale epochs, stop expired actors and never mutate packets",function()
 		local clears,painted=0,{}
 		local v=View.new(10,10,14,300,{random=function() return .4 end,clear=function() clears+=1 end,pixels=function(rows) painted=rows end})

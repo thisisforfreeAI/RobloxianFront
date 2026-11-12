@@ -7,6 +7,7 @@ local Codec=require(Shared.Maps.MapCodec)
 local Inflate=require(Shared.Utilities.Inflate)
 local Memory=require(script.Parent.ImageMemory)
 local Effects=require(script.Parent.StructureEffects)
+local Factory=require(script.Parent.FactoryRenderer)
 local Art={}
 local assets=script.Parent.Parent:FindFirstChild("DevAssets")
 local module=assets and assets:FindFirstChild("OrigStructures")
@@ -55,6 +56,7 @@ local function sheet(army:string):any
 	return nil
 end
 function Art.step()
+	Factory.step()
 	-- APPROX soft 2 ms bootstrap slice shared by both factions; no whole-atlas decode in a render tick.
 	deadline=os.clock()+.002
 	while jobs[1] do
@@ -101,9 +103,9 @@ function Art.attach(part:Part,kind:string,army:string):any
 		end
 	end
 	gui.Parent=part
-	return {gui=gui,sheet=s,meta=meta,body=body,paint=paint,night=night,shadow=shadow,dish=dish,army=army,effects=Effects.attach(gui,meta,{body,paint})}
+	return {gui=gui,sheet=s,meta=meta,body=body,paint=paint,night=night,shadow=shadow,dish=dish,army=army,effects=Effects.attach(gui,meta,{body,paint}),factory=Factory.attach(gui,meta,s)}
 end
-function Art.update(art:any,side:number,stale:boolean,built:number,light:any,id:number,hp:number?,maxHp:number?,importance:number?)
+function Art.update(art:any,side:number,stale:boolean,built:number,light:any,id:number,hp:number?,maxHp:number?,importance:number?,production:any?)
 	local rgb=palette and palette[side] or {1,1,1}
 	local tint=Color3.new(rgb[1],rgb[2],rgb[3]);local base=Color3.new(1,1,1)
 	if stale then base=Color3.fromRGB(112,112,112);tint=base end
@@ -111,6 +113,7 @@ function Art.update(art:any,side:number,stale:boolean,built:number,light:any,id:
 	local constructing=mode=="construction"
 	-- Resting-art fade remains an optional-memory/old-asset fallback while a source stage prepares.
 	local alpha=if stale then .22 elseif built<1 then .55*(1-math.clamp(built,0,1)) else 0
+	Factory.sync(art.factory,built,stale,production,id,base,tint,alpha)
 	if art.body then art.body.ImageColor3=base;art.body.ImageTransparency=alpha;art.body.Visible=not constructing end
 	if art.paint then art.paint.ImageColor3=tint;art.paint.ImageTransparency=alpha;art.paint.Visible=not constructing end
 	if art.night then art.night.ImageTransparency=if stale or built<1 then 1 else 1-light.night*data.nightAlpha end
@@ -146,6 +149,7 @@ function Art.update(art:any,side:number,stale:boolean,built:number,light:any,id:
 	end
 end
 function Art.reset()
+	Factory.reset()
 	for _,s in sheets do Memory.release(s.image) end;table.clear(sheets);table.clear(jobs)
 	Effects.configure(data)
 end

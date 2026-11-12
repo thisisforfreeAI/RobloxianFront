@@ -116,11 +116,10 @@ function Admin.handle(sim: any, player: Player, side: number, raw: any): string
 		return if op=="townFire" then `Ignited {count} nearby roofs` else `Ignited {count} nearby trees`
 	elseif op == "rebuildFires" then
 		if not sim.houseFires and not sim.forestFires then return "House fire data unavailable on this map" end
-		if sim.houseFires then sim.houseFires.reset() end
 		if sim.forestFires then sim.forestFires.reset() end
 		if sim.groundScorch then sim.groundScorch.reset() end
 		if sim.fireImpacts then sim.fireImpacts.reset() end
-		return "Fire damage rebuilt"
+		return "Forest and ground reset; houses stay ruined until next match"
 	elseif op == "oil" then
 		local amount = tonumber(raw.amount)
 		local s = sim.sides[side]

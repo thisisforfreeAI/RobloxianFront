@@ -9,8 +9,8 @@ function World.new(settings:any,map:any,context:any):any
 	local ctx=table.clone(map)
 	ctx.random=context.random
 	ctx.onScar=context.onScar
-	-- Owner-requested rule: burned map buildings stay ruined until an explicit fire-damage reset.
-	ctx.autoRebuild=false
+	-- Owner-requested match rule: no timed, manual or admin restoration of burned-down houses.
+	ctx.autoRebuild=false;ctx.permanentRuins=true
 	ctx.rain=function(_x,_y)
 		-- APPROX: the admin weather covers the whole map; original spatial fronts remain unported.
 		local weather=context.weather();return if weather=="downpour" or weather=="storm" then 1 else 0
@@ -40,7 +40,9 @@ function World.new(settings:any,map:any,context:any):any
 	end
 	function self.igniteAt(x:number,y:number):number return self.model.igniteAt(x,y) end
 	function self.reset()
-		self.model.reset();self.epoch+=1;self.acc=0;self.lastTime=context.time();self.sampleTime=self.lastTime
+		-- A new World starts the next match clean. A mid-match fire reset cannot erase these ruins.
+		if self.model.reset()==false then return false end
+		self.epoch+=1;self.acc=0;self.lastTime=context.time();self.sampleTime=self.lastTime
 	end
 	function self.view(previous:any?,visible:(number,number)->boolean):(any,any)
 		local reset=not previous or previous.epoch~=self.epoch

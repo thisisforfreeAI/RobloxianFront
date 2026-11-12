@@ -19,9 +19,9 @@ return function(test:any,eq:any)
 		local modules:any={world={},codec={base64Decode=function() return buffer.create(0) end},inflate={raw=function(_,_,checkpoint)
 			if h.slow then for _=1,8 do h.time+=.001;checkpoint() end end
 			return buffer.create(64)
-		end},memory=memory,art=data,effects={configure=function() end,step=function() end,attach=function() return {} end,request=function(_,_,hp,maxHp,stale) h.effectHp=hp;h.effectMax=maxHp;return if stale then nil else h.effectMode end}}
+		end},memory=memory,art=data,factory={attach=function() return {} end,step=function() end,reset=function() end,sync=function(_,_,_,sample) h.factorySample=sample end},effects={configure=function() end,step=function() end,attach=function() return {} end,request=function(_,_,hp,maxHp,stale) h.effectHp=hp;h.effectMax=maxHp;return if stale then nil else h.effectMode end}}
 		local env:any=setmetatable({game={GetService=function() return {WaitForChild=function() return shared end} end},
-			script={Parent={ImageMemory="memory",StructureEffects="effects",Parent={FindFirstChild=function() return assets end}}},require=function(key) if bad and key=="art" then error("bad local art") end;return assert(modules[key],key) end,
+			script={Parent={ImageMemory="memory",StructureEffects="effects",FactoryRenderer="factory",Parent={FindFirstChild=function() return assets end}}},require=function(key) if bad and key=="art" then error("bad local art") end;return assert(modules[key],key) end,
 			Instance={new=instance},Vector2=roblox.Vector2,UDim2=roblox.UDim2,Color3=roblox.Color3,
 			Enum={NormalId={Top=1},SurfaceGuiSizingMode={FixedSize=1},ResamplerMode={Pixelated=1}},Content={fromObject=function(image) return image end},
 			os={clock=function() return h.time end},warn=function() h.warnings+=1 end},{__index=getfenv()})
@@ -138,6 +138,15 @@ return function(test:any,eq:any)
 		h.effectMode="damage";h.art.update(art,1,false,1,light,5,20,100);eq(art.body.ImageTransparency,0)
 		eq(art.night.ZIndex,3);eq(art.dish.base.ZIndex,4)
 		h.art.update(art,1,true,1,light,5,1,1);assert(art.body.ImageTransparency<1)
+	end)
+
+	test("factory production samples reach animation without exposing them on remembered structures",function()
+		local h=fixture();h.art.attach({},"hq","coalition");h:flush(true);local art=h.art.attach({},"hq","coalition")
+		local sample={1,2};h.art.update(art,1,false,1,{night=0,shadow={0,1},shadowAlpha=1},1,100,100,0,sample)
+		eq(h.factorySample,sample)
+		local r=renderer();r.renderer.apply(1,{{1,"factory",1,5,5,100,100,0,0,0,1,0,"coalition",sample}})
+		eq(r.renderer.each()[1].production,sample)
+		r.renderer.apply(2,{{1,"factory",1,5,5,1,1,0,0,0,1,1,"coalition"}});eq(r.renderer.each()[1].production,nil)
 	end)
 
 end

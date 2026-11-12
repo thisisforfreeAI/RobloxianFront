@@ -21,5 +21,5 @@ function object(name,context={}){
 const atlas=object('I1'),coalition=object('eU'),republic=object('qht',{eU:coalition}),look=object('Ji',{k0:Math.PI*2});
 const damage=object('bl');damage.fire={spots:damage.fire.spots,defenceSpots:damage.fire.defenceSpots};
 const dither=source.match(/gXt=(\[[\d,]+\])/);if(!dither)throw Error('Missing damage dither');damage.dither=JSON.parse(dither[1]);
-fs.writeFileSync(process.argv[3],JSON.stringify({atlas,positions:{coalition,republic},dish:look.dish,gun:look.gun,artillery:object('R8'),shadow:object('$7'),nightAlpha:look.nightAlpha,construction:object('Qk'),damage}));
+fs.writeFileSync(process.argv[3],JSON.stringify({atlas,positions:{coalition,republic},dish:look.dish,gun:look.gun,factory:look.factory,factoryFps:look.stepFps,artillery:object('R8'),shadow:object('$7'),nightAlpha:look.nightAlpha,construction:object('Qk'),damage}));
 console.log('Exported local structure metadata');

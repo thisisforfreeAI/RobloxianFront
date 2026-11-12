@@ -1,7 +1,7 @@
 """Synthetic regression coverage: ground must never enter a building's caster mask."""
 import unittest,base64,zlib
 from PIL import Image
-from pack_structures import caster_mask,effect_source
+from pack_structures import caster_mask,effect_source,factory_layout
 
 class CasterTests(unittest.TestCase):
     def test_dirt_and_paint_are_not_casters(self):
@@ -37,5 +37,14 @@ class CasterTests(unittest.TestCase):
         self.assertEqual(raw[132:136],bytes(4));self.assertEqual(raw[136:140],bytes((1,0,1,1)))
         self.assertEqual(raw[:64],sheet.crop((0,0,4,4)).tobytes())
         self.assertEqual(raw[64:128],sheet.crop((4,0,8,4)).tobytes())
+
+    def test_factory_source_layout_uses_faction_positions_without_mutating_shared_settings(self):
+        config={'crane':{'sec':6},'weld':{'count':2}}
+        positions={'door':{'x':.5,'y':.75,'w':.4},'crane':{'x':.8,'y':.5,'run':.2},'weld':{'x':.2,'y':.6,'w':.3,'h':.1}}
+        layout=factory_layout(config,positions,3,144,True,12)
+        self.assertTrue(layout['craneOff']);self.assertAlmostEqual(layout['doors'][0][0],-.3)
+        self.assertAlmostEqual(layout['doors'][1][0],.3);self.assertAlmostEqual(layout['doors'][0][2],.6)
+        self.assertAlmostEqual(layout['crane']['run'],.6);self.assertEqual(layout['fps'],12)
+        self.assertEqual(config,{'crane':{'sec':6},'weld':{'count':2}})
 
 if __name__=='__main__':unittest.main()

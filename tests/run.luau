@@ -4355,6 +4355,8 @@ require("./structure_labels")(test, eq)
 require("./structure_art")(test, eq)
 require("./structure_pixels")(test, eq)
 require("./structure_effects")(test, eq)
+require("./factory_motion")(test, eq)
+require("./factory_renderer")(test, eq)
 
 print(`\n{passed} passed, {failed} failed`)
 if failed > 0 then
