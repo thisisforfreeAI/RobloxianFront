@@ -427,6 +427,7 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 			if c.part then shown+=1 elseif c.image then pending+=1 end
 			if c.part and wantedChunks[c] then ready+=1 end
 			if c.image then nativeBytes+=c.iw*c.ih*4 end
+			local old=(c :: any).retiring;if old then nativeBytes+=old.iw*old.ih*4;if old.preview then previewBytes+=buffer.len(old.preview) end end
 			if c.px then sourceBytes+=buffer.len(c.px) end
 			if (c :: any).warmPixels then sourceBytes+=buffer.len((c :: any).warmPixels.pixels) end
 			if (c :: any).preview then previewBytes+=buffer.len((c :: any).preview) end
@@ -448,10 +449,14 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 		end
 		-- Same overview image, with its noon pixels hidden below a shown chunk. Otherwise old
 		-- ground shadows would remain visible through the newly lit chunk's transparent pixels.
-		local accepted=upload(overview,Vector2.new(x,y),Vector2.new(w,h),pixels,{priority=1,key=x..":"..y})
+		local accepted=upload(overview,Vector2.new(x,y),Vector2.new(w,h),pixels,{priority=1,key=x..":"..y,done=function(ok)
+			if ok and alive then (c :: any).overviewShown=not covered end
+		end})
 		;(c :: any).overviewRetry=if accepted then nil else covered
 	end
 	local function unload(c: Chunk,discard:boolean?)
+		local old=(c :: any).retiring
+		if old then old.part:Destroy();ImageMemory.release(old.image);(c :: any).retiring=nil;coverOverview(c,false) end
 		if c.image and ImageMemory.cancelUploads then ImageMemory.cancelUploads(c.image) end
 		(c :: any).uploading=nil
 		(c :: any).preview=nil
@@ -476,18 +481,34 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 			loaded -= 1
 		end
 	end
+	local function retire(c:Chunk)
+		if not c.part or not c.image then unload(c);return end
+		if ImageMemory.cancelUploads then ImageMemory.cancelUploads(c.image) end
+		(c :: any).retiring={part=c.part,label=(c :: any).label,image=c.image,iw=c.iw,ih=c.ih,preview=(c :: any).preview}
+		c.part,c.image=nil,nil;(c :: any).preview=nil;loaded-=1
+	end
+	local function rollback(c:Chunk)
+		local old=(c :: any).retiring;(c :: any).retiring=nil
+		unload(c,true)
+		if old then c.part,c.image,c.iw,c.ih=old.part,old.image,old.iw,old.ih;(c :: any).label=old.label;(c :: any).preview=old.preview;loaded+=1 end
+	end
 	local function writeChunk(c:Chunk,pixels:buffer,priority:number):boolean
 		local image=c.image;if not image then return false end
 		return upload(image,Vector2.zero,Vector2.new(c.iw,c.ih),pixels,{priority=priority,done=function(ok)
 			if not alive or c.image~=image then return end
 			(c :: any).uploading=nil
-			if not ok then unload(c,true);return end
+			if not ok then rollback(c);return end
 			(c :: any).preview=if c.iw<c.w then pixels else nil
 			if not c.part then
 				local size=Vector2.new(c.iw,c.ih)
-				local part,label=imagePart(c.name,c.cx,c.cy,c.cw,c.ch,size,HEIGHT+.01,true)
-				label.ImageContent=Content.fromObject(image);part.Parent=folder;c.part=part
-				coverOverview(c,true)
+				local old=(c :: any).retiring
+				if old then
+					old.label.Parent.CanvasSize=size;old.label.ImageContent=Content.fromObject(image)
+					c.part=old.part;(c :: any).label=old.label;(c :: any).retiring=nil;ImageMemory.release(old.image)
+				else
+					local part,label=imagePart(c.name,c.cx,c.cy,c.cw,c.ch,size,HEIGHT+.01,true)
+					label.ImageContent=Content.fromObject(image);part.Parent=folder;c.part=part;(c :: any).label=label;coverOverview(c,true)
+				end
 			end
 		end})
 	end
@@ -549,12 +570,12 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 			iw, ih = math.ceil(c.w / stride), math.ceil(c.h / stride)
 			image = takeImage(iw, ih)
 		end
-		if not image then return false end
+		if not image then rollback(c);return false end
 		c.px, c.patch, c.frame = source, oldPatch, oldFrame
 		c.image,c.iw,c.ih=image,iw,ih;(c :: any).uploading=true
 		loaded += 1
 		local ok,accepted=pcall(writeChunk,c,ready or pixelsAt(c,stride),1)
-		if not ok or not accepted then unload(c,true);return false end
+		if not ok or not accepted then rollback(c);return false end
 		return true
 	end
 	local function drainPool()
@@ -694,7 +715,7 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 		if detail and #want>0 and ImageMemory.detailHeadroom then
 			local held=pooledBytes;local visibleHeld=0;local visible={}
 			for _,c in want do visible[c]=true;if c.image then visibleHeld+=c.iw*c.ih*4 end end
-			for _,c in chunks do if c.image then held+=c.iw*c.ih*4 end end
+			for _,c in chunks do if c.image then held+=c.iw*c.ih*4 end;local old=(c :: any).retiring;if old then held+=old.iw*old.ih*4 end end
 			local allowance=ImageMemory.detailHeadroom(held)
 			stride=TownDetail.fitStride(stride,want,TILE_PX,allowance)
 			if TownDetail.bytes(want,stride,TILE_PX)>ImageMemory.detailHeadroom(visibleHeld) then
@@ -728,13 +749,16 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 		local inflated = false
 		for _, c in want do
 			c.used = clock
+			if (c :: any).retiring then continue end -- keep one transition intact through rapid zoom changes
 			local upgrading=false
 			if c.image then
 				local targetW, targetH = math.ceil(c.w / stride), math.ceil(c.h / stride)
 				if targetW < c.iw then
-					unload(c); drainPool() -- return the larger allocation before creating the smaller one
+					if ImageMemory.canDetail(Vector2.new(targetW,targetH)) then retire(c)
+					elseif c.part and not (c :: any).overviewShown then coverOverview(c,false);continue
+					else unload(c);drainPool() end
 				elseif targetW>c.iw and allReady and now-steadySince>=.35 and now-lastUpgrade>=.35
-					and (if ImageMemory.detailHeadroom then ImageMemory.detailHeadroom(c.iw*c.ih*4)>=targetW*targetH*4 else ImageMemory.canDetail(Vector2.new(targetW,targetH))) then
+					and ImageMemory.canDetail(Vector2.new(targetW,targetH)) then
 					if not c.px and not dynamic(c) then
 						local warm=(c :: any).warmPixels
 						if warm then c.px,c.w,c.h,c.frame,c.patch=warm.pixels,warm.w,warm.h,baseFrame,nil;(c :: any).warmPixels=nil
@@ -743,7 +767,7 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 					end
 					lastUpgrade=now
 					upgrading=true
-					unload(c); drainPool()
+					retire(c)
 				elseif c.frame ~= frame and c.missed ~= frame then
 					relight(c, frame)
 					if not c.px and not (c :: any).preview then break end

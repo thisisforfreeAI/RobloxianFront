@@ -3130,3 +3130,48 @@ only), and Rojo build passes. Four new regressions cover yielding without partia
 cancellation/error propagation and strict size validation, exact output across actual source
 Huffman/backreferences, and the actual town retaining its preview through yielded warmup then
 cancelling cleanly on map teardown. **Studio B209-B210 have not been run.**
+
+## Town replacement continuity and batched city windows (2026-11-11)
+
+The owner's next report was a brief flash during detail loading, occasional slow transitions and
+odd lighting in large cities. Funded town LOD changes now retain the existing visible Part and
+ImageLabel while the new native image waits for its queued upload. After a successful write,
+the same label binds the replacement and releases the old image. Failed allocation/submission/
+write rolls back to the old preview. Both images count toward the budget during a transition;
+upgrades require enough headroom to retain the old one. This supersedes the earlier replacement
+credit policy: full detail can wait when the device cannot hold both images. Funded downgrades
+use the same handoff; an unfunded downgrade first waits for its overview fallback upload before
+dropping the old detail. Forced reclaim may still reduce quality. No native memory limit rose.
+
+City side-window fragments now share world-anchored, 64-source-pixel canvases instead of a
+coplanar Part/SurfaceGui for every padded fragment. The canvases do not overlap; any fragment
+crossing a boundary is drawn on both sides and clipped to its owning rectangle. All masonry is
+ordered below all emission within each canvas, so adjacent dark wall fragments cannot sort over
+each other's glow. The existing shared full/half atlas, roof exclusions, source coordinates,
+occupancy/flicker selection, damage checks and emission gain remain. Batching permits a bounded
+4096-fragment selection instead of 768. It still prioritizes nearby fragments if that cap is
+exceeded. Canvas creation retains the existing soft 3 ms selection-update budget. There are
+more ImageLabels at the higher cap; actual CPU/GPU/memory cost still needs native profiling.
+A synthetic 1024-fragment view uses nine canvases rather than 1024 separate window Parts.
+
+APPROX: pane occupancy switches and entry visibility now approach their targets with a 0.18 s
+exponential response. Selection/target updates remain at 10 Hz; active fades advance on every
+Heartbeat and settled panes stop receiving redundant transparency writes. Page brightness and
+fragment colors update only when their correction changes. Zoom visibility still follows the
+existing source-derived near thresholds. Damage removes affected views immediately; projected
+masonry remains when a normal occupancy switch turns the pane off.
+
+A spatial coarse-window gain snapshot also prevents a prepared subset of detail from globally
+suppressing hypothetical coarse windows elsewhere. It changes only the window channel, keeping
+road/pool/city glow intact. Current generated facade maps already have a zero coarse-window
+channel, so this compatibility fix is not evidence for the screenshot's current lighting issue.
+Zero-energy windows skip the gain lookup. No original art/data was regenerated or changed.
+
+Verified on installed files: **484 Lune tests passed, 0 failed**, changed Luau compiles (syntax
+only), and Rojo build passes. Seven new regressions cover retained same-Part town swaps and
+failed-write rollback; local window coverage/snapshot ownership; unchanged road/distant energy;
+dense canvas sharing and layer order; exact seam coverage; and between-tick fade completion.
+The bounded selection regression also compares the 4096 nearest results against a full sort.
+**Studio B211-B213 have not been run.** These changes address concrete transition and composition
+problems; automated fixtures do not establish native FPS, eliminate every flash, or prove a
+pixel-identical night appearance. Restart Play after Rojo sync before comparing the reported view.

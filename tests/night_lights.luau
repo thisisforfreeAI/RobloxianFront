@@ -83,16 +83,16 @@ return function(test:any,eq:any)
 	end)
 	test("bounded window selection keeps the same nearest visible fragments as a complete sort",function()
 		local points={}
-		for y=0,49 do for x=0,49 do table.insert(points,{x*14,y*14,x*3,y*3,0}) end end
+		for y=0,99 do for x=0,99 do table.insert(points,{x*14,y*14,x*3,y*3,0}) end end
 		local items=Windows.prepare(points,config,function() return .2 end)
-		local selected=Windows.visible(items,14,21,28,18,19)
+		local selected=Windows.visible(items,14,51,58,48,49)
 		local expected={}
 		for _,item in items do
 			local x,y=(item.point[1]+6)/14,(item.point[2]+6)/14
-			if math.abs(x-21)<=19 and math.abs(y-28)<=20 then table.insert(expected,{item=item,distance=(x-21)^2+(y-28)^2}) end
+			if math.abs(x-51)<=49 and math.abs(y-58)<=50 then table.insert(expected,{item=item,distance=(x-51)^2+(y-58)^2}) end
 		end
 		table.sort(expected,function(a,b) return if a.distance==b.distance then a.item.id<b.item.id else a.distance<b.distance end)
-		eq(#selected,Windows.MAX_VISIBLE)
+		eq(#selected,math.min(#expected,Windows.MAX_VISIBLE))
 		for i,item in selected do eq(item.item.id,expected[i].item.id) end
 	end)
 	test("coarse window energy respects material coverage and fades out independently of city glow",function()

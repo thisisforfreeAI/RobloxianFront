@@ -14,12 +14,25 @@ local Memory=require(script.Parent.ImageMemory)
 local Daylight=require(script.Parent.DaylightController)
 local Renderer={}
 local EMISSION_GAIN=2.4 -- APPROX owner request: more noticeable window/lamp glow.
+local PAGE=64 -- APPROX canvas batching; shared atlas and source fragment positions stay unchanged.
 function Renderer.start(data:any,profile:any,parent:Instance,born:number,damage:any?):any
 	local state:any={ready=false,fade=0}
+	local coverage={}
+	state.windowGain=function()
+		local snapshot=coverage
+		return function(x,y) return 1-(snapshot[x..":"..y] or 0) end
+	end
 	if not data or not profile.city then return state end
 	local folder=Instance.new("Folder");folder.Name="BuildingWindows";folder.Parent=parent
 	local items=Windows.prepare(data.points,profile,Noise.hash21)
 	local views:{[number]:any}={}
+	local pages:{[string]:any}={}
+	local changing:{[number]:any}={}
+	state.stats=function()
+		local fragments,canvases,animating=0,0,0
+		for _ in views do fragments+=1 end;for _ in pages do canvases+=1 end;for _ in changing do animating+=1 end
+		return {fragments=fragments,canvases=canvases,animating=animating,limit=Windows.MAX_VISIBLE}
+	end
 	local damageCache:any={}
 	local image:EditableImage?=nil
 	local imageDivisor=1
@@ -27,36 +40,75 @@ function Renderer.start(data:any,profile:any,parent:Instance,born:number,damage:
 	local retry=0
 	local creating:Part?=nil
 	local function release()
-		for _,v in views do v.part:Destroy() end;table.clear(views)
+		coverage={}
+		for _,page in pages do page.part:Destroy() end
+		table.clear(pages);table.clear(views);table.clear(changing)
 		Memory.release(image);image=nil;state.ready=false;state.fade=0
 	end
-	local function create(item:any):any
-		local p=item.point;local scale=data.pixelsPerCell
-		local part=Instance.new("Part");part.Name="Window_"..item.id
+	local function pageAt(x:number,y:number):any
+		local key=x..":"..y
+		if pages[key] then return pages[key] end
+		local scale=data.pixelsPerCell
+		local part=Instance.new("Part");part.Name="WindowPage_"..key
 		creating=part;part.Parent=folder
 		part.Anchored=true;part.CanCollide=false;part.CanTouch=false;part.CanQuery=false;part.CastShadow=false;part.Transparency=1
-		part.Size=Vector3.new(data.slot/scale*World.STUDS_PER_CELL,.01,data.slot/scale*World.STUDS_PER_CELL)
-		part.CFrame=CFrame.new((p[1]+data.slot/2)/scale*World.STUDS_PER_CELL,World.GROUND_Y+.245,(p[2]+data.slot/2)/scale*World.STUDS_PER_CELL)*CFrame.Angles(0,World.TOP_GUI_YAW,0)
+		part.Size=Vector3.new(PAGE/scale*World.STUDS_PER_CELL,.01,PAGE/scale*World.STUDS_PER_CELL)
+		part.CFrame=CFrame.new((x*PAGE+PAGE/2)/scale*World.STUDS_PER_CELL,World.GROUND_Y+.245,(y*PAGE+PAGE/2)/scale*World.STUDS_PER_CELL)*CFrame.Angles(0,World.TOP_GUI_YAW,0)
 		local gui=Instance.new("SurfaceGui");gui.Face=Enum.NormalId.Top;gui.SizingMode=Enum.SurfaceGuiSizingMode.FixedSize
 		gui.Parent=part
-		gui.CanvasSize=Vector2.new(data.slot,data.slot);gui.LightInfluence=0;gui.AlwaysOnTop=false;gui.MaxDistance=0
-		local function layer(index:number):ImageLabel
+		gui.CanvasSize=Vector2.new(PAGE,PAGE);gui.LightInfluence=0;gui.AlwaysOnTop=false;gui.MaxDistance=0
+		-- Adjacent pages never overlap. Crossing fragments are repeated and clipped at the seam.
+		-- Masonry is composited before every emission in this canvas, avoiding coplanar GUI sorting.
+		local clip=Instance.new("Frame");clip.BackgroundTransparency=1;clip.BorderSizePixel=0
+		clip.Size=UDim2.fromScale(1,1);clip.ClipsDescendants=true;clip.Parent=gui
+		local page={part=part,gui=gui,clip=clip,x=x,y=y,key=key,refs=0}
+		pages[key]=page;creating=nil;return page
+	end
+	local function create(item:any):any
+		local p=item.point;local layers={}
+		local function layer(page:any,index:number,z:number):ImageLabel
 			local label=Instance.new("ImageLabel");label.BackgroundTransparency=1;label.Size=UDim2.fromScale(1,1)
-			label.Parent=gui
+			label.Size=UDim2.fromScale(data.slot/PAGE,data.slot/PAGE)
+			label.Position=UDim2.fromScale((p[1]-page.x*PAGE)/PAGE,(p[2]-page.y*PAGE)/PAGE)
+			label.BorderSizePixel=0;label.ZIndex=z;label.Parent=page.clip
 			label.ImageContent=Content.fromObject(image :: EditableImage)
 			label.ImageRectOffset=Vector2.new((index%data.perRow)*data.slot/imageDivisor,math.floor(index/data.perRow)*data.slot/imageDivisor)
 			label.ImageRectSize=Vector2.new(data.slot/imageDivisor,data.slot/imageDivisor);label.ResampleMode=Enum.ResamplerMode.Default
-			label.ImageTransparency=1;label.Parent=gui;return label
+			label.ImageTransparency=1;return label
 		end
-		local face=if p[6]~=nil and p[6]>=0 then layer(p[6]) else nil
-		-- Preserve dark masonry while increasing the emission layer in the same SurfaceGui.
-		if face then
-			local gain=1.4/EMISSION_GAIN
-			face.ImageColor3=Color3.new(.035*gain,.032*gain,.028*gain)
+		for y=math.floor(p[2]/PAGE),math.ceil((p[2]+data.slot)/PAGE)-1 do
+			for x=math.floor(p[1]/PAGE),math.ceil((p[1]+data.slot)/PAGE)-1 do
+				local page=pageAt(x,y);page.refs+=1
+				local face=if p[6]~=nil and p[6]>=0 then layer(page,p[6],1) else nil
+				if face then
+					local gain=1.4/EMISSION_GAIN
+					face.ImageColor3=Color3.new(.035*gain,.032*gain,.028*gain)
+				end
+				table.insert(layers,{page=page,label=layer(page,p[5],2),face=face})
+			end
 		end
-		local label=layer(p[5])
-		creating=nil
-		return {part=part,gui=gui,label=label,face=face,item=item}
+		local view={layers=layers,item=item,strength=0,reveal=0,target=0,opacity=0}
+		changing[item.id]=view;return view
+	end
+	local function remove(id:number,v:any)
+		for _,layer in v.layers do
+			layer.label:Destroy();if layer.face then layer.face:Destroy() end
+			local page=layer.page;page.refs-=1
+			if page.refs==0 then page.part:Destroy();pages[page.key]=nil end
+		end
+		views[id]=nil;changing[id]=nil
+	end
+	local function animate(dt:number)
+		local step=1-math.exp(-dt/.18)
+		for id,v in changing do
+			v.strength+=(v.target-v.strength)*step;v.reveal+=(1-v.reveal)*step
+			local settled=math.abs(v.strength-v.target)<.002 and v.reveal>.998
+			if settled then v.strength=v.target;v.reveal=1;changing[id]=nil end
+			for _,layer in v.layers do
+				layer.label.ImageTransparency=1-v.opacity*v.strength
+				if layer.face then layer.face.ImageTransparency=1-v.opacity*v.reveal end
+			end
+		end
 	end
 	local acc=0
 	local function update(dt:number)
@@ -70,8 +122,9 @@ function Renderer.start(data:any,profile:any,parent:Instance,born:number,damage:
 		local px=camera.ViewportSize.Y/(2*ry)
 		local fade=Windows.fade(px,profile.city)
 		if fade<=0 then
+			coverage={}
 			state.fade=0
-			for _,v in views do v.gui.Enabled=false end
+			for _,page in pages do page.gui.Enabled=false end
 			return
 		end
 		if not image then
@@ -88,7 +141,7 @@ function Renderer.start(data:any,profile:any,parent:Instance,born:number,damage:
 			if not ok then release();retry=math.huge;warn("[NightWindows] Local atlas unavailable:",err);return end
 			state.ready=true
 		end
-		local wanted={}
+		local wanted={};local nextCoverage={}
 		local eligible:any=nil
 		if damage and damage.any() then
 			local version=damage.version()
@@ -97,6 +150,7 @@ function Renderer.start(data:any,profile:any,parent:Instance,born:number,damage:
 				if not cached or cached.version~=version then
 					cached={version=version,blocked=Windows.damaged(item,data.pixelsPerCell,profile.fine,damage.blocked)};damageCache[item.id]=cached
 				end
+				if cached.blocked then nextCoverage[item.point[3]..":"..item.point[4]]=1 end
 				return not cached.blocked
 			end
 		end
@@ -106,22 +160,33 @@ function Renderer.start(data:any,profile:any,parent:Instance,born:number,damage:
 			local item=entry.item;wanted[item.id]=true
 			if not views[item.id] and os.clock()-began<.003 then views[item.id]=create(item) end
 		end
-		for id,v in views do if not wanted[id] then v.part:Destroy();views[id]=nil end end
+		for id,v in views do if not wanted[id] then remove(id,v) end end
 		local clock=os.clock()-born
 		local correction=Pixels.compensate(Daylight.postEffect(),profile.color)
-		for _,v in views do
-			v.gui.Enabled=true;v.gui.Brightness=correction.brightness*EMISSION_GAIN
-			v.label.ImageColor3=Color3.new(correction.color[1],correction.color[2],correction.color[3])
-			v.label.ImageTransparency=if Windows.on(v.item,profile,clock,Noise.hash21) then 1-night*fade else 1
-			if v.face then v.face.ImageTransparency=1-night*fade end -- Wall stays visible when its window switches off.
+		for _,page in pages do
+			page.gui.Enabled=true
+			if page.brightness~=correction.brightness then page.gui.Brightness=correction.brightness*EMISSION_GAIN;page.brightness=correction.brightness end
 		end
+		for _,v in views do
+			local c=correction.color
+			if not v.color or c[1]~=v.color[1] or c[2]~=v.color[2] or c[3]~=v.color[3] then
+				local color=Color3.new(c[1],c[2],c[3]);v.color=c
+				for _,layer in v.layers do layer.label.ImageColor3=color end
+			end
+			local target=if Windows.on(v.item,profile,clock,Noise.hash21) then 1 else 0
+			-- APPROX temporal adaptation: soften occupancy switches and camera-entry pop-in.
+			if v.target~=target or v.opacity~=night*fade then changing[v.item.id]=v end
+			v.target=target;v.opacity=night*fade
+			if v.item.phase>=0 then nextCoverage[v.item.point[3]..":"..v.item.point[4]]=fade*v.strength end
+		end
+		coverage=nextCoverage
 		-- Keep coarse coverage until all selected fragments exist; no empty camera-pan interval.
 		local complete=true
 		for _,entry in selected do if not views[entry.item.id] then complete=false;break end end
 		state.fade=if complete then fade else 0
 	end
 	local connection=RunService.Heartbeat:Connect(function(dt)
-		local ok,err=pcall(update,dt)
+		local ok,err=pcall(function() update(dt);animate(dt) end)
 		if not ok then
 			if creating then creating:Destroy();creating=nil end
 			-- Stop this optional layer once, releasing partial views, instead of failing every heartbeat.

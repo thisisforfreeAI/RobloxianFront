@@ -25,7 +25,7 @@ function Lights.prepare(fields:buffer,w:number,h:number,config:any,hash:(number,
 	local slots=buffer.create(count*4);buffer.fill(slots,0,255)
 	return {fields=fields,w=w,h=h,count=count,indices=compact,phase=compactPhases,slots=slots,on=buffer.create(count)}
 end
-function Lights.paint(state:any,config:any,clock:number,near:number,divisor:number,hash:(number,number)->number,checkpoint:(()->())?,windowGain:number?):buffer
+function Lights.paint(state:any,config:any,clock:number,near:number,divisor:number,hash:(number,number)->number,checkpoint:(()->())?,windowGain:any?):buffer
 	assert(divisor==1 or divisor==2,"unsupported light resolution")
 	local width,height=math.ceil(state.w/divisor),math.ceil(state.h/divisor)
 	local out=buffer.create(width*height*4)
@@ -46,7 +46,8 @@ function Lights.paint(state:any,config:any,clock:number,near:number,divisor:numb
 			window=buffer.readu8(state.on,n)
 		end
 		local at=index*4
-		local amount=window*buffer.readu8(state.fields,at)/255*(windowGain or 1)+buffer.readu8(state.fields,at+1)/255*road+buffer.readu8(state.fields,at+2)/255*near+buffer.readu8(state.fields,at+3)/255*config.glow
+		local gain=if window==0 then 0 elseif type(windowGain)=="function" then windowGain(x,y) else windowGain or 1
+		local amount=window*buffer.readu8(state.fields,at)/255*gain+buffer.readu8(state.fields,at+1)/255*road+buffer.readu8(state.fields,at+2)/255*near+buffer.readu8(state.fields,at+3)/255*config.glow
 		if amount<=0 then continue end
 		local target=(math.floor(y/divisor)*width+math.floor(x/divisor))*4
 		local alpha=math.floor(amount/Lights.ENERGY*255/(divisor*divisor)+.5)

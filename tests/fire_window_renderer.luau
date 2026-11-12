@@ -30,12 +30,12 @@ return function(test:any,eq:any)
 			Enum={NormalId={Top=0},SurfaceGuiSizingMode={FixedSize=0},ResamplerMode={Default=0}},
 			workspace={CurrentCamera={CFrame=roblox.CFrame.new(28,100,28),FieldOfView=30,ViewportSize=roblox.Vector2.new(800,800)}},os={clock=function() return h.time end}},{__index=getfenv()})
 		h.renderer=luau.load(fs.readFile("src/client/Rendering/NightWindowRenderer.luau"),{environment=env})()
-		function h.start()
-			h.state=h.renderer.start({points={{95,95,21,21,0,1,1}},slot=12,pixelsPerCell=14,perRow=1,width=1,height=1,deflate=""},
+		function h.start(points:any?)
+			h.state=h.renderer.start({points=points or {{95,95,21,21,0,1,1}},slot=12,pixelsPerCell=14,perRow=1,width=1,height=1,deflate=""},
 				{windows=.5,flickerSec=10,fine=3,city={nearFrom=5,nearTo=9},color={1,1,1}},h.parent,0,{
 					blocked=function() h.queries=(h.queries or 0)+1;return h.blocked end,any=function() return true end,version=function() return tostring(h.blocked) end})
 		end
-		function h.paint() h.time+=.1;h.heartbeat:fire(.1) end
+		function h.paint(dt:any?) local elapsed=dt or .1;h.time+=elapsed;h.heartbeat:fire(elapsed) end
 		function h.parts() local count=0;for _,o in h.instances do if o.ClassName=="Part" and not o.dead then count+=1 end end;return count end
 		return h
 	end
@@ -49,6 +49,46 @@ return function(test:any,eq:any)
 	test("actual side-window renderer never creates a facade for an already damaged roof",function()
 		local h=fixture();h.blocked=true;h.start();h.paint();eq(h.parts(),0)
 		h.parent:Destroy();eq(h.released,h.created)
+	end)
+	test("city window handoff is spatial and pane switches fade instead of hard popping",function()
+		local h=fixture();h.start();h.paint();h.paint();local gain=h.state.windowGain()
+		assert(gain(21,21)>0 and gain(21,21)<1);eq(gain(200,200),1)
+		local first=gain(21,21);h.paint();assert(h.state.windowGain()(21,21)<first);eq(gain(21,21),first,"paint must own its coverage snapshot")
+		h.blocked=true;h.paint();eq(h.state.windowGain()(21,21),0);h.parent:Destroy()
+	end)
+	test("dense city fragments share clipped canvases and compose every facade below the glow",function()
+		local h=fixture();local points={}
+		for y=0,31 do for x=0,31 do table.insert(points,{20+x*5,20+y*5,x,y,0,1,1}) end end
+		h.start(points);h.paint();eq(h.state.stats().fragments,1024);assert(h.parts()<=16);eq(h.created,1)
+		local faces,lights=0,0
+		for _,o in h.instances do
+			if o.ClassName=="ImageLabel" and not o.dead then
+				assert(o.Parent.ClipsDescendants);eq(o.Parent.Parent.CanvasSize,roblox.Vector2.new(64,64))
+				if o.ZIndex==1 then faces+=1 elseif o.ZIndex==2 then lights+=1 else error("unordered emission") end
+			end
+		end
+		assert(lights>=1024);eq(lights,faces);h.parent:Destroy();eq(h.parts(),0);eq(h.released,1)
+	end)
+	test("a window crossing canvas seams is repeated and clipped with complete nonoverlapping coverage",function()
+		local h=fixture();h.start({{60,60,12,12,0,1,1}});h.paint();eq(h.parts(),4)
+		for y=60,71 do for x=60,71 do
+			local owners=0
+			for _,o in h.instances do
+				if o.ClassName=="ImageLabel" and o.ZIndex==2 and not o.dead then
+					local originX=60-o.Position[1]*64;local originY=60-o.Position[2]*64
+					if x>=originX and x<originX+64 and y>=originY and y<originY+64 then owners+=1 end
+				end
+			end;eq(owners,1)
+		end end
+		h.parent:Destroy();eq(h.parts(),0)
+	end)
+	test("window adaptation advances between selection ticks and stops rewriting settled panes",function()
+		local h=fixture();h.start();h.paint();local label
+		for _,o in h.instances do if o.ClassName=="ImageLabel" and o.ZIndex==2 then label=o end end
+		local before=label.ImageTransparency;h.paint(1/60);assert(label.ImageTransparency<before)
+		for _=1,120 do h.paint(1/60) end
+		eq(h.state.stats().animating,0);local after=label.ImageTransparency;h.paint(1/60);eq(label.ImageTransparency,after)
+		h.parent:Destroy()
 	end)
 	test("window colors avoid unsupported Color3 arithmetic and unexpected failures stop cleanly once",function()
 		local h=fixture();h.start();h.paint();eq(h.parts(),1);eq(h.warnings,0)

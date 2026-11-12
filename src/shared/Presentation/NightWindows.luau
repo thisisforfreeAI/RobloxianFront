@@ -1,7 +1,7 @@
 --!strict
 -- Original fine-cell occupancy/flicker, shared by pixel-shaped building fragments.
 local Windows={}
-Windows.MAX_VISIBLE=768 -- APPROX port rendering cap, not a gameplay/source limit.
+Windows.MAX_VISIBLE=4096 -- APPROX batched-fragment cap; these share spatial canvases, not one Part each.
 function Windows.prepare(points:{any},config:any,hash:(number,number)->number):{any}
 	local out={}
 	for id,p in points do

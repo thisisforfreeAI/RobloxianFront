@@ -129,8 +129,9 @@ function Renderer.start(map:any,parent:Instance?)
 		local cellPixels=World.STUDS_PER_CELL*camera.ViewportSize.Y/(2*dist*math.tan(math.rad(camera.FieldOfView/2)))
 		local near=math.clamp((cellPixels-profile.near.from)/(profile.near.to-profile.near.from),0,1)
 		local clock=(os.clock()-session.born)
-		local windowGain=1-(session.windows and session.windows.fade or 0)
-		local stamp=math.floor(clock*2)..":"..math.floor(near*8+.5)..":"..math.floor(windowGain*8+.5)
+		local windows=session.windows
+		local windowGain=if windows and windows.windowGain then windows.windowGain() else 1-(windows and windows.fade or 0)
+		local stamp=math.floor(clock*2)..":"..math.floor(near*8+.5)..":"..math.floor((windows and windows.fade or 0)*8+.5)
 		if stamp==session.stamp then return end
 		session.stamp=stamp;session.busy=true
 		local epoch,divisor=session.epoch,session.divisor

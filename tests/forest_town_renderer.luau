@@ -53,7 +53,7 @@ return function(test:any,eq:any)
 		end}
 		local dataMap={Forest_test=module(metadata),pixels=module({deflate="sprites"})};local data={FindFirstChild=function(_,name) return dataMap[name] end}
 		local memory={};function memory.create(size,kind) if h.refuse and kind~="core" then return nil end
-			local image:any={size=size};function image:WritePixelsBuffer(position,extent,px) assert(not self.dead);self.last=buffer.tostring(px);self.writes=(self.writes or 0)+1 end
+			local image:any={size=size};function image:WritePixelsBuffer(position,extent,px) assert(not self.dead);if h.failNextWrite then h.failNextWrite=false;error("synthetic replacement failure") end;self.last=buffer.tostring(px);self.writes=(self.writes or 0)+1 end
 			table.insert(h.images,image);return image
 		end
 		h.uploads=require("../src/shared/Presentation/ImageUploads").new(function(image,x,y,w,h,px) image:WritePixelsBuffer(vec(x,y),vec(w,h),px) end,function() return h.now end)
@@ -211,5 +211,23 @@ return function(test:any,eq:any)
 		h.step();h.step();h.step();eq(h.renderer.stats().ready,2);eq(h.renderer.stats().warming,true)
 		local images=#h.images;h.step();eq(h.renderer.stats().ready,2);eq(#h.images,images)
 		h.destroy();for _=1,6 do h.step() end;eq(h.renderer.stats(),nil);eq(#h.images,images);eq(h.warnings,0)
+	end)
+	local function pendingSwap()
+		local h=make();h.useMips=true;h.async=true;assert(h.renderer.build("test",{}));h.step();h.uploads.step();h.uploads.step()
+		local part,label
+		for _,o in h.instances do if o.Name=="City_test_0_0" and not o.dead then part=o end end
+		for _,o in h.instances do if o.ClassName=="ImageLabel" and o.Parent and o.Parent.Parent==part then label=o end end
+		assert(part and label);local old=label.ImageContent
+		for _=1,8 do if #h.images>=3 then break end;h.step() end
+		eq(#h.images,3);return h,part,label,old
+	end
+	test("funded town upgrades keep the same visible part until the new image commits",function()
+		local h,part,label,old=pendingSwap();eq(part.dead,nil);eq(old.dead,nil);eq(label.ImageContent,old)
+		h.uploads.step();eq(part.dead,nil);assert(label.ImageContent~=old);eq(old.dead,true)
+		h.destroy();eq(h.uploads.bytes,0)
+	end)
+	test("failed town replacement rolls back to its existing preview",function()
+		local h,part,label,old=pendingSwap();h.failNextWrite=true;h.uploads.step()
+		eq(part.dead,nil);eq(label.ImageContent,old);eq(old.dead,nil);h.destroy()
 	end)
 end
