@@ -4,7 +4,8 @@
 	calls MemoryStoreService, MessagingService and TeleportService, so it is the part that can only be
 	verified in published servers (see docs/LOBBY_DIRECTORY.md, "Needs published-server testing").
 
-	Not started by anything yet. Integration (see the guide):
+	Started by init.server after MatchService; admission is gated before the match remotes appear.
+	Custom state providers (see the guide):
 		local LobbyServer = require(script.Lobby.LobbyServer)
 		local lobby = LobbyServer.start(function()
 			return { map = "Saddle", players = <seated>, capacity = 2, status = "waiting" | "inProgress" }
@@ -16,6 +17,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local MemoryStoreService = game:GetService("MemoryStoreService")
 local MessagingService = game:GetService("MessagingService")
 local TeleportService = game:GetService("TeleportService")
+local RunService = game:GetService("RunService")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local LobbyDirectory = require(Shared.Lobby.LobbyDirectory)
@@ -58,7 +60,7 @@ local store = {
 		end
 		return ok
 	end,
-	range = function(count: number, after: string?): (boolean, any)
+	range = function(count: number, after: any): (boolean, any)
 		local ok, items = pcall(directory.GetRangeAsync, directory, Enum.SortDirection.Ascending, count, after)
 		if not ok then
 			warn(`[Lobby] GetRangeAsync: {items}`)
@@ -108,18 +110,10 @@ local function teleport(player: Player, route: any, data: any): (boolean, string
 		return false, "bad route"
 	end
 	options:SetTeleportData(data)
-	local lastErr = nil
-	for attempt = 1, 2 do -- one retry for transient failures
-		local ok, err = pcall(TeleportService.TeleportAsync, TeleportService, route.placeId, { player }, options)
-		if ok then
-			return true, nil
-		end
-		lastErr = err
-		if attempt < 2 then
-			task.wait(1)
-		end
-	end
-	return false, tostring(lastErr)
+	-- The client offers an explicit retry. Automatic retries share failure events and can release
+	-- a newer hold after an earlier attempt fails asynchronously.
+	local ok,err=pcall(TeleportService.TeleportAsync,TeleportService,route.placeId,{player},options)
+	return ok,if ok then nil else tostring(err)
 end
 
 local function every(sec: number, fn: () -> any): () -> ()
@@ -178,6 +172,8 @@ function LobbyServer.start(stateFn: () -> any, options: Options?)
 	notice.Parent = folder
 
 	local service = Service.new({
+		enabled = not RunService:IsStudio(),
+		isPresent = function(player) return player.Parent==Players end,
 		store = store,
 		now = os.time, -- UTC unix seconds; servers' clocks are NTP-synced (see the guide's checklist)
 		lobbyId = game.JobId,
@@ -186,21 +182,22 @@ function LobbyServer.start(stateFn: () -> any, options: Options?)
 		accessCode = accessCode,
 		teleport = teleport,
 		isFriend = function(player: Player, userId: number): boolean
-			return player:IsFriendsWith(userId)
+			return player:IsFriendsWithAsync(userId)
 		end,
 		messaging = {
 			publish = function(msg: any)
 				MessagingService:PublishAsync(LobbyServer.TOPIC, msg)
 			end,
 			subscribe = function(cb: (any) -> ())
+				local active=true;local connection:any=nil
 				task.spawn(function()
-					local ok, err = pcall(MessagingService.SubscribeAsync, MessagingService, LobbyServer.TOPIC, function(packet: any)
-						cb(packet.Data)
+					local ok, result = pcall(MessagingService.SubscribeAsync, MessagingService, LobbyServer.TOPIC, function(packet: any)
+						if active then cb(packet.Data) end
 					end)
-					if not ok then
-						warn(`[Lobby] SubscribeAsync: {err}`)
-					end
+					if ok then connection=result;if not active then connection:Disconnect() end
+					else warn("[Lobby] SubscribeAsync unavailable") end
 				end)
+				return function() active=false;if connection then connection:Disconnect() end end
 			end,
 		},
 		every = every,
@@ -235,13 +232,15 @@ function LobbyServer.start(stateFn: () -> any, options: Options?)
 	end
 	folder.Parent = ReplicatedStorage
 
-	TeleportService.TeleportInitFailed:Connect(function(player: Player, result: Enum.TeleportResult, message: string)
-		warn(`[Lobby] TeleportInitFailed {player.UserId}: {result.Name} {message}`)
-		service.teleportFailed(player)
-	end)
+	local connections={}
+	table.insert(connections,TeleportService.TeleportInitFailed:Connect(function(player: Player, _result: Enum.TeleportResult, _message: string,_placeId:number,teleportOptions:any)
+		local ok,data=pcall(function() return teleportOptions:GetTeleportData() end)
+		if ok and type(data)=="table" and type(data.requestId)=="string" then service.teleportFailed(player,data.requestId) end
+	end))
 
 	local function onPlayer(player: Player)
 		local result = service.arrive(player)
+		if player.Parent~=Players then return end
 		if result.admit then
 			if opts.onAdmitted then
 				opts.onAdmitted(player, result)
@@ -254,19 +253,25 @@ function LobbyServer.start(stateFn: () -> any, options: Options?)
 			player:Kick(LobbyDirectory.reasonText(result.reason or "forbidden"))
 		end
 	end
-	Players.PlayerAdded:Connect(onPlayer)
+	-- Set the local state provider before any arrival checks (even if the first write yields).
+	task.spawn(service.start,stateFn)
+	table.insert(connections,Players.PlayerAdded:Connect(onPlayer))
 	for _, player in Players:GetPlayers() do
 		task.spawn(onPlayer, player)
 	end
-	Players.PlayerRemoving:Connect(function(player: Player)
+	table.insert(connections,Players.PlayerRemoving:Connect(function(player: Player)
 		service.leave(player)
-	end)
+	end))
+	local close=service.close
+	function service.close()
+		for _,connection in connections do connection:Disconnect() end;table.clear(connections)
+		folder:Destroy();close()
+	end
 
 	game:BindToClose(function()
 		service.close()
 	end)
 
-	task.spawn(service.start, stateFn)
 	return service
 end
 

@@ -191,8 +191,8 @@ return function(test: any, eq: any)
 		local p = listing({ visibility = "private", hostUserId = 42 })
 		eq(D.checkArrival(p, friendOf(42), NOW).admit, false)
 		local held = D.reserve(listing({ visibility = "friends", hostUserId = 42 }), friendOf(42), NOW, "x") :: any
-		held.visibility = "private" -- host locked it after the seat was held: the hold still counts
-		eq(D.checkArrival(held, friendOf(42), NOW).seat, true)
+		held.visibility = "private" -- A previously valid hold never bypasses current permission.
+		eq(D.checkArrival(held, friendOf(42), NOW).admit, false)
 	end)
 	test("lobby arrival without a seat becomes a spectator; unreadable directory fails open", function()
 		local full = D.checkArrival(listing({ players = 2 }), stranger, NOW)

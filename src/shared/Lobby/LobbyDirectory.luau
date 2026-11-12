@@ -17,7 +17,7 @@
 		name, map    display text
 		players      seated players right now
 		capacity     seats
-		userIds      ids of everyone in the server (to consume reservations and spot double joins)
+		userIds      ids represented in players (consume holds only after actual seating)
 		reservations { [tostring(userId)] = expiry } seats held for players being teleported in
 		status       "waiting" | "inProgress" | "closing"
 		visibility   "public" | "friends" | "private"
@@ -37,7 +37,7 @@ LobbyDirectory.MAX_LIFETIME_SEC = 4 * 3600 -- hard cap on any listing's expiresA
 LobbyDirectory.WAITING_EXPIRY_SEC = 30 * 60 -- a lobby that waits this long without starting is delisted
 LobbyDirectory.RESERVATION_SEC = 60 -- a seat held for a teleporting player
 LobbyDirectory.MAX_RESERVATIONS = 16
-LobbyDirectory.MAX_CAPACITY = 100 -- Roblox's own per-server ceiling for this kind of game
+LobbyDirectory.MAX_CAPACITY = 100 -- directory policy bound; independent of platform server capacity
 LobbyDirectory.MAX_NAME = 40
 LobbyDirectory.MAX_MAP = 32
 LobbyDirectory.MAX_ID = 64
@@ -205,8 +205,13 @@ function LobbyDirectory.wellFormed(l: any): boolean
 		and LobbyDirectory.STATUS[l.status] == true
 		and LobbyDirectory.VISIBILITY[l.visibility] == true
 		and finite(l.updatedAt)
+		and finite(l.createdAt)
 		and finite(l.expiresAt)
 		and type(l.map) == "string"
+		and type(l.name) == "string"
+		and int(l.hostUserId,0,2^53)~=nil
+		and (l.userIds==nil or type(l.userIds)=="table")
+		and (l.reservations==nil or type(l.reservations)=="table")
 end
 
 -- Why a listing should no longer be offered, or nil while it is live.
@@ -506,22 +511,19 @@ function LobbyDirectory.checkArrival(l: any, viewer: Viewer, now: number): { [st
 	if not LobbyDirectory.wellFormed(l) then
 		return { admit = true, seat = true }
 	end
-	local held = l.reservations and l.reservations[tostring(viewer.userId)]
-	if finite(held) and held > now then
-		return { admit = true, seat = true }
-	end
-	if viewer.userId == l.hostUserId then
-		return { admit = true, seat = true }
-	end
-	if l.visibility ~= "public" and not LobbyDirectory.canSee(l, viewer) then
+	local host = viewer.userId == l.hostUserId
+	if not host and l.visibility ~= "public" and not LobbyDirectory.canSee(l, viewer) then
 		return { admit = false, reason = "forbidden" }
 	end
-	if l.visibility == "private" then
+	if not host and l.visibility == "private" then
 		return { admit = false, reason = "forbidden" }
 	end
 	if l.status ~= "waiting" and not l.joinInProgress then
 		return { admit = true, seat = false, reason = "inProgress" }
 	end
+	if l.players>=l.capacity and not present(l,viewer.userId) then return {admit=true,seat=false,reason="full"} end
+	local held = l.reservations and l.reservations[tostring(viewer.userId)]
+	if finite(held) and held > now then return { admit = true, seat = true } end
 	-- The arriving player normally isn't counted yet; if a heartbeat already counted them, don't count
 	-- them against their own seat.
 	local open = LobbyDirectory.openSeats(l, now)
@@ -532,6 +534,19 @@ function LobbyDirectory.checkArrival(l: any, viewer: Viewer, now: number): { [st
 		return { admit = true, seat = false, reason = "full" }
 	end
 	return { admit = true, seat = true }
+end
+
+-- Destination UpdateAsync: direct arrivals also hold a seat until the match handshake seats them.
+-- A mere PlayerAdded must not consume a teleport hold or make that seat available to someone else.
+function LobbyDirectory.claimArrival(l: Listing, viewer: Viewer, now: number): (Listing?, any)
+	local result=LobbyDirectory.checkArrival(l,viewer,now)
+	if not result.admit or not result.seat or present(l,viewer.userId) then return nil,result end
+	local nextL=table.clone(l);nextL.reservations=prune(l.reservations,l.userIds or {},now)
+	local count=0;for _ in nextL.reservations do count+=1 end
+	local key=tostring(viewer.userId)
+	if not nextL.reservations[key] and count>=LobbyDirectory.MAX_RESERVATIONS then return nil,{admit=true,seat=false,reason="full"} end
+	nextL.reservations[key]=now+LobbyDirectory.RESERVATION_SEC
+	return nextL,result
 end
 
 -- The record's key in the store; also accepted from clients, so it is validated the same way.

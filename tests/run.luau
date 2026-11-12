@@ -4382,6 +4382,11 @@ require("./build_preview")(test, eq)
 require("./build_controller")(test, eq)
 require("./coverage_motion")(test, eq)
 require("./coverage_renderer")(test, eq)
+require("./lobby_directory")(test, eq)
+require("./lobby_service")(test, eq)
+require("./lobby_match")(test, eq)
+require("./lobby_browser")(test, eq)
+require("./lobby_adapter")(test, eq)
 
 print(`\n{passed} passed, {failed} failed`)
 if failed > 0 then

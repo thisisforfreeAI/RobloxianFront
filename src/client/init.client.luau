@@ -22,6 +22,7 @@ local DropController = require(script.Input.DropController)
 local Hud = require(script.UI.Hud)
 local RigCard = require(script.UI.RigCard)
 local AdminPanel = require(script.UI.AdminPanel)
+local LobbyBrowser = require(script.UI.LobbyBrowser)
 local Atmosphere = require(script.Rendering.Atmosphere)
 local TerritoryRenderer = require(script.Rendering.TerritoryRenderer)
 local WeatherGround = require(script.Rendering.WeatherGround)
@@ -73,10 +74,11 @@ do
 	GhostOverlay.start()
 	AirOverlay.start(info.side)
 	local function send(payload: any)
+		if LobbyBrowser.isOpen() then return end
 		intent:FireServer(payload)
 	end
 	local rigRules = Rules.new(require(Shared:WaitForChild("GameData").RulesMatch) :: any)
-	BuildController.start(map.width, send,{map=map,rules=rigRules.data,structures=StructureRenderer.each,side=info.side})
+	BuildController.start(map.width, send,{map=map,rules=rigRules.data,structures=StructureRenderer.each,side=info.side,blocked=LobbyBrowser.isOpen})
 	DropController.start(send)
 	-- N switches your night operations towers on or off (the game's nvOff); with bomb trucks
 	-- selected N blows them up instead
@@ -101,6 +103,7 @@ do
 		tankMult = rigRules:number("rigs.upgrades.tank.mult"), baseTank = rigRules:number("rigs.tank"),
 	})
 	AdminPanel.start(send) -- the owner's test panel; stays hidden unless the server says admin
+	LobbyBrowser.start({onOpen=BuildController.cancel})
 	Atmosphere.start()
 	stateEvent.OnClientEvent:Connect(function(state)
 		BuildController.update(state)
@@ -180,7 +183,7 @@ do
 	local TRENCH_NAMES = { ditch = "Trench kind: ditch (blocks the way)", fire = "Trench kind: fire trench (infantry cross slowly)",
 		traps = "Trench kind: vehicle traps (infantry only)", wire = "Trench kind: wire belt (slows infantry, stops wheels; tanks flatten it)" }
 	SelectionController.start(info.side, send, {
-		busy = BuildController.busy,
+		busy = function() return LobbyBrowser.isOpen() or BuildController.busy() end,
 		onProducer = Hud.selectProducer,
 		digLine = BuildController.beginTrench,
 		cycleTrench = function()

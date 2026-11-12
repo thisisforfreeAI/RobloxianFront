@@ -59,5 +59,11 @@ return function(test:any,eq:any)
 		h:start();eq(part.dead,true);h.controller.begin("barracks");h:click("left");eq(#h.sent,1)
 		h.controller.destroy();h.time=1;eq(h.controller.busy(),false);h.controller.begin("barracks");h:click("left");eq(#h.sent,1)
 	end)
+	test("opening a modal cancels placement and strokes without leaking intents or new hotkey previews",function()
+		local h=fixture();h.options.blocked=function() return h.blocked end;h:start()
+		h.controller.begin("minefield");h:click("left");h.render:fire();h.controller.cancel();h.blocked=true
+		h.input.InputEnded:fire({UserInputType="left"});h.input.InputBegan:fire({KeyCode="B"},false);h.render:fire();h:click("left");eq(#h.sent,0)
+		h.blocked=false;h.controller.begin("barracks");h:click("left");eq(#h.sent,1)
+	end)
 end
 

@@ -62,13 +62,15 @@ return function(test: any, eq: any)
 				w.data[key] = nil
 				return true
 			end,
-			range = function(count: number, after: string?)
+			range = function(count: number, after: any)
+				w.rangeCount=(w.rangeCount or 0)+1
+				assert(after==nil or type(after)=="table","Native GetRangeAsync requires a cursor table")
 				if w.fail then
 					return false, nil
 				end
 				local keys = {}
 				for k in w.data do
-					if live(k) and (after == nil or k > after) then
+					if live(k) and (after == nil or k > after.key) then
 						table.insert(keys, k)
 					end
 				end
@@ -111,6 +113,7 @@ return function(test: any, eq: any)
 			accessCode = opts.accessCode,
 			teleport = function(player: any, route: any, data: any)
 				table.insert(s.teleports, { player = player, route = route, data = data })
+				if s.onTeleport then s.onTeleport(player,data) end
 				return s.tpOk, if s.tpOk then nil else "HTTP 500"
 			end,
 			isFriend = function(player: any, userId: number)
@@ -247,7 +250,7 @@ return function(test: any, eq: any)
 		a.svc.leave(arrived)
 		eq(a.svc.arrival(arrived), nil)
 	end)
-	test("lobby listings of servers that stop heartbeating disappear and get deleted", function()
+	test("stale lobby listings disappear without deleting a possibly refreshed owner's key", function()
 		local w = world()
 		server(w, { lobbyId = "job-a" })
 		local b = server(w, { lobbyId = "job-b", start = false })
@@ -255,8 +258,8 @@ return function(test: any, eq: any)
 		w.t += D.STALE_SEC + 1
 		local res = b.svc.browse(player(), nil)
 		eq(ids(res), "")
-		eq(w.data["job-a"], nil) -- swept
-		eq(b.svc.join(player(), "job-a").reason, "gone")
+		assert(w.data["job-a"]) -- TTL, not another browser, owns physical expiry.
+		eq(b.svc.join(player(), "job-a").reason, "stale")
 	end)
 	test("lobby listings expire on their own, and MemoryStore expiry removes crashed servers", function()
 		local w = world()
@@ -352,7 +355,8 @@ return function(test: any, eq: any)
 		eq(b.svc.join(p, "bad id").reason, "invalid")
 		eq(b.svc.join(p, { "job-a" }).reason, "invalid")
 		local first = b.svc.browse(p, nil)
-		eq(b.svc.browse(p, { map = "Ridge" }), first) -- within cooldown: same answer
+		eq(b.svc.browse(p, nil),first)
+		eq(b.svc.browse(p, { map = "Ridge" }).reason,"busy") -- Never return another filter's rows.
 		eq(b.svc.join(p, "job-a").ok, true)
 		eq(b.svc.join(p, "job-a").reason, "busy")
 		w.t += P.JOIN_COOLDOWN_SEC
@@ -373,4 +377,50 @@ return function(test: any, eq: any)
 		v.svc.heartbeat()
 		eq(next(w.data), nil); eq(#v.warnings, 1)
 	end)
+	test("destination claims direct arrivals atomically and holds seats until the match handshake",function()
+		local w=world();local a=server(w,{lobbyId="job-a",state={userIds={}}});local p,q=player(303),player(304)
+		eq(a.svc.arrive(p).seat,true);eq(a.svc.arrive(q).seat,false)
+		assert(w.raw("job-a").reservations["303"]);a.svc.heartbeat();assert(w.raw("job-a").reservations["303"])
+		a.state.players=2;a.state.userIds={303,42};a.svc.heartbeat();eq(w.raw("job-a").reservations["303"],nil)
+		eq(a.svc.arrive(p).seat,true) -- Idempotent check, not a second seat claim.
+	end)
+	test("arrival enforces current local privacy even while MemoryStore is unavailable",function()
+		local w=world();local a=server(w,{lobbyId="job-a",state={visibility="private",hostUserId=42,userIds={}}})
+		w.fail=true;eq(a.svc.arrive(player(5)).admit,false);eq(a.svc.arrive(player(42)).admit,true)
+	end)
+	test("friends filter resolves friendship for public hosted listings too",function()
+		local w=world();server(w,{lobbyId="job-a",state={hostUserId=42}});local b=server(w,{lobbyId="job-b",start=false})
+		eq(ids(b.svc.browse(player(6),{friendsOnly=true})),"job-a")
+	end)
+	test("directory paging uses native cursor tables and shares a complete cached read",function()
+		local w=world();for i=1,205 do local id=string.format("job-%03d",i);w.data[id]={value=D.makeListing({lobbyId=id,placeId=111,jobId=id,map="Saddle",players=1,capacity=2,status="waiting",visibility="public"},w.t),exp=w.t+60} end
+		local b=server(w,{lobbyId="job-b",start=false});eq(#b.svc.browse(player(),{limit=100}).lobbies,100);eq(w.rangeCount,2)
+		b.svc.browse(player(),nil);eq(w.rangeCount,2)
+	end)
+	test("a yielding join cannot be overlapped by another request after the cooldown",function()
+		local w=world();server(w,{lobbyId="job-a"});local b=server(w,{lobbyId="job-b",start=false});local p=player()
+		local get=w.store.get;w.store.get=function(id) coroutine.yield();return get(id) end
+		local thread=coroutine.create(function() return b.svc.join(p,"job-a") end);assert(coroutine.resume(thread));w.t+=4
+		eq(b.svc.join(p,"job-a").reason,"busy");local ok,r=coroutine.resume(thread);assert(ok);eq(r.ok,true);eq(#b.teleports,1)
+	end)
+	test("late teleport failures cannot release a newer request and synchronous events cannot revive joining",function()
+		local w=world();server(w,{lobbyId="job-a"});local b=server(w,{lobbyId="job-b",start=false});local p=player()
+		b.tpOk=false;eq(b.svc.join(p,"job-a").reason,"teleportFailed");local old=b.teleports[1].data.requestId
+		w.t+=4;b.tpOk=true;eq(b.svc.join(p,"job-a").ok,true);local latest=b.teleports[2].data.requestId
+		b.svc.teleportFailed(p,old);assert(w.raw("job-a").reservations[tostring(p.UserId)])
+		b.svc.teleportFailed(p,latest);eq(w.raw("job-a").reservations[tostring(p.UserId)],nil)
+		w.t+=4;b.onTeleport=function(who,data) b.svc.teleportFailed(who,data.requestId) end
+		eq(b.svc.join(p,"job-a").reason,"teleportFailed")
+	end)
+	test("an in-flight heartbeat cannot republish after close",function()
+		local w=world();local a=server(w,{lobbyId="job-a"});local update=w.store.update
+		w.store.update=function(...) a.svc.close();return update(...) end
+		eq(a.svc.heartbeat(),false);eq(w.raw("job-a"),nil)
+	end)
+	test("heartbeat retries read current seated players instead of an earlier captured count",function()
+		local w=world();local a=server(w,{lobbyId="job-a"});local update=w.store.update
+		w.store.update=function(...) a.state.players=2;a.state.userIds={1,2};return update(...) end
+		a.svc.heartbeat();eq(w.raw("job-a").players,2);eq(#w.raw("job-a").userIds,2)
+	end)
 end
+

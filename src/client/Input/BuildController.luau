@@ -117,6 +117,10 @@ function BuildController.start(mapWidth: number, send: (any) -> (),options:any?)
 	ghost.Parent = workspace
 
 	connect(RunService.RenderStepped,function()
+		if options and options.blocked and options.blocked() then
+			if placing or drawing then BuildController.cancel() end
+			return
+		end
 		if preparing then
 			local ok,err=coroutine.resume(preparing)
 			if not ok then warn("[BuildController] Local preview checks unavailable:",err) end
@@ -178,6 +182,7 @@ function BuildController.start(mapWidth: number, send: (any) -> (),options:any?)
 	end)
 
 	connect(UserInputService.InputBegan,function(input, processed)
+		if options and options.blocked and options.blocked() then return end
 		if not placing then
 			if not processed and KEYS[input.KeyCode] then
 				BuildController.begin(KEYS[input.KeyCode])
@@ -207,6 +212,7 @@ function BuildController.start(mapWidth: number, send: (any) -> (),options:any?)
 	end)
 
 	connect(UserInputService.InputEnded,function(input)
+		if options and options.blocked and options.blocked() then BuildController.cancel();return end
 		if (placing == "minefield" or placing == "trench") and drawing and input.UserInputType == Enum.UserInputType.MouseButton1 then
 			drawing = false
 			local pts = {}
@@ -233,6 +239,12 @@ end
 function BuildController.begin(kind: string)
 	drawing=false
 	placing = kind
+end
+
+function BuildController.cancel()
+	placing=nil;drawing=false;Preview.hide();Coverage.hide();lastPlaced=os.clock()
+	if ghost then ghost.Transparency=1 end
+	for _,part in strokeParts do part.Transparency=1 end
 end
 
 -- engineers dig a trench along the line dragged next

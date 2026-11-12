@@ -43,6 +43,7 @@ local UnitStages = require(Shared.Presentation.UnitStages)
 local TerritoryPixels = require(Shared.Presentation.TerritoryPixels)
 local Bot = require(Shared.Simulation.Bot)
 local Protocol = require(Shared.Protocol.Protocol)
+local MatchLobby = require(Shared.Lobby.MatchLobby)
 local Net = require(script.Parent.Parent.Networking.Net)
 local Admin = require(script.Parent.Admin)
 local GameData = Shared:WaitForChild("GameData", 10)
@@ -449,14 +450,23 @@ end
 
 local function assignSide(player: Player): { [string]: any }
 	local existing = sideOf[player]
-	if not existing then
-		local taken = {}
-		for _, s in sideOf do
-			taken[s] = true
+	if existing==nil then
+		local arrival:any={admit=true,seat=true}
+		if MatchService.directoryRequired then
+			local deadline=os.clock()+10
+			while not MatchService.lobby and player.Parent==Players and os.clock()<deadline do task.wait(.1) end
+			arrival=MatchService.lobby and MatchService.lobby.waitArrival(player,10)
 		end
-		existing = if not taken[1] then 1 elseif not taken[2] then 2 else 0 -- 0 = spectator
+		-- Re-read after yielding: duplicate Join calls must reuse the same side.
+		existing=MatchLobby.side(sideOf,player,arrival,sim.winner~=nil)
+		if player.Parent~=Players then return {map=map.data.id,side=0,width=map.width,height=map.height} end
+		if existing==nil then
+			player:Kick("Lobby admission could not be completed. Please rejoin.")
+			return {map=map.data.id,side=0,width=map.width,height=map.height}
+		end
 		sideOf[player] = existing
 		updateBots()
+		if MatchService.lobby then task.defer(MatchService.lobby.heartbeat) end
 	end
 	return { map = map.data.id, side = existing, width = map.width, height = map.height }
 end
@@ -1323,6 +1333,10 @@ function MatchService.resetView(player:Player)
 	sentWear[player],wearSentAt[player]=nil,nil
 end
 
+function MatchService.enableLobby() MatchService.directoryRequired=true end
+function MatchService.setLobby(lobby:any) MatchService.lobby=lobby end
+function MatchService.lobbyState():any return MatchLobby.state(map,sim,sideOf) end
+
 function MatchService.start(mapModule: string)
 	assert(GameData:FindFirstChild("RulesMatch"), "GameData.RulesMatch missing: rerun tools/conversion/generate_all.py")
 	rules = Rules.new(require(GameData.RulesMatch) :: any)
@@ -1477,6 +1491,7 @@ function MatchService.start(mapModule: string)
 		sentScorch[p] = nil
 		readyView[p] = nil
 		updateBots()
+		if MatchService.lobby then task.defer(MatchService.lobby.heartbeat) end
 	end)
 
 	local step = 1 / Locked["match.tickHz"]

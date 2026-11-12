@@ -1,191 +1,87 @@
-# Cross-server lobby directory
+# Cross-server match browser
 
-A server-side directory of public lobbies across every live server of the experience. Each server publishes its own lobby (map, players/capacity, waiting/in-progress, visibility, expiry); any server can list them for its players and route a player to the right server. Nothing here is wired in yet, so it changes no current behaviour until the steps below are done.
+The directory is connected to server startup, match seating and the client **Matches** button. It discovers available skirmishes across the experience's live servers and joins the selected server. Each server continues its current match. Host creation, ready/start controls, map selection and reserved-server provisioning remain future session work.
 
-**Status: written and unit-tested offline only.** Everything that talks to Roblox services (MemoryStore, MessagingService, TeleportService, friends) still has to be verified in published servers; see [Needs published-server testing](#needs-published-server-testing).
+**Verification:** offline rule/service tests, API-shaped adapter tests, actual match-Join tests and browser state/UI stand-ins pass. Rojo builds. No native Studio visual pass or published two-server test has run. The API-shaped tests exercise our actual adapter but do not establish real Roblox service behavior.
+
+## Using it
+
+- Restart Play after syncing. **Matches**, near the upper right, opens the browser. In Roblox Player it shows map, human seats/capacity, stage and join availability.
+- Filter by open seats, host friendships/friends-only lobbies, waiting stage or map name. Refresh manually or leave it open for automatic refresh. Polling stops when closed. Ordinary public skirmishes currently have hostUserId=0; hosted visibility controls are not exposed by this UI.
+- A join stays pending while travel starts. Full, gone, unavailable and teleport-failure responses remain visible with refresh/retry. Old browse responses cannot replace a newer filter. Closing during an active join is disabled until failure/timeout or travel.
+- Opening cancels placement/strokes and blocks match orders until the browser closes. The skirmish itself continues. This UI allocates no EditableImages.
+- Studio keeps local play working and displays that cross-server matches are available in Roblox Player. It makes no lobby reads, writes or teleports in Studio.
+
+## Integration and status policy
+
+The server entry point enables the admission gate before publishing match remotes, starts the existing Saddle match, then supplies the directory service:
+
+```lua
+MatchService.enableLobby()
+MatchService.start("Saddle")
+MatchService.setLobby(LobbyServer.start(MatchService.lobbyState))
+```
+
+MatchService.lobbyState is a read-only description built by Shared.Lobby.MatchLobby. It returns map, human seat count, capacity=2, actual seated userIds, status, joinInProgress and public visibility. Bots and spectators do not consume directory match seats. Keep a custom state provider non-yielding and valid before admitting players: UpdateAsync retries read current local state inside their transform.
+
+**APPROX port policy:** waiting means the opening deployment is unfinished; inProgress means deployment is done; a winner/draw closes the listing. Available sides remain joinable during play, preserving the existing replacement of an unclaimed side's bot. This labels existing behavior rather than tracing an original multiplayer lobby/start rule. It does not add a pre-match ready phase or change match clocks.
+
+Join waits for the arrival check before assigning a side, rechecks sideOf after yielding, and never enrolls denied/disconnected players into snapshot membership. Admission that cannot complete times out with a reconnect message. Admitted full/finished arrivals spectate. Seating and departures request a fresh heartbeat.
+
+Arrival claims are atomic too: an arriving player holds a seat until the client's match Join actually seats them. The state provider's userIds must identify players represented in its players count. PlayerAdded alone does not consume a hold. A heartbeat cannot erase an outstanding teleport hold simply because that player is loading.
 
 ## Files
 
 | File | Role |
 |---|---|
-| `src/shared/Lobby/LobbyDirectory.luau` | Pure rules, no Roblox services: building and validating listings, staleness and expiry, visibility, filtering and sorting, the join recheck, seat holds, arrival checks, routing. |
-| `src/shared/Lobby/LobbyProtocol.luau` | Remote names, cooldowns and the request and response shapes. Kept separate from `Protocol.luau`. |
-| `src/server/Lobby/LobbyDirectoryService.luau` | This server's half of the directory: heartbeat, browse cache, join, teleport failure, arrival, close. Roblox services are injected, so tests run it with fakes. |
-| `src/server/Lobby/LobbyServer.luau` | The real Roblox wiring: MemoryStore sorted map, MessagingService topic, TeleportService, remotes, PlayerAdded/Removing, BindToClose. **This is the only file that can't be tested offline.** |
-| `src/client/Lobby/LobbyClient.luau` | A thin client wrapper over the remotes. It has no UI. |
-| `tests/lobby_directory.luau`, `tests/lobby_service.luau`, `tests/run_lobby.luau` | Offline tests: `lune run tests/run_lobby`. |
+| src/shared/Lobby/LobbyDirectory.luau | Pure listing, visibility, reservation and arrival rules. |
+| src/shared/Lobby/LobbyProtocol.luau | Separate lobby remote names and cooldowns. |
+| src/shared/Lobby/MatchLobby.luau | Port status/seat policy, independent of Roblox services. |
+| src/shared/Lobby/LobbyBrowserState.luau | Request lifecycle, filtering, join feedback and stale-reply cancellation. |
+| src/server/Lobby/LobbyDirectoryService.luau | Publishing, browsing, atomic joins/arrivals and failure handling with injected dependencies. |
+| src/server/Lobby/LobbyServer.luau | Real service/remotes adapter, PlayerAdded/Removing and close handling. |
+| src/client/Lobby/LobbyClient.luau | Thin remote wrapper. |
+| src/client/UI/LobbyBrowser.luau | Responsive match list and modal input flow; APPROX port UI. |
 
-Untouched: `init.client.luau`, `init.server.luau`, `MatchService.luau`, `Net.luau`, `Protocol.luau`, every HUD and rendering file, and `tests/run.luau`.
+## Directory and routing
 
-## How it works
-
-- **Store.** There is one MemoryStore sorted map, `LobbyDirectory_v1`, keyed by the owning server's `JobId`. The value is the listing record described at the top of `LobbyDirectory.luau`.
-- **Heartbeat.** Each server rewrites its listing every 15 s (`HEARTBEAT_SEC`) with `UpdateAsync`. Every write carries a 60 s MemoryStore expiry (`STORE_TTL_SEC`), so a crashed server's listing deletes itself.
-- **Stale listings are removed three ways.**
-  1. A listing not rewritten for 45 s (`STALE_SEC`) is never shown or joined.
-  2. Browsing servers delete up to 5 dead keys per directory read.
-  3. MemoryStore expiry deletes everything else.
-
-  On `BindToClose` the server deletes its own key at once and announces it on the MessagingService topic `LobbyDirectory_v1`, so other servers drop it from their cache before their next read.
-- **Expiry.** A waiting lobby expires 30 min after it started waiting (`WAITING_EXPIRY_SEC`). The timer restarts whenever the server goes back to waiting, for example after a match ends. Any listing is capped at 4 h (`MAX_LIFETIME_SEC`). The match can also pass its own `expiresAt`. Clients see `expiresIn`.
-- **Visibility.**
-  - `public`: listed for everyone.
-  - `friends`: listed only for the host and the host's Roblox friends.
-  - `private`: never listed.
-
-  Only the host (`hostUserId`) can change visibility, through `SetVisibility`. The change is written immediately.
-- **Browse.**
-  - Each server reads the directory at most once every 3 s and shares that read with all its players. It pages `GetRangeAsync` up to 1000 listings.
-  - A player can browse at most once every 2 s. Faster requests get the previous answer.
-  - Friendships are looked up with `IsFriendsWith` before filtering and cached for 120 s.
-  - Results are sorted waiting first, then fullest, then newest.
-  - Clients only ever get `publicView`. It has no JobId, access code or member ids.
-- **Join.**
-  1. The server re-reads the target listing fresh from the store. It doesn't use the browse cache.
-  2. Inside one atomic `UpdateAsync` it rechecks everything: the lobby is live, not expired, not closing, visible to this player, not already joined by them, accepting players in its status, and has a free seat. If so, it holds a seat for 60 s (`RESERVATION_SEC`). Because the hold is atomic, two servers can't both give away the last seat.
-  3. It teleports the player with `TeleportAsync` to the lobby's actual server:
-     - an ordinary public server by `TeleportOptions.ServerInstanceId = JobId`
-     - a reserved server by `ReservedServerAccessCode`
-     - the player's own server needs no teleport (`route = "local"`)
-
-  If the teleport fails, immediately or later through `TeleportInitFailed`, the seat is released and the player gets a `Notice`.
-- **Arrival.**
-  - When a player joins a server, it rechecks them against its own listing in the store (`checkArrival`).
-  - A held seat or the host always gets a seat.
-  - A stranger arriving at a friends-only or private lobby is refused. By default they are kicked with the reason; pass `onRefused` to send them to a hub instead.
-  - Someone arriving at a full or started lobby is admitted without a seat, so the match can make them a spectator.
-  - Teleport data is never trusted for permission. Only the hold in the store counts.
-  - If the store can't be read, arrival fails open, because the match's own seat rules still apply.
-- **Failures.** Every store call is wrapped in `pcall`. A failed read is reported as `unavailable` with `retry = true`, never as `gone`. Browse serves the last good read while the store is down.
-
-## Server integration
-
-`LobbyServer.start` should start after `MatchService.start` so the state function can read the match. MatchService does not expose its seat state yet, so add a small read-only accessor there, for example `MatchService.lobbyState()`, built from `sideOf`, `map` and `sim`.
-
-```lua
--- src/server/init.server.luau
-local MatchService = require(script.Match.MatchService)
-local LobbyServer = require(script.Lobby.LobbyServer)
-
-MatchService.start("Saddle")
-local lobby = LobbyServer.start(function()
-	local s = MatchService.lobbyState() -- to add: see below
-	return {
-		map = s.mapName,          -- e.g. "Saddle"
-		players = s.humanSeats,   -- humans holding side 1 or 2 (not spectators, not bots)
-		capacity = 2,             -- WarFront skirmish seats; spectators are extra
-		status = s.started and "inProgress" or "waiting",
-		joinInProgress = false,   -- true if a bot-held side may be taken over mid-match
-		-- optional: name, hostUserId (needed for friends/private and SetVisibility), visibility, expiresAt
-	}
-end)
-```
-
-Where to get those values in `MatchService.luau`:
-
-- `humanSeats`: count the entries in `sideOf` whose side is 1 or 2.
-- `started`: decide when a lobby stops taking players. A reasonable start is "both seats are human, or the opening drop has finished" (`sim.drop == nil or sim.drop.phase == "done"`). This is a design choice. The original game's lobby rules are not confirmed.
-- `mapName`: `map.data.id`.
-
-**Seating.** In `assignSide`, which runs when the client invokes `Join`, wait for the arrival check before giving a side:
-
-```lua
-local arrival = lobby.waitArrival(player, 10)
-if arrival and arrival.seat == false then
-	-- full / started: seat as spectator (side 0)
-end
-```
-
-`MatchService` would need the `lobby` object passed in, for example with `MatchService.setLobby(lobby)`. Refused players have already been kicked or sent away by `LobbyServer`.
-
-**Reserved servers (for friends or private lobbies).** When code reserves a server for a host, record the access code, because the reserved server can't read its own:
-
-```lua
-local code, privateServerId = TeleportService:ReserveServer(game.PlaceId)
-LobbyServer.rememberAccessCode(code, privateServerId)
--- then teleport the host there with TeleportOptions.ReservedServerAccessCode = code
--- and make the reserved server's state function return hostUserId = <host>, visibility = "friends"/"private"
-```
-
-Player-owned private (VIP) servers are never listed, because other servers can't teleport anyone into them.
-
-## Client integration (no HUD changes required)
-
-```lua
-local LobbyClient = require(path.to.Lobby.LobbyClient)
-local res = LobbyClient.browse({ hasSpace = true, map = nil, status = nil, friendsOnly = false })
-if res.ok then
-	-- each entry: lobbyId, name, map, players, capacity, openSeats, status ("waiting"/"inProgress"),
-	-- visibility, joinable, expiresIn, ageSec; refresh again after res.refreshAfter seconds
-else
-	-- show res.message; offer Retry if res.retry
-end
-
-local j = LobbyClient.join(entry.lobbyId)
--- j.ok and j.route == "teleport": show "Joining..." (Roblox's teleport screen follows)
--- j.ok and j.route == "local": the lobby is this server; nothing to do
--- not j.ok: show j.message; if j.retry, refresh the list (full/gone/stale/closed/teleportFailed)
-LobbyClient.onNotice(function(n) --[[ n.reason == "teleportFailed": show n.message, refresh ]] end)
-```
-
-Response and reason codes are listed in `LobbyProtocol.luau` and `LobbyDirectory.REASONS`.
+- LobbyDirectory_v1 is a MemoryStore sorted map keyed by server JobId. Heartbeats run every 15 seconds; records have a 60-second store TTL and are hidden/join-refused after 45 seconds without a heartbeat. Waiting listings expire after 30 minutes; listing lifetime is capped at four hours.
+- Only owners delete their own listing. Browsers hide stale entries and leave physical removal to TTL, avoiding deletion of a live key that refreshed after a cached read. Normal shutdown removes its own key and broadcasts closure through MessagingService.
+- Reads share a three-second server cache, including an in-flight-read guard. A refresh reads at most five pages of 200 entries. Native pagination passes {key, sortKey}, not a bare string. See [Roblox sorted-map cursors](https://create.roblox.com/docs/cloud-services/memory-stores/sorted-map).
+- Per-player browse cooldown is two seconds. Cached responses are reused only for the same filter. Friend results cache for 120 seconds; transient API errors are not cached as negatives. The adapter uses [IsFriendsWithAsync](https://create.roblox.com/docs/reference/engine/classes/Player/IsFriendsWithAsync).
+- Public listings are visible to everyone, friends listings to their host/friends, and private listings never appear. Only a configured host may change visibility. Current permission and stage are checked again on arrival; a prior hold cannot bypass a later privacy restriction. During a store outage, current local privacy still applies; public admission may fall back to match seat limits.
+- Join re-reads the target and atomically holds a seat for 60 seconds. It permits one in-flight request per player. Routing data and access codes never enter publicView/client list responses.
+- Public destinations use TeleportOptions.ServerInstanceId; reserved destinations use the recorded access code. Player-owned private servers are not listed. The backend retains rememberAccessCode for future reserved-server creation, but this browser does not provision servers.
+- Teleport failures release holds and notify the client. Request ids in teleport options correlate failure events with the correct request; late failures cannot free a newer hold. Automatic native retry was removed to avoid mixing attempts. The client offers retry after failure.
+- The service subscription, adapter event connections, remotes, browser polling and notice handlers have explicit teardown paths.
 
 ## Tests
 
-`lune run tests/run_lobby` runs 36 tests. They are not added to `tests/run.luau`. To include them in the full suite later, add `require("./lobby_directory")(test, eq)` and `require("./lobby_service")(test, eq)` there.
+```powershell
+lune run tests/run_lobby
+lune run tests/run
+rojo build default.project.json -o build/RobloxianFront.rbxlx
+```
 
-- **Pure rules:** validation and sanitising, staleness, expiry, visibility, hidden routing data, open seats with holds, browse sort, filters and limit, every join refusal, routing (instance, reserved, local), the last seat going only once, the hold cap, release, heartbeat merge, and arrival (hold, host, friends, private, full, started, fail-open).
-- **Multi-server simulation:** several services share one fake MemoryStore with expiry, a fake MessagingService and fake teleports. The tests cover:
-  - publish and browse, and the Studio no-JobId case
-  - join holding a seat and teleporting, and two servers racing for one seat
-  - teleport failure, both immediate and through `TeleportInitFailed`
-  - the arrival recheck, and the heartbeat consuming the hold
-  - stale servers being removed, and MemoryStore expiry
-  - expiry restarting on a new waiting cycle, and close with the cross-server cache drop
-  - friends-only and host-only visibility changes
-  - store outages reported as unavailable
-  - local joins, input validation and rate limits
-  - routing by reserved access code, and unroutable servers not being published
-
-The fake store runs every `UpdateAsync` transform twice, to check the transforms are safe to retry.
+The focused directory runner covers pure rules/service simulations. The full runner additionally includes lobby_match, lobby_browser and lobby_adapter: actual match Join extraction with fake admission/yielding, browser asynchronous state and actual UI callbacks, plus the real adapter against strict API-shaped stand-ins. Existing admin/rendering tests are preserved.
 
 ## Needs published-server testing
 
-None of the following can be checked in Lune or a single Studio session. Studio has no `JobId`, so the server won't publish, and Studio can't teleport. Test in a published place with **Enable Studio Access to API Services** on, and with at least two live servers.
+Use at least two live servers/accounts. Studio cannot establish teleport behavior; see [Roblox teleport testing](https://create.roblox.com/docs/projects/teleport).
 
-1. **MemoryStore calls really behave as the fakes assume:**
-   - `GetSortedMap`, `GetAsync`, `UpdateAsync` (transform may retry; returning nil cancels without error), `RemoveAsync`, and `GetRangeAsync(Ascending, 200, exclusiveLowerBound)` paging.
-   - Listings appear within one heartbeat, and a server shut down from the Creator Dashboard disappears at once.
-   - A server killed without `BindToClose` disappears within 45–60 s.
-2. **MemoryStore quotas** under real player counts. The request budget scales with players, and each browse read costs one unit per item returned. Watch the MemoryStore dashboard and for throttling warnings (`[Lobby] GetRangeAsync`). If it's too much, raise `CACHE_SEC` or lower `MAX_PAGES`.
-3. **Cross-server teleports:**
-   - `TeleportAsync` with `ServerInstanceId` lands in the exact server listed.
-   - With `ReservedServerAccessCode` it lands in the reserved server.
-   - `TeleportInitFailed` fires on a full or closed target, and the hold is released and the player is notified.
-   - Teleporting to a server that filled up during the teleport puts the player in as a spectator, not stuck.
-4. **The last-seat race:** two players on different servers join the last seat at the same moment. One should teleport and the other should get "full".
-5. **Arrival recheck:** a teleported player's hold is found on the destination before they are seated (`waitArrival`). The next heartbeat drops the hold and counts the player.
-6. **Friends-only and private visibility with real accounts:**
-   - `IsFriendsWith` results and the 120 s cache.
-   - A stranger can't see or join.
-   - A friend can.
-   - The host can switch visibility, and nobody else can.
-   - A stranger who gets in another way (join-friend, matchmaking) is refused.
-   - **Known limit:** a friends-only lobby on an ordinary public server can't stop Roblox matchmaking from sending strangers there, who are then kicked. Friends-only and private lobbies should live in reserved servers.
-7. **Reserved servers:**
-   - `rememberAccessCode` followed by the reserved server finding its code at startup, and being listed and routable.
-   - A reserved server with no recorded code is not listed.
-   - Player-owned private servers are not listed.
-8. **MessagingService close broadcast:** after a server closes, other servers drop the lobby before their next directory read. Check the message limits too.
-9. **Clock agreement:** staleness and expiry compare `os.time()` across servers. Check that a listing written by one server is not judged stale or expired early by another.
-10. **Shutdown:** `BindToClose` delists before the server dies, including during a Roblox update ("Shut down all servers" or "Migrate to latest").
-11. **MatchService integration** once it's added: the players count and the waiting/in-progress switch are right, and spectators beyond capacity work.
-12. **Client flow** in the real UI: refresh, retry messages for full, gone and teleport failure, and the "Joining..." state.
+1. Verify actual MemoryStore GetAsync/UpdateAsync/cancellation/RemoveAsync and {key, sortKey} GetRangeAsync cursors, including more than 200 records in a disposable test namespace.
+2. Measure actual MemoryStore request/item quotas with concurrent browsers. Confirm shared caching, transient-outage recovery and no per-frame requests.
+3. Join a listed public server and verify the exact JobId destination. Exercise a native-full/closed target and both immediate and TeleportInitFailed failures.
+4. Race players on two source servers for one final destination seat; only one should hold it. Also race direct matchmaking arrivals against held seats.
+5. Delay the destination client's match Join: its arrival hold must remain until seating or expiry. Loading spectators must not consume or free someone else's hold.
+6. With a configured hosted lobby, verify real host friendship checks, public/friends/private changes, unauthorized host edits and privacy changes during travel. Ordinary public-server hostUserId=0 has no visibility owner.
+7. In a disposable reserved-server integration, record the access code before routing, verify the reserved destination and ensure codes never reach clients. Unknown-code reserved and player-owned private servers stay unlisted.
+8. Verify MessagingService closure broadcast and subscription cleanup. An unavailable broadcast must still fall back to TTL/staleness.
+9. Check real server clock agreement and listing/reservation expiry. An old or expired lobby must not accept a new directory join.
+10. Test graceful shutdown, dashboard shutdown/migration and abrupt termination. In-flight heartbeat writes must not resurrect a closed listing.
+11. Verify opening-deployment/winner status, human versus spectator counts, bot takeover, duplicate Join and a player leaving during admission. Timed-out/refused checks must never acquire a side.
+12. Exercise the actual Matches UI: filters, responsive layout, join feedback, full/gone/late failures, modal input, refresh/cancellation, cold startup and repeated Stop/Play. Record native memory/frame behavior. Stand-ins do not establish native visuals or performance.
 
-## Known limits and choices to revisit
+## Remaining session work
 
-- At most 1000 listings are read per directory refresh (`MAX_PAGES` × 200). Past that, a sort key or regional maps would be needed.
-- `capacity` counts match seats (2 for a skirmish). Spectators are not counted.
-- When the directory can't be read, arrivals fail open. Change `checkArrival`'s nil case if a lobby should rather refuse.
-- Friend status is checked against the host only, not against everyone in the lobby.
-- The original game's lobby rules (when a lobby counts as started, bot seats) are not confirmed. The status mapping above is a suggestion.
+Host/ready/start flow, creating new matches, selectable maps/armies, invitations and reserved-server provisioning remain separate work. At most 1000 listings are read per refresh and 100 are returned; larger deployments need a directory paging/regional policy. Match seats and Roblox platform server capacity are separate: a server may have no native player slots even when a match side is free, in which case teleport failure releases the hold.
