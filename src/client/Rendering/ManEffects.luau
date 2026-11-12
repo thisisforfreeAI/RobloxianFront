@@ -41,16 +41,18 @@ local function page(kind: string): any
 		local meta = require(mod :: ModuleScript) :: any
 		local size = Vector2.new(meta.width, meta.height)
 		local created = ImageMemory.create(size,"detail") -- Optional figure rims/shadows preserve terrain coverage.
-		assert(created, "EditableImage budget refused figure masks")
+		if not created then return nil end -- Optional rims/shadows may be omitted under image pressure.
 		image = created
 		created:WritePixelsBuffer(Vector2.zero, size, PixelCodec.decode(MapCodec.base64Decode(meta.rle), meta.width, meta.height))
 		return { image = created, content = Content.fromObject(created), meta = meta, at = os.clock() }
 	end)
 	if not ok then
 		ImageMemory.release(image)
+		pages[kind]=false
 		if not warned[kind] then warned[kind] = true; warn(`[ManEffects] {kind} masks unavailable; its body still draws:`, value) end
 		return nil
 	end
+	if not value then return nil end
 	pages[kind] = value
 	return value
 end

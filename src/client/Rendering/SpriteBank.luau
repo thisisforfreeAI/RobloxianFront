@@ -94,9 +94,10 @@ local function page(name: string): any
 		local size = Vector2.new(meta.width, meta.height)
 		-- Battle-only wreck/soot pages are optional detail. They must not evict the visible map
 		-- merely because the first damaged unit of another type asks for its large wreck sheet.
-		local kind=if string.find(name,"Wreck",1,true) then "detail" else "core"
+		local optional=string.find(name,"Wreck",1,true) or string.match(name,"RimHalf$") or string.match(name,"Rim$") or string.match(name,"Shade$")
+		local kind=if optional then "detail" else "core"
 		local image = ImageMemory.create(size,kind)
-		assert(image, "EditableImage memory unavailable after reclaiming unused art")
+		if not image then return nil end -- Expected admission refusal: preserve the existing fallback quietly.
 		allocated = image
 		-- Admission precedes the expensive decode; refused optional pages should cost no full pixel buffer.
 		local pixels = PixelCodec.decode(MapCodec.base64Decode(meta.rle), meta.width, meta.height)
@@ -105,12 +106,14 @@ local function page(name: string): any
 	end)
 	if not ok then
 		ImageMemory.release(allocated)
+		pages[name]=false -- Release listeners may have cleared the failed entry while freeing this image.
 		if not warned[name] then
 			warned[name] = true
 			warn(`[SpriteBank] {name} unavailable; existing fallback stays:`, result)
 		end
 		return false
 	end
+	if not result then return false end
 	pages[name] = result
 	return result
 end
@@ -159,7 +162,7 @@ function SpriteBank.look(kind: string): Look?
 		end
 		return { content = f.content, frame = f.meta.frame, columns = f.meta.columns, strips = f.meta.strips }
 	end
-	local rim = sheet("Rim")
+	local rim = sheet("RimHalf") -- Compact outline at every zoom; body/paint retain native resolution.
 	local look: Look = {
 		frame = p.meta.frame,
 		columns = p.meta.columns,
@@ -170,7 +173,7 @@ function SpriteBank.look(kind: string): Look?
 		size = k.cells * UNIT_SCALE,
 		artH = k.artH / k.artW,
 		tall = k.tall,
-		fx = if rim then { rim = rim, rimHalf = sheet("RimHalf"), shade = sheet("Shade") } else nil,
+		fx = if rim then { rim = rim, rimHalf = rim, shade = sheet("Shade") } else nil,
 		pivot = k.pivot,
 		radarTurns = k.radarTurns,
 	}
@@ -275,7 +278,7 @@ function SpriteBank.wreck(kind: string): Look?
 		end
 		return { content = f.content, frame = f.meta.frame, columns = f.meta.columns, strips = f.meta.strips }
 	end
-	local rim = sheet("Rim")
+	local rim = sheet("RimHalf") -- Compact outline at every zoom; body/paint retain native resolution.
 	local look: Look = {
 		frame = p.meta.frame,
 		columns = p.meta.columns,
@@ -285,7 +288,7 @@ function SpriteBank.wreck(kind: string): Look?
 		size = k.cells * UNIT_SCALE,
 		artH = k.artH / k.artW,
 		tall = k.tall * WRECK_TALL,
-		fx = if rim then { rim = rim, rimHalf = sheet("RimHalf"), shade = sheet("Shade") } else nil,
+		fx = if rim then { rim = rim, rimHalf = rim, shade = sheet("Shade") } else nil,
 	}
 	wrecks[kind] = look
 	return look
@@ -360,7 +363,7 @@ function SpriteBank.state(kind: string, n: number): Look?
 		end
 		return { content = f.content, frame = f.meta.frame, columns = f.meta.columns, strips = f.meta.strips }
 	end
-	local rim = sheet("Rim")
+	local rim = sheet("RimHalf") -- Compact outline at every zoom; body/paint retain native resolution.
 	local look: Look = {
 		frame = p.meta.frame,
 		columns = p.meta.columns,
@@ -369,7 +372,7 @@ function SpriteBank.state(kind: string, n: number): Look?
 		size = p.meta.size or k.cells * UNIT_SCALE,
 		artH = p.meta.artH or k.artH / k.artW,
 		tall = k.tall,
-		fx = if rim then { rim = rim, rimHalf = sheet("RimHalf"), shade = sheet("Shade") } else nil,
+		fx = if rim then { rim = rim, rimHalf = rim, shade = sheet("Shade") } else nil,
 	}
 	states[id] = look
 	return look

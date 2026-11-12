@@ -223,4 +223,59 @@ return function(test: any, eq: any)
 		assert(b:create(2, 3, "detail"))
 		eq(state.attempts, 3); eq(b.used, 64)
 	end)
+	test("reclaimer removal during a pass cannot skip the next owner or call a cancelled owner",function()
+		local create=factory(100);local b=Budget.new(create);local called={};local first,third
+		first=b:register(5,function() table.insert(called,5);first();third() end)
+		b:register(10,function() table.insert(called,10) end)
+		third=b:register(20,function() error("unregistered owner must not run") end)
+		b:reclaim(1);eq(#called,2);eq(called[1],5);eq(called[2],10)
+	end)
+	test("policy and native image refusals are counted separately without repeated native probes",function()
+		local create,state=factory(80);local b=Budget.new(create,{ceiling=1000,detailLimit=1000,reserve=0})
+		assert(b:create(4,5));eq(b:create(1,1,"detail"),nil);eq(b:create(1,1,"detail"),nil)
+		eq(b:create(1,1,"terrain"),nil);eq(b:create(1,1,"core"),nil)
+		eq(state.attempts,2);eq(b.nativeRefusals,1);eq(b.refusals.detail,2);eq(b.refusals.terrain,1);eq(b.refusals.core,1)
+		eq(b.lastRefusal.kind,"core");eq(b.lastRefusal.width,1);eq(b.lastRefusal.used,80)
+	end)
+	test("actual vehicle cache keeps full-resolution body art but shares one optional compact rim",function()
+		local fs=require("@lune/fs");local luau=require("@lune/luau");local create,state=factory(1000)
+		local b=Budget.new(function(w,h) local image=create(w,h);if image then image.WritePixelsBuffer=function() end end;return image end,{ceiling=1000,detailLimit=200,reserve=0,terrainReserve=40})
+		local terrain=b:create(2,10,"terrain");local requested={}
+		local function module(name,meta) return {name=name,meta=meta,IsA=function() return true end} end
+		local assets={OrigTank=module("body",{width=1,height=7,frame=1,columns=1,rle="",strips={hull_colour=0,hull_paint=1,turret_colour=2,turret_paint=3}}),
+			OrigTankRim=module("full",{width=10,height=10,frame=1,columns=1,rle="",strips={}}),
+			OrigTankRimHalf=module("compact",{width=2,height=4,frame=1,columns=1,rle="",strips={hull_rim=0,turret_rim=0}}),
+			OrigTankShade=module("shadow",{width=1,height=4,frame=1,columns=1,rle="",strips={}})}
+		local memory={create=function(size,kind) return b:create(size.X,size.Y,kind) end,release=function(image) b:release(image) end,
+			register=function(priority,fn) return b:register(priority,fn) end,onRelease=function(fn) b:onRelease(fn) end,stats=function() return b.used end}
+		local modules={memory=memory,codec={base64Decode=function() return buffer.create(0) end},pixels={decode=function(_,w,h) return buffer.create(w*h*4) end}}
+		local shared={Maps={MapCodec="codec"},Assets={PixelCodec="pixels"}}
+		local env=setmetatable({game={GetService=function() return {WaitForChild=function() return shared end} end},
+			script={Parent={ImageMemory="memory",Parent={FindFirstChild=function() return {FindFirstChild=function(_,name) return assets[name] end} end}}},
+			require=function(key) if type(key)=="table" then requested[key.name]=true;return key.meta end;return modules[key] end,
+			Vector2={new=function(x,y) return {X=x,Y=y} end},Content={fromObject=function(image) return image end},warn=function() error("unexpected warning") end},{__index=getfenv()})
+		local bank=luau.load(fs.readFile("src/client/Rendering/SpriteBank.luau"),{environment=env})()
+		local look=bank.look("tank");assert(look and look.fx);eq(look.frame,1);eq(look.fx.rim,look.fx.rimHalf)
+		eq(b.records[look.body.content].kind,"core");eq(b.records[look.fx.rim.content].kind,"detail");eq(b.records[look.fx.shade.content].kind,"detail")
+		eq(requested.full,nil);eq(b.used,156);eq(state.attempts,4);assert(b.records[terrain])
+	end)
+	test("optional soldier-mask refusals stay quiet, skip decoding and retry only after release",function()
+		local fs=require("@lune/fs");local luau=require("@lune/luau")
+		local attempts,warnings,decodes,releases=0,0,0,0;local blocked,bad=true,false;local listener
+		local memory={create=function() attempts+=1;if blocked then return nil end;return {WritePixelsBuffer=function() end} end,
+			release=function(image) if image then releases+=1;if listener then listener() end end end,register=function() end,onRelease=function(fn) listener=fn end,stats=function() return 0 end}
+		local settings={tag="config"};local art={tag="art"}
+		local shared={Presentation={MenShadows="shadows"},Maps={MapCodec="codec"},Assets={PixelCodec="pixels",Facing="facing"},Config={World="world"}}
+		function shared:FindFirstChild() return {FindFirstChild=function() return settings end} end
+		local modules={memory=memory,shadows={},codec={base64Decode=function() return buffer.create(0) end},pixels={decode=function() decodes+=1;if bad then error("invalid local pixels") end;return buffer.create(4) end},facing={},world={}}
+		local env=setmetatable({game={GetService=function() return {WaitForChild=function() return shared end} end},
+			script={Parent={ImageMemory="memory",Parent={FindFirstChild=function() return {FindFirstChild=function() return art end} end}}},
+			require=function(key) if key==settings then return {} elseif key==art then return {width=1,height=1,rle=""} end;return modules[key] end,
+			Vector2={new=function(x,y) return {X=x,Y=y} end,zero={X=0,Y=0}},Content={fromObject=function(image) return image end},warn=function() warnings+=1 end},{__index=getfenv()})
+		local masks=luau.load(fs.readFile("src/client/Rendering/ManEffects.luau"),{environment=env})()
+		for _=1,50 do eq(masks.attach({}, {}, {}, {}, "gunner"),nil) end;eq(attempts,1);eq(warnings,0);eq(decodes,0)
+		listener();blocked=false;bad=true
+		for _=1,50 do eq(masks.attach({}, {}, {}, {}, "gunner"),nil) end;eq(attempts,2);eq(decodes,1);eq(releases,1);eq(warnings,1)
+	end)
+
 end

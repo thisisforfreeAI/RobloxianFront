@@ -52,7 +52,8 @@ function ImageMemory.onRelease(fn: () -> ()) budget:onRelease(fn) end
 function ImageMemory.setGuard(fn: () -> any) budget.guard = fn end
 function ImageMemory.stats(): (number, number) return budget.used, budget.detail end
 function ImageMemory.pressureStats():any
-	return {used=budget.used,detail=budget.detail,terrain=budget.terrain,terrainReserve=budget.terrainReserve,detailLimit=budget.detailLimit,ceiling=math.min(budget.ceiling,budget.knownCeiling or math.huge),recoveryPasses=recoveryPasses,recoveryReleased=recoveryReleased}
+	return {used=budget.used,detail=budget.detail,terrain=budget.terrain,terrainReserve=budget.terrainReserve,detailLimit=budget.detailLimit,ceiling=math.min(budget.ceiling,budget.knownCeiling or math.huge),recoveryPasses=recoveryPasses,recoveryReleased=recoveryReleased,
+		refusals=table.clone(budget.refusals),nativeRefusals=budget.nativeRefusals,lastRefusal=if budget.lastRefusal then table.clone(budget.lastRefusal) else nil}
 end
 function ImageMemory.terrainLimit():number return budget.detailLimit end
 function ImageMemory.recoverTerrain(required:number,replacing:number?):number

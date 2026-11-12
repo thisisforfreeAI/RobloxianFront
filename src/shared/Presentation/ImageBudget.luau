@@ -9,16 +9,18 @@ function ImageBudget.new(factory: (number, number) -> any, options: any?)
 		detailLimit = o.detailLimit or 16 * 1024 * 1024, reserve = o.reserve or 8 * 1024 * 1024,
 		terrain = 0, terrainReserve = o.terrainReserve or 0,
 		recoveryLimit = o.recoveryLimit or 4 * 1024 * 1024,
-		records = {}, reclaimers = {}, listeners = {}, epoch = 0, guard = nil, knownCeiling = nil, reclaiming = false }
+		records = {}, reclaimers = {}, listeners = {}, epoch = 0, guard = nil, knownCeiling = nil, reclaiming = false,
+		refusals={core=0,detail=0,terrain=0},nativeRefusals=0,lastRefusal=nil }
 	function self:protect(): any
 		return if self.guard then self.guard() else {}
 	end
 	function self:onRelease(fn: () -> ()) table.insert(self.listeners, fn) end
 	function self:register(priority: number, fn: (number, any) -> ())
-		local entry = { priority = priority, fn = fn }
+		local entry = { priority = priority, fn = fn, active=true }
 		table.insert(self.reclaimers, entry)
 		table.sort(self.reclaimers, function(a: any, b: any) return a.priority < b.priority end)
 		return function()
+			entry.active=false
 			local i = table.find(self.reclaimers, entry)
 			if i then table.remove(self.reclaimers, i) end
 		end
@@ -40,7 +42,9 @@ function ImageBudget.new(factory: (number, number) -> any, options: any?)
 		local ok, protected = pcall(self.protect, self)
 		if not ok then self.reclaiming = false; return end -- do not evict without a valid live-image guard
 		local before = if detailOnly then self.detail else self.used
-		for _, r in self.reclaimers do
+		-- A reclaimed owner can unregister itself/other owners during this pass.
+		for _, r in table.clone(self.reclaimers) do
+			if not r.active then continue end
 			if r.priority < (minimumPriority or 0) then continue end
 			if maximumPriority and r.priority > maximumPriority then continue end
 			local needed = bytes - (before - (if detailOnly then self.detail else self.used))
@@ -94,24 +98,33 @@ function ImageBudget.new(factory: (number, number) -> any, options: any?)
 		kind = kind or "core"
 		assert(w > 0 and h > 0 and w <= 1024 and h <= 1024 and w % 1 == 0 and h % 1 == 0, "invalid image dimensions")
 		local bytes = w * h * 4
+		local function refused()
+			self.refusals[kind]=(self.refusals[kind] or 0)+1
+			self.lastRefusal={kind=kind,width=w,height=h,used=self.used,detail=self.detail}
+			return nil
+		end
 		if kind == "detail" or kind == "terrain" then
 			-- Do not repeatedly probe Roblox when our policy already knows there is no headroom.
-			if not self:prepareDetail(bytes,kind) then return nil end
+			if not self:prepareDetail(bytes,kind) then return refused() end
 		else
 			local ceiling = math.min(self.ceiling, self.knownCeiling or math.huge)
 			self:reclaim(math.max(0, self.used + bytes - ceiling))
-			if self.knownCeiling and self.used + bytes > self.knownCeiling then return nil end
+			if self.knownCeiling and self.used + bytes > self.knownCeiling then return refused() end
 		end
 		local ok, image = pcall(factory, w, h)
 		if not ok or not image then
+			self.nativeRefusals+=1
 			-- First native refusal teaches a conservative ceiling. Release reusable detail and unused
 			-- art before retrying a core image; do not retry an identical allocation without freeing.
 			self.knownCeiling = math.min(self.knownCeiling or math.huge, self.used)
-			if kind == "detail" or kind == "terrain" then return nil end
+			if kind == "detail" or kind == "terrain" then return refused() end
 			local before = self.used
 			self:reclaim(math.huge)
-			if self.used < before then ok, image = pcall(factory, w, h) end
-			if not ok or not image then return nil end
+			if self.used < before then
+				ok, image = pcall(factory, w, h)
+				if not ok or not image then self.nativeRefusals+=1 end
+			end
+			if not ok or not image then return refused() end
 		end
 		self.records[image] = { bytes = bytes, kind = kind }
 		self.used += bytes

@@ -4170,6 +4170,7 @@ function Sim.new(deps: Deps)
 		if not self.clearShot(e,target,key) then return end
 		local tx, ty = target.x, target.y
 		e.firing, e.aimX, e.aimY = true, tx, ty
+		if e.cat=="structure" and (e.kind=="atgun" or e.kind=="bunker") then e.weaponAim=math.atan2(ty-e.y,tx-e.x) end
 		if e.cat == "unit" and not hasHull(e) then
 			e.heading = math.atan2(ty - e.y, tx - e.x) -- presentation only for foot units
 		end
@@ -4182,6 +4183,7 @@ function Sim.new(deps: Deps)
 		if secs <= 0 then
 			return
 		end
+		if e.cat=="structure" and (e.kind=="atgun" or e.kind=="bunker") then e.weaponShotAt=self.time;e.weaponShotAim=e.weaponAim end
 		local arty = e.cat == "unit" and text(key .. ".nato") == "artillery"
 		if e.cat == "unit" then
 			e.firedAt = self.time
@@ -4212,6 +4214,7 @@ function Sim.new(deps: Deps)
 	-- in range, else the nearest enemy truck
 	local function structuresFire(dt: number)
 		for _, st in self.list do
+			if st.cat=="structure" and (st.kind=="atgun" or st.kind=="bunker") then st.weaponAim=nil end
 			if st.alive and isStructure(st) and st.built >= 1 and not self.inactiveReason(st) then
 				local key = `structures.{st.kind}`
 				local dps = numOr(key .. ".dps", 0)
@@ -6178,6 +6181,8 @@ function Sim.new(deps: Deps)
 					if (sx - d.x) ^ 2 + (sy - d.y) ^ 2 <= range * range
 						and self.time - (samShotAt[st.id] or -math.huge) >= num("structures.sam.reloadSec") then
 						samShotAt[st.id] = self.time
+						-- Cosmetic observation only; the missile/reload logic remains authoritative above.
+						st.weaponShotAt=self.time;st.weaponShotAim=math.atan2(d.y-sy,d.x-sx)
 						table.insert(self.samMissiles, { id = nextMissile, side = st.side, site = st.id, x = sx, y = sy, tx = d.x, ty = d.y,
 							heading = math.atan2(d.y - sy, d.x - sx), target = d.id, launchedAt = self.time, alive = true })
 						nextMissile += 1

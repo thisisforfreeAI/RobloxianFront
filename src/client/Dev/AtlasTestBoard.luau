@@ -17,7 +17,7 @@
 	Keys: R toggles residual rotation (off = pure 16-step snapping), G rotates the SurfaceGui
 	compensation by 90 degrees (only needed if every arrow is off by the same quarter turn: report it).
 ]]
-local AssetService = game:GetService("AssetService")
+local ImageMemory=require(script.Parent.Parent.Rendering.ImageMemory)
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
@@ -30,6 +30,7 @@ local PixelCodec = require(Shared.Assets.PixelCodec)
 local AtlasCheck = require(Shared.Assets.AtlasCheck)
 
 local AtlasTestBoard = {}
+local active: {[string]:any}={}
 
 local S = World.STUDS_PER_CELL
 local FRAME_CELLS = 3 -- a 120 px frame drawn 3 cells (12 studs) wide on the board
@@ -91,6 +92,7 @@ function AtlasTestBoard.start(center: Vector2, atlasName: string?, synthetic: bo
 	end
 	local meta = require(metaModule) :: any
 	local tag = `[AtlasTestBoard {atlasName}]`
+	local previous=active[atlasName :: string];if previous then previous.destroy() end
 	local page = meta.pages[1]
 	local devModule = script.Parent.Parent.DevAssets:FindFirstChild(page.devPixels)
 	if not devModule then
@@ -98,31 +100,42 @@ function AtlasTestBoard.start(center: Vector2, atlasName: string?, synthetic: bo
 		return
 	end
 	local dev = require(devModule) :: any
-	local pixels = PixelCodec.decode(MapCodec.base64Decode(dev.rle), dev.width, dev.height)
-	local size = Vector2.new(dev.width, dev.height)
-	local ok, image = pcall(function()
-		return AssetService:CreateEditableImage({ Size = size })
+	local size=Vector2.new(dev.width,dev.height)
+	local editable=ImageMemory.create(size,"detail")
+	if not editable then return nil end
+	local ok,err=pcall(function()
+		local pixels=PixelCodec.decode(MapCodec.base64Decode(dev.rle),dev.width,dev.height)
+		editable:WritePixelsBuffer(Vector2.zero,size,pixels)
+		local readBack=editable:ReadPixelsBuffer(Vector2.zero,size)
+		local identical=buffer.len(readBack)==buffer.len(pixels) and buffer.tostring(readBack)==buffer.tostring(pixels)
+		local result=AtlasCheck.run(readBack,dev.width,meta,isSynthetic)
+		print(`{tag} read-back identical to packed atlas: {identical}; frame checks: {result.ok and "PASS" or "FAIL"} (worst arrow error {string.format("%.2f",result.worstDegrees)} deg, partial alpha {result.partialAlpha})`)
+		for _,failure in result.failures do warn(tag.." "..failure) end
 	end)
-	if not ok or not image then
-		warn("[AtlasTestBoard] EditableImage unavailable, sprite board skipped:", image)
-		return
-	end
-	local editable = image :: EditableImage
-	editable:WritePixelsBuffer(Vector2.zero, size, pixels)
-
-	-- Automatic check on what Roblox actually stores, not on our input buffer.
-	local readBack = editable:ReadPixelsBuffer(Vector2.zero, size)
-	local identical = buffer.len(readBack) == buffer.len(pixels) and buffer.tostring(readBack) == buffer.tostring(pixels)
-	local result = AtlasCheck.run(readBack, dev.width, meta, isSynthetic)
-	print(`{tag} read-back identical to packed atlas: {identical}; frame checks: {result.ok and "PASS" or "FAIL"} (worst arrow error {string.format("%.2f", result.worstDegrees)} deg, partial alpha {result.partialAlpha})`)
-	for _, f in result.failures do
-		warn(tag .. " " .. f)
-	end
+	if not ok then ImageMemory.release(editable);warn(tag.." image check failed:",err);return nil end
 
 	local content = Content.fromObject(editable)
 	local folder = Instance.new("Folder")
 	folder.Name = "AtlasTestBoard_" .. (atlasName :: string)
 	folder.Parent = workspace
+	local dead=false
+	local inputConnection:RBXScriptConnection?=nil
+	local renderConnection:RBXScriptConnection?=nil
+	local unregister:any=nil
+	local handle:any={folder=folder}
+	local function cleanup()
+		if dead then return end;dead=true
+		if inputConnection then inputConnection:Disconnect() end
+		if renderConnection then renderConnection:Disconnect() end
+		if unregister then unregister();unregister=nil end
+		ImageMemory.release(editable)
+		if active[atlasName :: string]==handle then active[atlasName :: string]=nil end
+	end
+	function handle.destroy() if not dead then folder:Destroy() end end
+	folder.Destroying:Connect(cleanup)
+	unregister=ImageMemory.register(5,function() handle.destroy() end)
+	active[atlasName :: string]=handle
+
 
 	local guiYaw = -World.TOP_GUI_YAW -- quads are turned by -guiYaw = TOP_GUI_YAW; G adds quarter turns
 	local ring: { { quad: Part, pos: Vector3, angle: number } } = {}
@@ -155,7 +168,7 @@ function AtlasTestBoard.start(center: Vector2, atlasName: string?, synthetic: bo
 	end
 	placeAll()
 
-	UserInputService.InputBegan:Connect(function(input, processed)
+	inputConnection=UserInputService.InputBegan:Connect(function(input, processed)
 		if processed then
 			return
 		end
@@ -169,7 +182,7 @@ function AtlasTestBoard.start(center: Vector2, atlasName: string?, synthetic: bo
 		end
 	end)
 
-	RunService.RenderStepped:Connect(function(dt)
+	renderConnection=RunService.RenderStepped:Connect(function(dt)
 		heading = (heading + dt * math.rad(20)) % (2 * math.pi)
 		local d = Facing.index(heading, meta.directions)
 		setFrame(spinLabel, meta, d)
@@ -179,6 +192,11 @@ function AtlasTestBoard.start(center: Vector2, atlasName: string?, synthetic: bo
 		needle.CFrame = CFrame.lookAt(origin + dir * 1.3 * S - Vector3.new(0, 0.2, 0), origin + dir * 3 * S - Vector3.new(0, 0.2, 0))
 	end)
 	print(`{tag} ready, 16 sprites. R residual on/off, G GUI compensation. See docs/STUDIO_TESTS.md test 6.`)
+	return handle
+end
+
+function AtlasTestBoard.destroyAll()
+	for _,handle in table.clone(active) do handle.destroy() end
 end
 
 return AtlasTestBoard

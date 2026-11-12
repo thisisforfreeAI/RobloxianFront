@@ -12,7 +12,7 @@ local Daylight=require(script.Parent.DaylightController)
 local Labels=require(ReplicatedStorage.Shared.Presentation.StructureLabels)
 local StructureRenderer = {}
 
-export type View = { id: number, kind: string, side: number, x: number, y: number, anchor: Part, ring: Part?, block: Part?, bar: Frame, barBack: Frame, text: TextLabel, seen: number, built: number, hp: number?, maxHp: number?, art: any, army: string, stale: boolean, gui: BillboardGui, labelRoot: Frame, status: string, production: any }
+export type View = { id: number, kind: string, side: number, x: number, y: number, anchor: Part, ring: Part?, block: Part?, bar: Frame, barBack: Frame, text: TextLabel, seen: number, built: number, hp: number?, maxHp: number?, art: any, army: string, stale: boolean, gui: BillboardGui, labelRoot: Frame, status: string, production: any, weapon: any }
 
 local NAMES = { hq = "HQ", barracks = "Barracks", factory = "War Factory", bunker = "Bunker", atgun = "AT Gun", radar = "Radar", sam = "SAM Site", artybase = "Artillery Base", nightops = "Night Ops Tower" }
 local DEFENCE = { bunker = true, atgun = true, radar = true, sam = true, nightops = true }
@@ -108,7 +108,7 @@ local function present()
 			if v.art then
 				v.block.Transparency=1
 				local importance=if focus==id then 1000 elseif hover==id then 900 else 1/(1+(Vector2.new(point.X,point.Y)-size/2).Magnitude/100)
-				Art.update(v.art,v.side,v.stale,v.built,light,id,v.hp,v.maxHp,importance,v.production)
+				Art.update(v.art,v.side,v.stale,v.built,light,id,v.hp,v.maxHp,importance,v.production,v.weapon)
 			end
 		end
 		local detail=Labels.detail(v,pixels,focus==id,hover==id)
@@ -160,7 +160,7 @@ function StructureRenderer.apply(tick: number, structures: { any })
 		v.side, v.seen, v.built, v.hp, v.maxHp = side, tick, built or 1, hp, maxHp
 		local army=if st[13]=="republic" then "republic" else "coalition"
 		if v.army~=army and v.art then v.art.gui:Destroy();v.art=nil end
-		v.army=army;v.stale=stale==1;v.production=st[14]
+		v.army=army;v.stale=stale==1;v.production=st[14];v.weapon=st[15]
 		if v.art and v.stale then Art.update(v.art,side,true,v.built,Daylight.get(),id,hp,maxHp,nil,nil) end
 		if v.block then
 			local block = v.block :: Part

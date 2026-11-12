@@ -8,6 +8,7 @@ local Inflate=require(Shared.Utilities.Inflate)
 local Memory=require(script.Parent.ImageMemory)
 local Effects=require(script.Parent.StructureEffects)
 local Factory=require(script.Parent.FactoryRenderer)
+local Gun=require(script.Parent.GunRenderer)
 local Art={}
 local assets=script.Parent.Parent:FindFirstChild("DevAssets")
 local module=assets and assets:FindFirstChild("OrigStructures")
@@ -32,9 +33,10 @@ local function sheet(army:string):any
 	local old=sheets[army]
 	if old and old.image then return if old.ready then old else nil end
 	if old and os.clock()<old.retry then return nil end
-	local meta=data.armies[army];if not meta then return nil end
+	local optional=string.sub(army,1,1)=="$"
+	local meta=if army=="$weapons" then data.weapons elseif string.sub(army,1,5)=="$sam:" then data.launchers and data.launchers[string.sub(army,6)] else data.armies[army];if not meta then return nil end
 	local state={retry=os.clock()+5,ready=false};sheets[army]=state
-	local image=Memory.create(Vector2.new(meta.width,meta.height));if not image then return nil end
+	local image=Memory.create(Vector2.new(meta.width,meta.height),if optional then "detail" else "core");if not image then return nil end
 	state.image=image;state.meta=meta
 	local function done(success:boolean)
 		if sheets[army]~=state then return end
@@ -48,15 +50,23 @@ local function sheet(army:string):any
 			end)
 		end)
 		if sheets[army]~=state then return end
-		if not ok or not Memory.upload(image,Vector2.zero,Vector2.new(meta.width,meta.height),pixels,{priority=1,done=done}) then
+		if not ok or not Memory.upload(image,Vector2.zero,Vector2.new(meta.width,meta.height),pixels,{priority=if optional then 2 else 1,done=done}) then
 			Memory.release(image);state.image=nil;state.retry=os.clock()+5
 		end
 	end)
 	table.insert(jobs,{thread=job,state=state,army=army})
 	return nil
 end
-function Art.step()
-	Factory.step()
+Memory.register(10,function()
+	for name,state in sheets do
+		if string.sub(name,1,1)~="$" or not state.image then continue end
+		local image=state.image;Gun.forgetSheet(image)
+		sheets[name]={retry=os.clock()+5,ready=false}
+		Memory.release(image)
+	end
+end)
+function Art.step()	
+	Factory.step();Gun.step()
 	-- APPROX soft 2 ms bootstrap slice shared by both factions; no whole-atlas decode in a render tick.
 	deadline=os.clock()+.002
 	while jobs[1] do
@@ -103,9 +113,9 @@ function Art.attach(part:Part,kind:string,army:string):any
 		end
 	end
 	gui.Parent=part
-	return {gui=gui,sheet=s,meta=meta,body=body,paint=paint,night=night,shadow=shadow,dish=dish,army=army,effects=Effects.attach(gui,meta,{body,paint}),factory=Factory.attach(gui,meta,s)}
+	return {gui=gui,sheet=s,meta=meta,body=body,paint=paint,night=night,shadow=shadow,dish=dish,army=army,effects=Effects.attach(gui,meta,{body,paint}),factory=Factory.attach(gui,meta,s),gun=Gun.attach(gui,meta,s)}
 end
-function Art.update(art:any,side:number,stale:boolean,built:number,light:any,id:number,hp:number?,maxHp:number?,importance:number?,production:any?)
+function Art.update(art:any,side:number,stale:boolean,built:number,light:any,id:number,hp:number?,maxHp:number?,importance:number?,production:any?,weapon:any?)
 	local rgb=palette and palette[side] or {1,1,1}
 	local tint=Color3.new(rgb[1],rgb[2],rgb[3]);local base=Color3.new(1,1,1)
 	if stale then base=Color3.fromRGB(112,112,112);tint=base end
@@ -114,6 +124,7 @@ function Art.update(art:any,side:number,stale:boolean,built:number,light:any,id:
 	-- Resting-art fade remains an optional-memory/old-asset fallback while a source stage prepares.
 	local alpha=if stale then .22 elseif built<1 then .55*(1-math.clamp(built,0,1)) else 0
 	Factory.sync(art.factory,built,stale,production,id,base,tint,alpha)
+	Gun.sync(art.gun,built,stale,weapon,id,base,tint,alpha,light,if art.gun and not stale and built>=1 then sheet(art.meta.gun.bank or "$weapons") else nil)
 	if art.body then art.body.ImageColor3=base;art.body.ImageTransparency=alpha;art.body.Visible=not constructing end
 	if art.paint then art.paint.ImageColor3=tint;art.paint.ImageTransparency=alpha;art.paint.Visible=not constructing end
 	if art.night then art.night.ImageTransparency=if stale or built<1 then 1 else 1-light.night*data.nightAlpha end
@@ -149,7 +160,7 @@ function Art.update(art:any,side:number,stale:boolean,built:number,light:any,id:
 	end
 end
 function Art.reset()
-	Factory.reset()
+	Factory.reset();Gun.reset()
 	for _,s in sheets do Memory.release(s.image) end;table.clear(sheets);table.clear(jobs)
 	Effects.configure(data)
 end

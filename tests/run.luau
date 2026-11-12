@@ -2111,6 +2111,7 @@ if fs.isFile(matchPath) then
 			for _, ev in sim.takeEvents() do
 				if ev.type == "samFired" then
 					fired += 1
+					eq(sam.weaponShotAt,sim.time);assert(type(sam.weaponShotAim)=="number","SAM launch records its cosmetic bearing")
 				elseif ev.type == "droneLost" then
 					lost = true
 				end
@@ -3792,12 +3793,15 @@ if fs.isFile(matchPath) then
 		foe.hp = 1e6
 		run(sim, 9.9)
 		eq(foe.hp, 1e6, "an unbuilt bunker does not fire")
+		eq(sim.entities[id].weaponShotAt,nil,"unbuilt guns have no cosmetic shot")
 		run(sim, 3)
 		assert(foe.hp < 1e6, "a built bunker fires")
+		assert(type(sim.entities[id].weaponShotAt)=="number" and type(sim.entities[id].weaponShotAim)=="number","actual fire records presentation metadata")
 		foe.x, foe.y = 20.5, 60.5 -- 18 cells: out of range
 		local hp = foe.hp
 		run(sim, 3)
 		eq(foe.hp, hp, "out of range")
+		eq(sim.entities[id].weaponAim,nil,"a disengaged gun clears its live aim")
 	end)
 	test("defences: the AT gun's cannon shot flies at 38 cells/s; tank shells and AT rockets fly too", function()
 		local sim = newSim()
@@ -3825,6 +3829,7 @@ if fs.isFile(matchPath) then
 			end
 		end
 		assert(seen, "the AT gun fired")
+		assert(type(sim.entities[id].weaponShotAt)=="number" and type(sim.entities[id].weaponShotAim)=="number")
 		assert(math.abs(seen - 19 / 38) < 0.06, `19 cells at 38 cells/s: {seen}`)
 	end)
 	test("bot guards its home: after 300 s it builds bunkers or AT guns near the HQ", function()
@@ -4296,6 +4301,7 @@ require("./men_shadows")(test, eq)
 require("./unit_stages")(test, eq)
 
 require("./image_budget")(test, eq)
+require("./atlas_board")(test, eq)
 
 require("./daylight")(test, eq)
 require("./town_detail")(test, eq)
@@ -4357,6 +4363,8 @@ require("./structure_pixels")(test, eq)
 require("./structure_effects")(test, eq)
 require("./factory_motion")(test, eq)
 require("./factory_renderer")(test, eq)
+require("./gun_motion")(test, eq)
+require("./gun_renderer")(test, eq)
 
 print(`\n{passed} passed, {failed} failed`)
 if failed > 0 then

@@ -1,7 +1,7 @@
 """Synthetic regression coverage: ground must never enter a building's caster mask."""
 import unittest,base64,zlib
 from PIL import Image
-from pack_structures import caster_mask,effect_source,factory_layout
+from pack_structures import caster_mask,effect_source,factory_layout,weapon_parts,pack,KINDS
 
 class CasterTests(unittest.TestCase):
     def test_dirt_and_paint_are_not_casters(self):
@@ -46,5 +46,43 @@ class CasterTests(unittest.TestCase):
         self.assertAlmostEqual(layout['doors'][1][0],.3);self.assertAlmostEqual(layout['doors'][0][2],.6)
         self.assertAlmostEqual(layout['crane']['run'],.6);self.assertEqual(layout['fps'],12)
         self.assertEqual(config,{'crane':{'sec':6},'weld':{'count':2}})
+
+    def test_shared_weapon_frames_keep_pose_crop_offsets_and_transparent_guards(self):
+        sheet=Image.new('RGBA',(16,16),(0,0,0,0))
+        sheet.putpixel((1,2),(100,120,140,255));sheet.putpixel((9,3),(90,110,130,255))
+        part={'x':0,'y':0,'frame':8,'cells':2,'headings':2,'tall':4}
+        data={'gun':{'atgun':{'part':'cannon'},'bunker':{'part':'machine'}},'atlas':{'parts':{'cannon':part,'machine':part}}}
+        result=weapon_parts(data,sheet);raw=zlib.decompress(base64.b64decode(result['deflate']),-15)
+        for part in result['parts'].values():
+            self.assertEqual(len(part['frames']),2)
+            for frame,offset in zip(part['frames'],((1,2),(1,3))):
+                rect=result['rects'][frame['base']];self.assertEqual(tuple(rect[4:]),offset)
+                self.assertEqual(raw[((rect[1]-1)*result['width']+rect[0])*4+3],0)
+                self.assertEqual(raw[(rect[1]*result['width']+rect[0])*4+3],255)
+
+    def test_separate_launcher_pages_keep_faction_frame_counts_and_stage_heights(self):
+        sheet=Image.new('RGBA',(16,32),(0,0,0,0))
+        parts={}
+        for i,name in enumerate(('up','half','down')):
+            parts[name]={'x':0,'y':i*8,'frame':4,'cells':2,'headings':1,'tall':(3-i)*8}
+            sheet.putpixel((i, i*8+1),(20,40,60,255))
+        data={'atlas':{'parts':parts}}
+        result=weapon_parts(data,sheet,['up','half','down'])
+        self.assertEqual(set(result['parts']),set(parts))
+        for name,part in result['parts'].items():
+            self.assertEqual(len(part['frames']),1);self.assertEqual(part['tall'],parts[name]['tall'])
+            self.assertIn(part['frames'][0]['base'],result['rects'])
+
+    def test_packed_runtime_pages_retain_every_building_look_for_the_live_renderer(self):
+        sheet=Image.new('RGBA',(24,8),(0,0,0,0));sheet.paste((60,80,70,255),(0,0,4,4))
+        body={'x':0,'y':0,'frame':4,'cells':1};part={'x':0,'y':0,'frame':4,'cells':1,'headings':1}
+        positions={kind:{} for kind in KINDS};positions['factory']={'door':{'x':.5,'y':.5,'w':.5},'crane':{'x':.5,'y':.5}}
+        data={'atlas':{'buildings':{kind:body for kind in KINDS},'parts':{'factory-door':part,'factory-crane':part,'arty':part},'bands':[1,2,3]},
+              'positions':{'coalition':positions,'republic':positions},'gun':{},'dish':{},'nightAlpha':1,
+              'artillery':{'parts':{'gun':['arty'],'pod':['arty']},'gun':[0,0],'pod':[0,0],'rest':0}}
+        result=pack(data,sheet)
+        for page in result['armies'].values():
+            self.assertEqual(set(page['looks']),set(KINDS))
+            for look in page['looks'].values():self.assertIn(look['base'],page['rects'])
 
 if __name__=='__main__':unittest.main()
