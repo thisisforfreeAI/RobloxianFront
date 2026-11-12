@@ -105,7 +105,11 @@ local function present()
 		if not point then continue end
 		if v.block then
 			if not v.art then v.art=Art.attach(v.block,v.kind,v.army) end
-			if v.art then v.block.Transparency=1;Art.update(v.art,v.side,v.stale,v.built,light,id) end
+			if v.art then
+				v.block.Transparency=1
+				local importance=if focus==id then 1000 elseif hover==id then 900 else 1/(1+(Vector2.new(point.X,point.Y)-size/2).Magnitude/100)
+				Art.update(v.art,v.side,v.stale,v.built,light,id,v.hp,v.maxHp,importance)
+			end
 		end
 		local detail=Labels.detail(v,pixels,focus==id,hover==id)
 		if v.kind=="rig" then detail.visible=v.status~="" and (pixels>=4 or focus==id or hover==id);detail.priority=if focus==id then 100 else 30 end

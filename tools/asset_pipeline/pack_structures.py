@@ -4,9 +4,20 @@ python pack_structures.py <private.json> <buildings-top.png> <ignored-output.lua
 Original sprite coordinates/configuration stay in generated, ignored modules.
 """
 import base64,json,pathlib,sys,zlib
-from PIL import Image
+from PIL import Image,ImageChops,ImageFilter
 
 KINDS=('hq','barracks','factory','bunker','atgun','radar','sam','artybase','nightops')
+
+def caster_mask(sheet,meta,bands):
+    """Only source height masks cast shadows; ground in the colour sprite never does."""
+    f=meta['frame'];x=meta['x'];y=meta['y'];alpha=Image.new('L',(f,f))
+    for i,_ in enumerate(bands):
+        mask=sheet.crop((x+(i+2)*f,y,x+(i+3)*f,y+f)).getchannel('A')
+        alpha=ImageChops.lighter(alpha,mask)
+    # APPROX: half-resolution coverage keeps the optional shadow small and retains thin fences.
+    size=(max(1,f//2),max(1,f//2));alpha=alpha.resize(size,Image.Resampling.BOX)
+    image=Image.new('RGBA',size,(255,255,255,0));image.putalpha(alpha)
+    return image
 
 def lua(value):
     if isinstance(value,dict):return '{'+','.join('['+json.dumps(str(k))+']='+lua(v) for k,v in value.items())+'}'
@@ -15,7 +26,27 @@ def lua(value):
     if isinstance(value,bool):return 'true' if value else 'false'
     return json.dumps(value)
 
-def pack(data,sheet):
+def packed(raw):
+    compress=zlib.compressobj(9,zlib.DEFLATED,-15)
+    return base64.b64encode(compress.compress(raw)+compress.flush()).decode()
+
+def effect_source(sheet,normal,meta,config):
+    f=meta['frame'];x=meta['x'];y=meta['y'];n=max(1,round(f*config['scale']))
+    crop=normal.crop((round(x*config['scale']),round(y*config['scale']),round(x*config['scale'])+n,round(y*config['scale'])+n))
+    present=crop.getchannel('A').point(lambda a:1 if a>=64 else 0)
+    # The source reads its height texture through an 8-bit premultiplied Canvas2D surface.
+    # Preserve that round trip at translucent fences, where a one-level shift changes scaffolding.
+    height=Image.frombytes('L',(n,n),bytes(
+        min(255,(((b*a+127)//255)*255*2+a)//(2*a)) if a>=64 else 0
+        for b,a in zip(crop.getchannel('B').tobytes(),crop.getchannel('A').tobytes())))
+    radius=config['wallReach'];low=height.filter(ImageFilter.MinFilter(radius*2+1))
+    raw=(sheet.crop((x,y,x+f,y+f)).tobytes()+sheet.crop((x+f,y,x+2*f,y+f)).tobytes()+
+         height.tobytes()+low.tobytes()+present.tobytes()+
+         sheet.crop((x+2*f,y,x+3*f,y+f)).getchannel('A').tobytes()+
+         sheet.crop((x+3*f,y,x+4*f,y+f)).getchannel('A').tobytes())
+    return {'n':n,'top':height.getextrema()[1],'size':len(raw),'deflate':packed(raw)}
+
+def pack(data,sheet,normal=None):
     atlas=data['atlas'];output={}
     def latest(name,group):return name+'@2' if name+'@2' in group else name
     for army in ('coalition','republic'):
@@ -62,6 +93,10 @@ def pack(data,sheet):
                 if not name.startswith('rep_'):
                     crane=pos['crane'];paste_part(b,p,'factory-crane',(crane['x']-.5,crane['y']-.5),cells)
             look={'cells':cells,'frame':f,'base':tile(b),'paint':tile(p),'night':tile(sheet.crop((x+f*(2+len(atlas['bands'])),y,x+f*(3+len(atlas['bands'])),y+f))),'sourceName':actual}
+            shadow=caster_mask(sheet,m,atlas['bands'])
+            look['shadow']={'tile':tile(shadow),'frame':shadow.width}
+            look['defence']=kind in ('bunker','atgun','radar','sam','nightops')
+            if normal is not None:look['effects']=effect_source(sheet,normal,m,data['construction'])
             if kind in data['dish'] and not (name.startswith('rep_') and kind=='sam'):
                 cfg=data['dish'][kind];partname=('rep_' if name.startswith('rep_') else '')+cfg['part'];meta=atlas['parts'][latest(partname,atlas['parts'])]
                 point=pos['dish'];frames=[]
@@ -80,9 +115,10 @@ def pack(data,sheet):
         encoded=base64.b64encode(compress.compress(canvas.tobytes())+compress.flush()).decode()
         output[army]={'width':width,'height':height,'deflate':encoded,'rects':rects,'looks':looks}
         print(army,len(tiles),'tiles',width,height,'RGBA bytes',width*height*4)
-    return {'armies':output,'nightAlpha':data['nightAlpha']}
+    return {'armies':output,'nightAlpha':data['nightAlpha'],'construction':data.get('construction'),'damage':data.get('damage')}
 
 if __name__=='__main__':
     data=json.loads(pathlib.Path(sys.argv[1]).read_text());sheet=Image.open(sys.argv[2]).convert('RGBA')
-    result=pack(data,sheet);out=pathlib.Path(sys.argv[3]);out.parent.mkdir(parents=True,exist_ok=True)
+    normal=Image.open(pathlib.Path(sys.argv[2]).with_name('buildings-normal.png')).convert('RGBA')
+    result=pack(data,sheet,normal);out=pathlib.Path(sys.argv[3]);out.parent.mkdir(parents=True,exist_ok=True)
     out.write_text('--!strict\n-- GENERATED local-only original structure pixels and metadata.\nreturn '+lua(result)+'\n')

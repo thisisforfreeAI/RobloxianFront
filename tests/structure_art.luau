@@ -1,7 +1,7 @@
 --!strict
 return function(test:any,eq:any)
 	local fs=require("@lune/fs");local luau=require("@lune/luau");local roblox=require("@lune/roblox")
-	local function fixture(bad:boolean?):any
+	local function fixture(bad:boolean?,legacy:boolean?):any
 		local h:any={created=0,released=0,attempts=0,time=0,fail=false,pending={},instances={},warnings=0}
 		local function instance(class:string):any
 			local object:any={ClassName=class};function object:Destroy() self.dead=true end;table.insert(h.instances,object);return object
@@ -9,8 +9,9 @@ return function(test:any,eq:any)
 		local memory={create=function() h.attempts+=1;if h.fail then return nil end;h.created+=1;return {} end,
 			release=function(image) if image then h.released+=1 end end,
 			upload=function(_,_,_,_,options) table.insert(h.pending,options.done);return true end}
-		local meta={width=4,height=4,deflate="synthetic",rects={["1"]={0,0,1,1,0,0},["2"]={1,0,1,1,1,0},["3"]={2,0,1,1,0,0}},
+		local meta={width=4,height=4,deflate="synthetic",rects={["1"]={0,0,1,1,0,0},["2"]={1,0,1,1,1,0},["3"]={2,0,1,1,0,0},["4"]={3,0,1,1,2,1}},
 			looks={hq={frame=2,cells=5,base=1,paint=2,night=3,dish={frame=2,cells=2,x=0,y=0,speed=1,frames={{base=1},{base=2,paint=3}}}}}}
+		if not legacy then (meta.looks.hq :: any).shadow={tile=4,frame=4} end
 		local data={nightAlpha=.9,armies={coalition=meta,republic=meta}}
 		local shared:any={Config={World="world"},Maps={MapCodec="codec"},Utilities={Inflate="inflate"}}
 		function shared:FindFirstChild() return nil end
@@ -18,9 +19,9 @@ return function(test:any,eq:any)
 		local modules:any={world={},codec={base64Decode=function() return buffer.create(0) end},inflate={raw=function(_,_,checkpoint)
 			if h.slow then for _=1,8 do h.time+=.001;checkpoint() end end
 			return buffer.create(64)
-		end},memory=memory,art=data}
+		end},memory=memory,art=data,effects={configure=function() end,step=function() end,attach=function() return {} end,request=function(_,_,hp,maxHp,stale) h.effectHp=hp;h.effectMax=maxHp;return if stale then nil else h.effectMode end}}
 		local env:any=setmetatable({game={GetService=function() return {WaitForChild=function() return shared end} end},
-			script={Parent={ImageMemory="memory",Parent={FindFirstChild=function() return assets end}}},require=function(key) if bad and key=="art" then error("bad local art") end;return assert(modules[key],key) end,
+			script={Parent={ImageMemory="memory",StructureEffects="effects",Parent={FindFirstChild=function() return assets end}}},require=function(key) if bad and key=="art" then error("bad local art") end;return assert(modules[key],key) end,
 			Instance={new=instance},Vector2=roblox.Vector2,UDim2=roblox.UDim2,Color3=roblox.Color3,
 			Enum={NormalId={Top=1},SurfaceGuiSizingMode={FixedSize=1},ResamplerMode={Pixelated=1}},Content={fromObject=function(image) return image end},
 			os={clock=function() return h.time end},warn=function() h.warnings+=1 end},{__index=getfenv()})
@@ -39,6 +40,19 @@ return function(test:any,eq:any)
 		local h=fixture(true)
 		for _=1,100 do eq(h.art.attach({},"hq","coalition"),nil);h.art.step() end
 		eq(h.created,0);eq(h.warnings,1)
+	end)
+	test("building shadows use the separate raised-object mask and its own crop scale",function()
+		local h=fixture();h.art.attach({},"hq","coalition");h:flush(true);local art=h.art.attach({},"hq","coalition")
+		eq(art.body.ImageRectOffset,roblox.Vector2.new(0,0));eq(art.shadow.ImageRectOffset,roblox.Vector2.new(3,0))
+		eq(art.shadow.Size,roblox.UDim2.fromScale(.25,.25))
+		h.art.update(art,1,false,1,{night=0,shadow={1,-1},shadowAlpha=1},0)
+		assert(math.abs(art.shadow.Position.X.Scale-.68)<1e-6);assert(math.abs(art.shadow.Position.Y.Scale-.07)<1e-6)
+		eq(art.body.Position,roblox.UDim2.fromScale(0,0))
+		h.art.update(art,1,false,1,{night=1,shadow={0,1},shadowAlpha=0},0);eq(art.shadow.ImageTransparency,1)
+	end)
+	test("old local atlases without caster masks never reuse dirt-bearing colour art as a shadow",function()
+		local h=fixture(false,true);h.art.attach({},"hq","coalition");h:flush(true);local art=h.art.attach({},"hq","coalition")
+		assert(art.body);eq(art.shadow,nil);h.art.update(art,1,false,1,{night=0,shadow={1,0},shadowAlpha=1},0)
 	end)
 	test("budget and upload failures throttle retries and release failed images",function()
 		local h=fixture();h.fail=true
@@ -115,4 +129,15 @@ return function(test:any,eq:any)
 		local h=renderer();h.renderer.apply(1,{{1,"minefield",1,2,2,100,100,0,0,0,1,0,"republic"}})
 		eq(next(h.renderer.each()),nil);for _,object in h.instances do assert(object.ClassName~="Part") end
 	end)
+	test("ready construction replaces the full sprite while damage keeps it and receives authoritative health",function()
+		local h=fixture();h.art.attach({},"hq","coalition");h:flush(true);local art=h.art.attach({},"hq","coalition")
+		local light={night=1,shadow={1,0},shadowAlpha=1}
+		h.effectMode="construction";h.art.update(art,1,false,.5,light,5,40,100)
+		eq(art.body.Visible,false);eq(art.paint.Visible,false);eq(art.shadow.ImageTransparency,1);eq(art.dish.base.ImageTransparency,1)
+		eq(h.effectHp,40);eq(h.effectMax,100)
+		h.effectMode="damage";h.art.update(art,1,false,1,light,5,20,100);eq(art.body.ImageTransparency,0)
+		eq(art.night.ZIndex,3);eq(art.dish.base.ZIndex,4)
+		h.art.update(art,1,true,1,light,5,1,1);assert(art.body.ImageTransparency<1)
+	end)
+
 end

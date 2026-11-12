@@ -4353,6 +4353,8 @@ require("./cooperative_paint")(test, eq)
 
 require("./structure_labels")(test, eq)
 require("./structure_art")(test, eq)
+require("./structure_pixels")(test, eq)
+require("./structure_effects")(test, eq)
 
 print(`\n{passed} passed, {failed} failed`)
 if failed > 0 then
