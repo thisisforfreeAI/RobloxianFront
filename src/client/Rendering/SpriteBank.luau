@@ -94,13 +94,14 @@ local function page(name: string): any
 		local size = Vector2.new(meta.width, meta.height)
 		-- Battle-only wreck/soot pages are optional detail. They must not evict the visible map
 		-- merely because the first damaged unit of another type asks for its large wreck sheet.
-		local image = ImageMemory.create(size,if string.find(name,"Wreck",1,true) then "detail" else "core")
+		local kind=if string.find(name,"Wreck",1,true) then "detail" else "core"
+		local image = ImageMemory.create(size,kind)
 		assert(image, "EditableImage memory unavailable after reclaiming unused art")
 		allocated = image
 		-- Admission precedes the expensive decode; refused optional pages should cost no full pixel buffer.
 		local pixels = PixelCodec.decode(MapCodec.base64Decode(meta.rle), meta.width, meta.height)
 		image:WritePixelsBuffer(Vector2.zero, size, pixels)
-		return { image = image, content = Content.fromObject(image), meta = meta, at = os.clock() }
+		return { image = image, content = Content.fromObject(image), meta = meta, at = os.clock(),kind=kind }
 	end)
 	if not ok then
 		ImageMemory.release(allocated)
@@ -379,11 +380,11 @@ end
 local function clearLookCaches()
 	table.clear(looks); table.clear(figures); table.clear(wrecks); table.clear(soots); table.clear(states)
 end
-ImageMemory.register(20, function(needed: number, protected: any)
+ImageMemory.register(20, function(needed: number, protected: any,detailOnly:boolean?)
 	local before = ImageMemory.stats()
 	local candidates = {}
 	for name, p in pages do
-		if p and not protected[p.content] and os.clock() - p.at >= 1 then table.insert(candidates, { name = name, page = p }) end
+		if p and (not detailOnly or p.kind=="detail") and not protected[p.content] and os.clock() - p.at >= 1 then table.insert(candidates, { name = name, page = p }) end
 	end
 	table.sort(candidates, function(a, b) return a.page.at < b.page.at end)
 	for _, candidate in candidates do

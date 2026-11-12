@@ -8,6 +8,7 @@ function ImageBudget.new(factory: (number, number) -> any, options: any?)
 	local self: any = { used = 0, detail = 0, ceiling = o.ceiling or 48 * 1024 * 1024,
 		detailLimit = o.detailLimit or 16 * 1024 * 1024, reserve = o.reserve or 8 * 1024 * 1024,
 		terrain = 0, terrainReserve = o.terrainReserve or 0,
+		recoveryLimit = o.recoveryLimit or 4 * 1024 * 1024,
 		records = {}, reclaimers = {}, listeners = {}, epoch = 0, guard = nil, knownCeiling = nil, reclaiming = false }
 	function self:protect(): any
 		return if self.guard then self.guard() else {}
@@ -33,18 +34,18 @@ function ImageBudget.new(factory: (number, number) -> any, options: any?)
 		self.epoch += 1
 		for _, fn in self.listeners do fn() end
 	end
-	function self:reclaim(bytes: number, minimumPriority: number?, maximumPriority: number?)
+	function self:reclaim(bytes: number, minimumPriority: number?, maximumPriority: number?, detailOnly:boolean?)
 		if bytes <= 0 or self.reclaiming then return end
 		self.reclaiming = true
 		local ok, protected = pcall(self.protect, self)
 		if not ok then self.reclaiming = false; return end -- do not evict without a valid live-image guard
-		local before = self.used
+		local before = if detailOnly then self.detail else self.used
 		for _, r in self.reclaimers do
 			if r.priority < (minimumPriority or 0) then continue end
 			if maximumPriority and r.priority > maximumPriority then continue end
-			local needed = bytes - (before - self.used)
+			local needed = bytes - (before - (if detailOnly then self.detail else self.used))
 			if needed <= 0 then break end
-			local reclaimed, err = pcall(r.fn, needed, protected)
+			local reclaimed, err = pcall(r.fn, needed, protected,detailOnly)
 			if not reclaimed then warn("[ImageBudget] A reclaimer failed:", err) end
 		end
 		self.reclaiming = false
@@ -72,6 +73,22 @@ function ImageBudget.new(factory: (number, number) -> any, options: any?)
 		-- Only unused art yields here; never evict one visible town chunk to load another.
 		self:reclaim(math.max(0, self.used + bytes + self.reserve + gap - ceiling), 20, 20)
 		return self:canDetail(bytes,kind)
+	end
+	-- Recover a feasible aggregate terrain plan without allocating or evicting visible detail.
+	-- Clear the detail-pool constraint first; freeing a core image alone cannot fix that constraint.
+	function self:recoverTerrain(required:number,replacing:number?):number
+		local credit=math.clamp(replacing or 0,0,self.terrain)
+		local available=self:detailHeadroom(credit,"terrain")
+		if required<=available or required>self.detailLimit then return available end
+		local before=self.used
+		local detailNeed=math.max(0,self.detail+required-credit-self.detailLimit)
+		if detailNeed>0 then self:reclaim(math.min(detailNeed,self.recoveryLimit),20,20,true) end
+		local remaining=self.recoveryLimit-(before-self.used)
+		if self.detail+required-credit<=self.detailLimit and remaining>0 then
+			local need=required-self:detailHeadroom(credit,"terrain")
+			self:reclaim(math.min(need,remaining),20,20)
+		end
+		return self:detailHeadroom(credit,"terrain")
 	end
 	function self:create(w: number, h: number, kind: string?): any
 		kind = kind or "core"

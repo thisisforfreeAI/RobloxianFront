@@ -71,6 +71,52 @@ return function(test: any, eq: any)
 		b:release(image); b:release(image)
 		eq(state.destroyed, 1); eq(released, 1); eq(b.epoch, 1); eq(b.used, 0)
 	end)
+	test("terrain recovery clears idle detail without wasting core art when only the detail pool is full",function()
+		local create,state=factory(1000);local b=Budget.new(create,{ceiling=1000,detailLimit=100,reserve=0})
+		local terrain=b:create(2,5,"terrain");local idleDetail=b:create(2,5,"detail");local idleCore=b:create(4,5)
+		local filtered=false
+		b:register(10,function() error("visible effects must not be reclaimed here") end)
+		b:register(30,function() b:release(terrain) end)
+		b:register(20,function(_,_,detailOnly) filtered=detailOnly;b:release(idleDetail) end)
+		eq(b:recoverTerrain(80,40),100);eq(filtered,true);assert(b.records[terrain]);assert(b.records[idleCore]);eq(state.attempts,3)
+	end)
+	test("terrain recovery can clear idle core art when global capacity is the remaining constraint",function()
+		local create,state=factory(1000);local b=Budget.new(create,{ceiling=200,detailLimit=100,reserve=20})
+		local terrain=b:create(2,5,"terrain");local live=b:create(4,5);local idle=b:create(2,5)
+		local protected={[live]=true};b.guard=function() return protected end
+		b:register(20,function(_,guard,detailOnly) eq(guard,protected);eq(detailOnly,nil);b:release(idle) end)
+		eq(b:recoverTerrain(80,40),100);assert(b.records[live]);assert(b.records[terrain]);eq(state.attempts,3)
+	end)
+	test("terrain recovery stops after its bounded release pass and skips impossible plans or invalid guards",function()
+		local create,state=factory(1000);local b=Budget.new(create,{ceiling=1000,detailLimit=100,reserve=0,recoveryLimit=16})
+		local terrain=b:create(2,5,"terrain");local idle={b:create(1,5,"detail"),b:create(1,5,"detail"),b:create(1,5,"detail")}
+		for _,image in idle do b:register(20,function() b:release(image) end) end
+		eq(b:recoverTerrain(100,40),60);eq(state.destroyed,1,"one indivisible image may exceed the byte target")
+		b.guard=function() error("no valid visible-image guard") end
+		eq(b:recoverTerrain(100,40),60);eq(b:recoverTerrain(101,40),60);eq(state.destroyed,1);eq(state.attempts,4);assert(b.records[terrain])
+	end)
+	test("actual sprite cache recovery retains active wreck art and frees it only after it becomes idle",function()
+		local fs=require("@lune/fs");local luau=require("@lune/luau");local now=0
+		local create,state=factory(1000)
+		local b=Budget.new(function(w,h) local image=create(w,h);image.WritePixelsBuffer=function() end;return image end,{ceiling=1000,detailLimit=100,reserve=0})
+		local terrain=b:create(2,5,"terrain")
+		local function module(meta) return {meta=meta,IsA=function() return true end} end
+		local assets={OrigTank=module({width=1,height=7,frame=1,columns=1,rle="",strips={hull_colour=0,hull_paint=0,turret_colour=0,turret_paint=0}}),
+			OrigTankWreck=module({width=3,height=4,frame=1,columns=1,rle="",strips={wreck_hull_colour=0,wreck_hull_paint=0,wreck_turret_colour=0,wreck_turret_paint=0}})}
+		local memory={create=function(size,kind) return b:create(size.X,size.Y,kind) end,release=function(image) b:release(image) end,
+			register=function(priority,fn) return b:register(priority,fn) end,onRelease=function(fn) b:onRelease(fn) end,stats=function() return b.used end}
+		local modules={memory=memory,codec={base64Decode=function() return buffer.create(0) end},pixels={decode=function(_data,w,h) return buffer.create(w*h*4) end}}
+		local shared={Maps={MapCodec="codec"},Assets={PixelCodec="pixels"}}
+		local env=setmetatable({game={GetService=function() return {WaitForChild=function() return shared end} end},
+			script={Parent={ImageMemory="memory",Parent={FindFirstChild=function() return {FindFirstChild=function(_,name) return assets[name] end} end}}},
+			require=function(key) return if type(key)=="table" then key.meta else modules[key] end,
+			Content={fromObject=function(image) return image end},Vector2={new=function(x,y) return {X=x,Y=y} end},os={clock=function() return now end},warn=function() end},{__index=getfenv()})
+		local bank=luau.load(fs.readFile("src/client/Rendering/SpriteBank.luau"),{environment=env})()
+		local live=bank.look("tank").body.content;local soot=bank.soot("tank").content
+		local protected={[live]=true,[soot]=true};b.guard=function() return protected end
+		now=2;eq(b:recoverTerrain(92,40),52);assert(b.records[soot])
+		protected[soot]=nil;eq(b:recoverTerrain(92,40),100);eq(b.records[soot],nil);assert(b.records[live]);assert(b.records[terrain]);eq(state.attempts,3)
+	end)
 	test("battle detail cannot spend the reserved terrain floor before the map arrives",function()
 		local create,state=factory(100)
 		local b=Budget.new(create,{ceiling=100,detailLimit=80,reserve=0,terrainReserve=32})

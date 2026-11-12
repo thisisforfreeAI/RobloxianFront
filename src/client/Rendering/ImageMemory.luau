@@ -10,6 +10,8 @@ local budget = Budget.new(function(w: number, h: number)
 end,{terrainReserve=4*1024*1024}) -- APPROX: carve terrain coverage from the existing 16 MiB detail pool.
 local ImageMemory = {}
 local trimAt = 0
+local recoverAt=0
+local recoveryPasses,recoveryReleased=0,0
 local uploadConnection:any=nil
 local warned=setmetatable({},{__mode="k"})
 local uploads=Uploads.new(function(image,x,y,w,h,pixels)
@@ -50,7 +52,15 @@ function ImageMemory.onRelease(fn: () -> ()) budget:onRelease(fn) end
 function ImageMemory.setGuard(fn: () -> any) budget.guard = fn end
 function ImageMemory.stats(): (number, number) return budget.used, budget.detail end
 function ImageMemory.pressureStats():any
-	return {used=budget.used,detail=budget.detail,terrain=budget.terrain,terrainReserve=budget.terrainReserve,detailLimit=budget.detailLimit,ceiling=math.min(budget.ceiling,budget.knownCeiling or math.huge)}
+	return {used=budget.used,detail=budget.detail,terrain=budget.terrain,terrainReserve=budget.terrainReserve,detailLimit=budget.detailLimit,ceiling=math.min(budget.ceiling,budget.knownCeiling or math.huge),recoveryPasses=recoveryPasses,recoveryReleased=recoveryReleased}
+end
+function ImageMemory.terrainLimit():number return budget.detailLimit end
+function ImageMemory.recoverTerrain(required:number,replacing:number?):number
+	local available=budget:detailHeadroom(replacing,"terrain")
+	if required<=available or required>budget.detailLimit or os.clock()<recoverAt then return available end
+	recoverAt=os.clock()+1;recoveryPasses+=1
+	local before=budget.used;available=budget:recoverTerrain(required,replacing)
+	recoveryReleased+=before-budget.used;return available
 end
 function ImageMemory.detailHeadroom(replacing:number?):number return budget:detailHeadroom(replacing,"terrain") end
 function ImageMemory.canDetail(size: Vector2): boolean

@@ -66,6 +66,11 @@ return function(test:any,eq:any)
 		function memory.register(priority,fn) h.reclaim=fn;h.reclaimPriority=priority;return function() h.unregistered=true end end
 		function memory.stats() return 0 end;function memory.canDetail() return true end
 		function memory.detailHeadroom() return h.headroom or math.huge end
+		function memory.terrainLimit() return 2000 end
+		function memory.recoverTerrain(required,held)
+			if h.recoveryEnabled then h.recoveryCalls=(h.recoveryCalls or 0)+1;h.recoveryRequired=required;h.headroom=2000 end
+			return h.headroom or math.huge
+		end
 		local shared:any={Config={World="world"},Maps={MapCodec="codec"},Utilities={Inflate="inflate"},Simulation={ForestMap="forest"},Presentation={ImagePixels="pixels",TownDetail="detail",TownPatch="patch",TownLods="lods",ForestRaster="raster",GroundScorchPixels="scorch"},FindFirstChild=function() return data end}
 		local raster={overview=Raster.overview,paint=function(...) h.compositions=(h.compositions or 0)+1;return Raster.paint(...) end}
 		local modules:any={world={STUDS_PER_CELL=4,GROUND_Y=0,TOP_GUI_YAW=0},memory=memory,codec={base64Decode=function(key) return key end},inflate={raw=function(key,_bytes,checkpoint)
@@ -209,6 +214,14 @@ return function(test:any,eq:any)
 		for _=1,6 do h.step() end
 		assert(h.fullDecodes>before,"stationary view should upgrade after coverage settles")
 		h.destroy();eq(h.warnings,0)
+	end)
+	test("a settled town view recovers a better feasible tier after idle battle art yields",function()
+		local h=make(true);h.useMips=true;h.headroom=600;h.recoveryEnabled=true;assert(h.renderer.build("test",{}))
+		for i=1,6 do h.pan(.5+i*.1);h.step() end
+		eq(h.recoveryCalls,nil);eq(h.renderer.stats().stride,2);eq(h.renderer.stats().ready,2)
+		for _=1,10 do h.step() end
+		eq(h.recoveryCalls,1);eq(h.recoveryRequired,1568);eq(h.renderer.stats().stride,1);eq(h.renderer.stats().ready,2)
+		local calls=h.recoveryCalls;h.destroy();h.step();eq(h.recoveryCalls,calls)
 	end)
 	test("cooperative full upgrades retain the preview during yields and cancel on map teardown",function()
 		local h=make(true);h.useMips=true;h.yieldWarm=true;assert(h.renderer.build("test",{}))

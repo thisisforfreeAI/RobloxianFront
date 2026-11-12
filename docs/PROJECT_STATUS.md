@@ -3233,3 +3233,41 @@ update per frame. The player may reduce local Studio overhead but is not a fix f
 a guarantee of more editable-image memory. Native Studio/player/device comparisons remain required:
 https://create.roblox.com/docs/performance-optimization/design
 https://create.roblox.com/docs/reference/engine/classes/EditableImage
+
+## Terrain detail recovery after battle pressure (2026-11-11)
+
+The next stability pass addresses a recovery stall: cached, expired wreck/soot images can keep the
+optional detail pool occupied after their visible wrecks disappear. Aggregate map planning then
+chooses a coarse tier without attempting a larger allocation, so the ordinary allocation-triggered
+unused-art cleanup may never run. The map can stay coarse even though reclaimable art is available.
+
+When the camera has settled for 0.35 s, TownRenderer now requests headroom for the best zoom tier
+that could fit the intrinsic 16 MiB detail limit. ImageMemory throttles recovery to at most one
+pass per second. ImageBudget first clears a detail-pool shortage through priority-20 unused-art
+reclaimers in detail-only mode. SpriteBank filters that pass to optional detail pages, retaining
+core art when freeing it would not relieve the binding detail constraint. If global/native headroom
+is the remaining constraint, the pass may then reclaim other unused art. Current unit/wreck Content
+objects are protected by the existing guard, and SpriteBank's one-second recent-use grace remains.
+Priority-10 optional world layers and priority-30 visible town detail are not visited by recovery.
+Bad guards, already affordable plans and plans exceeding the intrinsic detail limit do not trigger
+unsafe reclamation or native allocation probes.
+
+APPROX rendering policy: each recovery pass targets at most 4 MiB of releases; one indivisible
+image can take the actual release beyond that target. This is not a hard frame-time budget. If the
+detail shortage remains, recovery does not also discard core art to solve an unrelated constraint.
+The returned headroom feeds ordinary LOD planning. Source warmup, memory admission, queued uploads
+and retained-preview swaps still govern when sharper detail appears. Recovery itself allocates no
+native images, raises no memory limits and does not remove active wrecks, change gameplay damage or
+rebuild burned buildings. Essential core images and device capacity can still prevent full detail.
+
+ImageMemory.pressureStats() adds recoveryPasses and recoveryReleased diagnostics. The owner should
+Stop Play/restart after Rojo sync, repeat the battle and let its effects/wrecks clear while the
+camera stays over the same area. Compare the current town stride, time to sharper coverage, native
+frame spikes and these counters. Successful cleanup is not a measured native FPS improvement.
+
+Verified on installed files: **499 Lune tests passed, 0 failed**, changed Luau compiles (syntax
+only), and Rojo build passes. Six new regressions exercise detail-only recovery, global-headroom
+recovery, bounded passes/impossible plans/guard failure, actual SpriteBank active-wreck protection
+followed by idle release, actual ImageMemory throttling/cancellation without allocation, and actual
+TownRenderer upgrades after stationary recovery while panning does not trigger it. **Studio
+B217-B218 have not been run.** Earlier Studio/player checks remain pending where not reported.

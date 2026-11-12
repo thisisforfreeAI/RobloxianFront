@@ -718,6 +718,13 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 			for _,c in want do visible[c]=true;if c.image then visibleHeld+=c.iw*c.ih*4 end end
 			for _,c in chunks do if c.image then held+=c.iw*c.ih*4 end;local old=(c :: any).retiring;if old then held+=old.iw*old.ih*4 end end
 			local allowance=ImageMemory.detailHeadroom(held)
+			if ImageMemory.recoverTerrain and ImageMemory.terrainLimit and now-steadySince>=.35 then
+				-- A feasible better tier may be blocked only by expired battle art in the detail pool.
+				-- Recovery is throttled by ImageMemory and visits guarded unused-art reclaimers only.
+				local ideal=TownDetail.fitStride(stride,want,TILE_PX,ImageMemory.terrainLimit())
+				local required=TownDetail.bytes(want,ideal,TILE_PX)
+				if required>allowance then allowance=ImageMemory.recoverTerrain(required,held) end
+			end
 			stride=TownDetail.fitStride(stride,want,TILE_PX,allowance)
 			if TownDetail.bytes(want,stride,TILE_PX)>ImageMemory.detailHeadroom(visibleHeld) then
 				-- Native overscan/spares yield before a camera-visible chunk is left on the overview.

@@ -34,4 +34,14 @@ return function(test:any,eq:any)
 		eq(h.warnings,1);eq(failures,2);eq(h.memory.uploadStats().bytes,0)
 		h.memory.release(a);h.signal:fire();eq(h.memory.stats(),0)
 	end)
+	test("actual terrain recovery throttles releases, cancels old uploads and performs no native allocation",function()
+		local h=make();local terrain=h.memory.create({X=1,Y=1},"terrain");local idle={}
+		for _=1,3 do table.insert(idle,h.memory.create({X=1024,Y=1024},"detail")) end
+		local calls=0;h.memory.register(20,function() calls+=1;h.memory.release(idle[calls]) end)
+		h.upload(idle[1],10);eq(h.memory.uploadStats().images,1)
+		eq(h.memory.recoverTerrain(8*1024*1024,4),8*1024*1024);eq(calls,1);eq(h.memory.uploadStats().images,0)
+		eq(h.memory.recoverTerrain(12*1024*1024,4),8*1024*1024);eq(calls,1)
+		h.now=1.1;eq(h.memory.recoverTerrain(12*1024*1024,4),12*1024*1024);eq(calls,2);eq(#h.images,4);eq(terrain.dead,nil)
+		local stats=h.memory.pressureStats();eq(stats.recoveryPasses,2);eq(stats.recoveryReleased,8*1024*1024)
+	end)
 end
