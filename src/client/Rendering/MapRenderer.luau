@@ -71,7 +71,8 @@ local function bakedGround(map: MapCodec.DecodedMap): { { content: Content, x: n
 			table.insert(allocated, image)
 			local pixels = Inflate.raw(MapCodec.base64Decode(piece.deflate), piece.width * g.height * 4)
 			RoadRenderer.paint(pixels, piece.width, g.height, map, piece.x, g.width)
-			image:WritePixelsBuffer(Vector2.zero, size, pixels)
+			local written,err=ImageMemory.write(image,Vector2.zero,size,pixels)
+			assert(written,err)
 			table.insert(out, { content = Content.fromObject(image), x = piece.x / g.width, width = piece.width / g.width, image = image })
 		end
 		return out
@@ -85,64 +86,78 @@ local function bakedGround(map: MapCodec.DecodedMap): { { content: Content, x: n
 end
 
 local function buildImageGround(map: MapCodec.DecodedMap, ground: Part): boolean
-	local baked = bakedGround(map)
-	if baked then
-		ground.Destroying:Connect(function() for _, piece in baked do ImageMemory.release(piece.image) end end)
-		local gui = Instance.new("SurfaceGui")
+	local allocated={}
+	local gui:any=nil
+	local function prepare():boolean
+		local baked = bakedGround(map)
+		if baked then
+			for _,piece in baked do table.insert(allocated,piece.image) end
+			gui = Instance.new("SurfaceGui")
+			gui.Face = Enum.NormalId.Top
+			gui.SizingMode = Enum.SurfaceGuiSizingMode.FixedSize
+			gui.CanvasSize = Vector2.new(map.width * 4, map.height * 4)
+			gui.LightInfluence = 0
+			gui.Adornee = ground
+			for _, piece in baked do
+				local label = Instance.new("ImageLabel");label.Parent=gui
+				label.Position = UDim2.fromScale(piece.x, 0)
+				label.Size = UDim2.fromScale(piece.width, 1)
+				label.BackgroundTransparency = 1
+				label.ResampleMode = Enum.ResamplerMode.Pixelated
+				label.ImageContent = piece.content
+				label.Parent = gui
+			end
+			gui.Parent = ground
+			print(`[MapRenderer] the game's baked ground, {#baked} strips`)
+			return true
+		end
+		local ok, image = pcall(function()
+			return ImageMemory.create(Vector2.new(map.width, map.height))
+		end)
+		if not ok or not image then
+			warn("[MapRenderer] EditableImage unavailable, using Part fallback:", image)
+			return false
+		end
+		table.insert(allocated,image)
+		local cells = map.width * map.height
+		local pixels = buffer.create(cells * 4)
+		for i = 0, cells - 1 do
+			local r, g, b = cellColor(map, i)
+			buffer.writeu8(pixels, i * 4, r)
+			buffer.writeu8(pixels, i * 4 + 1, g)
+			buffer.writeu8(pixels, i * 4 + 2, b)
+			buffer.writeu8(pixels, i * 4 + 3, 255)
+		end
+		RoadRenderer.paint(pixels, map.width, map.height, map, 0, map.width)
+		local written,err=ImageMemory.write(image,Vector2.zero,Vector2.new(map.width,map.height),pixels)
+		assert(written,err)
+	
+		-- The ground part is turned by World.TOP_GUI_YAW, so GUI x runs east (+X) and GUI y south (+Z):
+		-- row 0 is the map's north edge. Studio test 2b compares this with the Part ground.
+		gui = Instance.new("SurfaceGui")
 		gui.Face = Enum.NormalId.Top
 		gui.SizingMode = Enum.SurfaceGuiSizingMode.FixedSize
 		gui.CanvasSize = Vector2.new(map.width * 4, map.height * 4)
 		gui.LightInfluence = 0
 		gui.Adornee = ground
-		for _, piece in baked do
-			local label = Instance.new("ImageLabel")
-			label.Position = UDim2.fromScale(piece.x, 0)
-			label.Size = UDim2.fromScale(piece.width, 1)
-			label.BackgroundTransparency = 1
-			label.ResampleMode = Enum.ResamplerMode.Pixelated
-			label.ImageContent = piece.content
-			label.Parent = gui
-		end
+		local label = Instance.new("ImageLabel");label.Parent=gui
+		label.Size = UDim2.fromScale(1, 1)
+		label.BackgroundTransparency = 1
+		label.ResampleMode = Enum.ResamplerMode.Pixelated
+		label.ImageContent = Content.fromObject(image)
+		label.Parent = gui
 		gui.Parent = ground
-		print(`[MapRenderer] the game's baked ground, {#baked} strips`)
+		print(`[MapRenderer] EditableImage ground {map.width}x{map.height}`)
 		return true
 	end
-	local ok, image = pcall(function()
-		return ImageMemory.create(Vector2.new(map.width, map.height))
-	end)
-	if not ok or not image then
-		warn("[MapRenderer] EditableImage unavailable, using Part fallback:", image)
+	local ok,result=pcall(prepare)
+	if not ok or result~=true then
+		if gui then gui:Destroy() end
+		for _,image in allocated do ImageMemory.release(image) end
+		if not ok then warn("[MapRenderer] Image ground unavailable; using Part fallback:",result) end
 		return false
 	end
-	ground.Destroying:Connect(function() ImageMemory.release(image) end)
-	local cells = map.width * map.height
-	local pixels = buffer.create(cells * 4)
-	for i = 0, cells - 1 do
-		local r, g, b = cellColor(map, i)
-		buffer.writeu8(pixels, i * 4, r)
-		buffer.writeu8(pixels, i * 4 + 1, g)
-		buffer.writeu8(pixels, i * 4 + 2, b)
-		buffer.writeu8(pixels, i * 4 + 3, 255)
-	end
-	RoadRenderer.paint(pixels, map.width, map.height, map, 0, map.width)
-	image:WritePixelsBuffer(Vector2.zero, Vector2.new(map.width, map.height), pixels)
-
-	-- The ground part is turned by World.TOP_GUI_YAW, so GUI x runs east (+X) and GUI y south (+Z):
-	-- row 0 is the map's north edge. Studio test 2b compares this with the Part ground.
-	local gui = Instance.new("SurfaceGui")
-	gui.Face = Enum.NormalId.Top
-	gui.SizingMode = Enum.SurfaceGuiSizingMode.FixedSize
-	gui.CanvasSize = Vector2.new(map.width * 4, map.height * 4)
-	gui.LightInfluence = 0
-	gui.Adornee = ground
-	local label = Instance.new("ImageLabel")
-	label.Size = UDim2.fromScale(1, 1)
-	label.BackgroundTransparency = 1
-	label.ResampleMode = Enum.ResamplerMode.Pixelated
-	label.ImageContent = Content.fromObject(image)
-	label.Parent = gui
-	gui.Parent = ground
-	print(`[MapRenderer] EditableImage ground {map.width}x{map.height}`)
+	ground.Destroying:Connect(function() for _,image in allocated do ImageMemory.release(image) end end)
 	return true
 end
 
@@ -294,3 +309,4 @@ function MapRenderer.build(map: MapCodec.DecodedMap): Folder
 end
 
 return MapRenderer
+

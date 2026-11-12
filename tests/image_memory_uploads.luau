@@ -7,8 +7,14 @@ return function(test:any,eq:any)
 		function signal:Connect(fn) local c:any={fn=fn};function c:Disconnect() self.dead=true end;table.insert(self.items,c);return c end
 		function signal:fire() h.now+=1/60;for _,c in table.clone(self.items) do if not c.dead then c.fn() end end end
 		local asset={CreateEditableImage=function()
+			h.attempts=(h.attempts or 0)+1
+			if h.denyCreate then error("EditableImage is not accessible. Go to the Security Tab in Experience Settings to enable this API.") end
 			local image:any={};function image:Destroy() self.dead=true end
-			function image:WritePixelsBuffer(_pos,_size,pixels) assert(not self.dead);if self.fail then error("synthetic failed upload") end;table.insert(h.writes,{self,buffer.readu32(pixels,0)}) end
+			function image:WritePixelsBuffer(_pos,_size,pixels)
+				h.nativeWrites=(h.nativeWrites or 0)+1;assert(not self.dead)
+				if h.denyWrite then error("EditableImage is not accessible. Go to the Security Tab in Experience Settings to enable this API.") end
+				if self.fail then error("synthetic failed upload") end;table.insert(h.writes,{self,buffer.readu32(pixels,0)})
+			end
 			table.insert(h.images,image);return image
 		end}
 		local shared={Presentation={ImageBudget="budget",ImageUploads="uploads"}}
@@ -43,5 +49,30 @@ return function(test:any,eq:any)
 		eq(h.memory.recoverTerrain(12*1024*1024,4),8*1024*1024);eq(calls,1)
 		h.now=1.1;eq(h.memory.recoverTerrain(12*1024*1024,4),12*1024*1024);eq(calls,2);eq(#h.images,4);eq(terrain.dead,nil)
 		local stats=h.memory.pressureStats();eq(stats.recoveryPasses,2);eq(stats.recoveryReleased,8*1024*1024)
+	end)
+	test("disabled EditableImage creation is latched once rather than repeatedly probing the native API",function()
+		local h=make();h.denyCreate=true;local calls=0;h.memory.onAccessFailure(function() calls+=1 end)
+		for _=1,30 do eq(h.image(),nil) end
+		eq(h.attempts,1);eq(calls,1);eq(h.warnings,1);assert(h.memory.accessFailure())
+		local late=0;local stop=h.memory.onAccessFailure(function() late+=1 end);eq(late,1);stop()
+	end)
+	test("permission failure on a queued write cancels further native probes without starving callbacks",function()
+		local h=make();local a,b=h.image(),h.image();local failed=0
+		h.upload(a,1,{done=function(ok) if not ok then failed+=1 end end});h.upload(b,2,{done=function(ok) if not ok then failed+=1 end end});h.denyWrite=true
+		h.signal:fire();h.signal:fire();eq(h.nativeWrites,1);eq(failed,2);eq(h.warnings,1);eq(h.memory.uploadStats().bytes,0)
+		eq(h.image(),nil);eq(h.upload(b,3),false);h.memory.release(a);h.memory.release(b);eq(h.memory.stats(),0)
+	end)
+	test("bootstrap writes report permission failures safely while unrelated write errors remain retryable",function()
+		local h=make();local a=h.image();local p=buffer.create(4);a.fail=true
+		eq(h.memory.write(a,{X=0,Y=0},{X=1,Y=1},p),false);eq(h.memory.accessFailure(),nil)
+		a.fail=false;eq(h.memory.write(a,{X=0,Y=0},{X=1,Y=1},p),true)
+		h.denyWrite=true;eq(h.memory.write(a,{X=0,Y=0},{X=1,Y=1},p),false);local native=h.nativeWrites
+		eq(h.memory.write(a,{X=0,Y=0},{X=1,Y=1},p),false);eq(h.nativeWrites,native);eq(h.warnings,1)
+	end)
+	test("native access refusal during method lookup is caught before it can escape bootstrap",function()
+		local h=make();local a=h.image();a.WritePixelsBuffer=nil
+		setmetatable(a,{__index=function(_,key) if key=="WritePixelsBuffer" then error("EditableImage is not accessible.") end;return nil end})
+		eq(h.memory.write(a,{X=0,Y=0},{X=1,Y=1},buffer.create(4)),false);assert(h.memory.accessFailure());eq(h.warnings,1)
+		eq(h.memory.canDetail({X=1,Y=1}),false);eq(h.memory.detailHeadroom(),0);eq(h.memory.recoverTerrain(4),0);eq(h.memory.pressureStats().accessDisabled,true)
 	end)
 end

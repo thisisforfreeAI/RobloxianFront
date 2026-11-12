@@ -4387,6 +4387,8 @@ require("./lobby_service")(test, eq)
 require("./lobby_match")(test, eq)
 require("./lobby_browser")(test, eq)
 require("./lobby_adapter")(test, eq)
+require("./map_startup")(test, eq)
+require("./client_readiness")(test, eq)
 
 print(`\n{passed} passed, {failed} failed`)
 if failed > 0 then

@@ -23,6 +23,7 @@ local Hud = require(script.UI.Hud)
 local RigCard = require(script.UI.RigCard)
 local AdminPanel = require(script.UI.AdminPanel)
 local LobbyBrowser = require(script.UI.LobbyBrowser)
+local ImageMemory = require(script.Rendering.ImageMemory)
 local Atmosphere = require(script.Rendering.Atmosphere)
 local TerritoryRenderer = require(script.Rendering.TerritoryRenderer)
 local WeatherGround = require(script.Rendering.WeatherGround)
@@ -103,6 +104,9 @@ do
 		tankMult = rigRules:number("rigs.upgrades.tank.mult"), baseTank = rigRules:number("rigs.tank"),
 	})
 	AdminPanel.start(send) -- the owner's test panel; stays hidden unless the server says admin
+	ImageMemory.onAccessFailure(function()
+		Hud.note("Artwork is unavailable. The experience creator needs to update this game.")
+	end)
 	LobbyBrowser.start({onOpen=BuildController.cancel})
 	Atmosphere.start()
 	stateEvent.OnClientEvent:Connect(function(state)
@@ -217,5 +221,5 @@ do
 		CollapseRenderer.apply(tick,collapses) -- use this snapshot's updated fog for transient births
 	end)
 	-- Both listeners are attached before the server begins fire deltas/resends cached visual state.
-	send({kind="viewReady"})
+	intent:FireServer({kind="viewReady"}) -- Control handshake also runs while a modal blocks orders.
 end

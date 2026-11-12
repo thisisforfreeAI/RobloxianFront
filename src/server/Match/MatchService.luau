@@ -713,6 +713,7 @@ local collapses: { any } = {}
 local function snapshot()
 	local bySide: { [number]: any } = {}
 	for player, side in sideOf do
+		if not readyView[player] then continue end
 		local v = bySide[side]
 		if not v then
 			local units, structures, runs = viewFor(side)
@@ -967,6 +968,7 @@ end
 
 local function privateState()
 	for player, side in sideOf do
+		if not readyView[player] then continue end
 		local s = sim.sides[side]
 		local payload: { [string]: any } = { winner = sim.winner }
 		payload.alerts = pendingAlerts[side]

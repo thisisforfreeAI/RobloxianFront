@@ -11,7 +11,7 @@ return function(test:any,eq:any)
 			viewers={[1]={visibleAt=function(x) return x<5 end},[2]={visibleAt=function(x) return x>5 end}},sim={fogOn=function() return true end},
 			deaths={},collapses=queue,sentVision={},CollapseEvents=Events,Net={sendSnapshot=function(player,_tick,_units,_structures,_vision,_all,_deaths,rows) sent[player]=rows or false end}},{__index=getfenv()})
 		local snapshot=luau.load(string.sub(code,a,b-1).."\nreturn snapshot",{environment=env})()
-		snapshot();eq(#sent[one],1);eq(sent[one][1][1],1);eq(sent[two],false);eq(#sent[spectator],2);eq(#queue,0)
+		snapshot();eq(#sent[one],1);eq(sent[one][1][1],1);eq(sent[two],nil);eq(#sent[spectator],2);eq(#queue,0)
 		ready[two]=true;snapshot();eq(sent[one],false);eq(sent[two],false);eq(sent[spectator],false)
 	end)
 	test("actual client snapshot applies current fog before collapse births",function()
