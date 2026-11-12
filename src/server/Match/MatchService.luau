@@ -469,7 +469,7 @@ local function structureRow(e: any, owner: number, details: boolean): { any }
 		if details then e.capSide or 0 else 0,
 		if details then e.capProgress or 0 else 0,
 		if details then e.store or 0 else 0,
-		e.built or 1, 0,
+		e.built or 1, 0, sim.armyOf(owner),
 	}
 end
 
@@ -669,7 +669,7 @@ local function viewFor(side: number): ({ any }, { any }, { number }?)
 		-- buildings remembered from earlier sightings (the last kind and owner seen; health unknown)
 		for id, info in viewer.lastSeen do
 			if not listed[id] then
-				table.insert(structures, { id, info.kind, info.side, info.x, info.y, 1, 1, 0, 0, 0, 1, 1 })
+				table.insert(structures, { id, info.kind, info.side, info.x, info.y, 1, 1, 0, 0, 0, 1, 1, sim.armyOf(info.side) })
 			end
 		end
 	end

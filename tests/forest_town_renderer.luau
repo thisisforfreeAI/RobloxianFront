@@ -25,9 +25,10 @@ return function(test:any,eq:any)
 		local rows=buffer.create(48);buffer.writef64(rows,0,1);buffer.writef64(rows,8,.5);buffer.writef64(rows,16,.5);buffer.writef64(rows,24,.4);buffer.writeu16(rows,36,1);buffer.writei32(rows,40,5);buffer.writei32(rows,44,5)
 		local family={standing={offset=0,w=4,h=4},fallen={offset=64,w=4,h=4},stump={offset=64,w=4,h=4},burnt={offset=64,w=4,h=4},shadowX=0,shadowY=0}
 		local metadata={id="test",width=1,height=1,tileSize=14,stride=48,count=1,trees="trees",families={family},pixelBytes=128,pixelParts={{name="pixels",offset=0,bytes=128}},
-			shadow={dx=0,dy=0,alpha=0},fallenAnchor=.5,charColors={0x808080}}
+			shadow={dx=0,dy=0,alpha=0},fallenAnchor=.5,charColors={0x808080,0x404040}}
 		local bare=buffer.create(14*14*4);for at=0,buffer.len(bare)-1,4 do buffer.writeu8(bare,at+2,80);buffer.writeu8(bare,at+3,255) end
 		local chunks:any={trees=rows,sprites=source,bare=bare}
+		chunks.light=buffer.create(12);buffer.writeu32(chunks.light,0,0);buffer.writeu32(chunks.light,4,1);buffer.writeu32(chunks.light,8,0x100000)
 		local map=Map.new(metadata,function(key) return chunks[key] end,function() return {deflate="sprites"} end)
 		chunks.original=Raster.paint(map,bare,0,0,1,1,{})
 		local function module(value) return {value=value,IsA=function(_,class) return class=="ModuleScript" end} end
@@ -47,6 +48,8 @@ return function(test:any,eq:any)
 			assetsMap[row[5].."_Mip2"]=module({format=2,stride=2,baseFrame=2,width=7,height=7,sourceHash=Lods.signature("original"),deflate="mip",patches={[2]={sourceHash=1,bytes=0,deflate=""}}})
 		end
 		local assets={FindFirstChild=function(_,name)
+			if h.useBareLightDelta and string.match(name,"_BareLight1$") then return module({bytes=12,deflate="light"}) end
+			if h.useLightDelta and string.match(name,"_Light1$") then return module({bytes=12,deflate="light"}) end
 			if string.find(name,"_Mip",1,true) and not h.useMips then return nil end
 			if h.staleMips and string.find(name,"_Mip",1,true) and assetsMap[name] then local bad=table.clone(assetsMap[name].value);bad.sourceHash+=1;return module(bad) end
 			if h.badBare and string.find(name,"_Bare",1,true) then return nil end;if string.find(name,"_BareLight",1,true) then h.bareLights+=1 end;return assetsMap[name]
@@ -58,6 +61,7 @@ return function(test:any,eq:any)
 		end
 		h.uploads=require("../src/shared/Presentation/ImageUploads").new(function(image,x,y,w,h,px) image:WritePixelsBuffer(vec(x,y),vec(w,h),px) end,function() return h.now end)
 		function memory.upload(image,pos,size,px,options)
+			if h.rejectNextUpload then h.rejectNextUpload=false;return false end
 			if h.async then return h.uploads.submit(image,pos,size,px,options) end
 			image:WritePixelsBuffer(pos,size,px);if options and options.done then options.done(true) end;return true
 		end
@@ -72,13 +76,21 @@ return function(test:any,eq:any)
 			return h.headroom or math.huge
 		end
 		local shared:any={Config={World="world"},Maps={MapCodec="codec"},Utilities={Inflate="inflate"},Simulation={ForestMap="forest"},Presentation={ImagePixels="pixels",TownDetail="detail",TownPatch="patch",TownLods="lods",ForestRaster="raster",GroundScorchPixels="scorch"},FindFirstChild=function() return data end}
-		local raster={overview=Raster.overview,paint=function(...) h.compositions=(h.compositions or 0)+1;return Raster.paint(...) end}
+		local raster={overview=function(...) if select(6,...) then h.cooperativeOverviews=(h.cooperativeOverviews or 0)+1 end;return Raster.overview(...) end,paint=function(...)
+			if select(8,...) then
+				if h.failPaint then error("synthetic private raster failure") end
+				if h.yieldPaint then for _=1,3 do coroutine.yield() end end
+			end
+			h.compositions=(h.compositions or 0)+1;return Raster.paint(...)
+		end}
+		local imagePixels={half=function(...) if select(4,...) then h.cooperativeDownsamples=(h.cooperativeDownsamples or 0)+1 else h.syncDownsamples=(h.syncDownsamples or 0)+1 end;return ImagePixels.half(...) end}
 		local modules:any={world={STUDS_PER_CELL=4,GROUND_Y=0,TOP_GUI_YAW=0},memory=memory,codec={base64Decode=function(key) return key end},inflate={raw=function(key,_bytes,checkpoint)
+			if checkpoint and key=="original" and h.failOriginalWarm then error("synthetic restoration source failure") end
 			if checkpoint and h.yieldWarm then for _=1,3 do coroutine.yield() end end
 			if key=="original" then h.fullDecodes=(h.fullDecodes or 0)+1 end
 			if key=="bare" then h.bareDecodes=(h.bareDecodes or 0)+1 end
 			local source=chunks[key];local fresh=buffer.create(buffer.len(source));buffer.copy(fresh,0,source);return fresh
-		end},forest=Map,raster=raster,scorch=ScorchPixels,pixels=ImagePixels,detail=TownDetail,patch=TownPatch,lods=Lods,day={get=function() return {phase=h.phase} end}}
+		end},forest=Map,raster=raster,scorch=ScorchPixels,pixels=imagePixels,detail=TownDetail,patch=TownPatch,lods=Lods,day={get=function() return {phase=h.phase} end}}
 		local env:any=setmetatable({game={GetService=function(_,name) return if name=="RunService" then {Heartbeat=h.heartbeat} else {WaitForChild=function() return shared end} end},
 			script={Parent={ImageMemory="memory",DaylightController="day",Parent={FindFirstChild=function() return assets end}}},
 			require=function(key) if type(key)=="table" then return key.value end;return assert(modules[key],tostring(key)) end,
@@ -89,7 +101,7 @@ return function(test:any,eq:any)
 		h.renderer=luau.load(fs.readFile("src/client/Rendering/TownRenderer.luau"),{environment=env})()
 		function h.far() env.workspace.CurrentCamera.CFrame.Position.Y=5000 end
 		function h.pan(x) env.workspace.CurrentCamera.CFrame.Position.X=x*4 end
-		function h.step() h.now+=.2;h.heartbeat:fire(.2) end
+		function h.step(dt:any?) local elapsed=dt or .2;h.now+=elapsed;h.heartbeat:fire(elapsed) end
 		function h.destroy() for _,o in h.instances do if o.Name=="Towns" then o:Destroy();break end end end
 		return h
 	end
@@ -151,6 +163,42 @@ return function(test:any,eq:any)
 		h.renderer.setForestFates({},true);h.step();eq(h.renderer.sample(.5,.5)[2],200)
 		h.destroy()
 	end)
+	test("identical final tree states keep cached foreground and pixels without revision or repaint churn",function()
+		local h=make();assert(h.renderer.build("test",{}));h.step()
+		local fate={kind="burning",char=0};h.renderer.setForestFates({{1,fate}});h.step()
+		local cover=h.renderer.forestCover(0,0,1,1);local count=h.compositions;local revision=h.renderer.revision()
+		fate.kind="burnt" -- Caller ownership cannot silently mutate retained render state.
+		for _=1,12 do
+			h.renderer.setForestFates({{1,{kind="burnt"}},{1,{kind="burning",char=0}}});h.step()
+		end
+		h.renderer.setForestFates({{1,{kind="burning",char=0}}},true);h.step()
+		eq(h.compositions,count);eq(h.renderer.revision(),revision);assert(h.renderer.forestCover(0,0,1,1)==cover)
+		eq(h.renderer.sample(.5,.5)[2],100)
+		h.renderer.setForestFates({{1,nil}});h.step();eq(h.renderer.sample(.5,.5)[2],200);h.destroy()
+	end)
+	test("fallen tree rotation and char changes still invalidate the affected town state",function()
+		local h=make();assert(h.renderer.build("test",{}));h.step()
+		h.renderer.setForestFates({{1,{kind="fallen",rot=0,char=0}}});h.step();local count=h.compositions
+		h.renderer.setForestFates({{1,{kind="fallen",rot=.7,char=0}}});h.step();eq(h.compositions,count+1)
+		h.renderer.setForestFates({{1,{kind="fallen",rot=.7}}});h.step();eq(h.compositions,count+2)
+		h.renderer.setForestFates({},true);h.step();eq(h.renderer.sample(.5,.5)[2],200);h.destroy()
+	end)
+	test("cold dynamic town coverage composes directly at current light and reuses it for the overview refresh",function()
+		local h=make(true);h.headroom=200;assert(h.renderer.build("test",{}));h.step();h.phase=0
+		h.renderer.setForestFates({{1,{kind="burning",char=0}}});h.step();local before=h.compositions
+		local scaled=h.syncDownsamples
+		h.step();eq(h.compositions,before+1,"cold changed coverage must not compose base and current light separately")
+		h.step();eq(h.compositions,before+1,"subsequent dirty overview refresh reuses the freshly composed version")
+		eq(h.renderer.stats().ready,2);eq(h.renderer.stats().stride,4);eq(h.syncDownsamples,scaled,"cold quarter detail must use cooperatively prepared scaling")
+		h.destroy();eq(h.warnings,0)
+	end)
+	test("a rejected town damage upload retries its pixels without recomposition or reapplying a static light delta",function()
+		local h=make();h.useLightDelta=true;assert(h.renderer.build("test",{}));h.step();h.phase=0
+		h.renderer.setForestFates({{1,{kind="burnt"}}});h.step()
+		h.renderer.setForestFates({},true);h.rejectNextUpload=true;h.step();local before=h.compositions
+		eq(h.renderer.sample(.02,.02)[3],64);h.step();eq(h.compositions,before);eq(h.renderer.sample(.02,.02)[3],64)
+		eq(string.byte(h.images[2].last,3),64);h.destroy();eq(h.warnings,0)
+	end)
 	test("actual town scar tone-only changes repaint existing ground and preserve its tree foreground",function()
 		local h=make();assert(h.renderer.build("test",{}));h.step();local images=#h.images
 		local source={width=1,height=1,tileSize=14,roof=function() return false end}
@@ -162,7 +210,7 @@ return function(test:any,eq:any)
 	end)
 	test("continuous fire dirtiness cannot starve missing town detail",function()
 		local h=make(true);assert(h.renderer.build("test",{}));h.step();eq(#h.images,2)
-		for _=1,4 do h.renderer.setForestFates({{1,{kind="burning",char=0}}});h.step() end
+		for i=1,4 do h.renderer.setForestFates({{1,{kind="burning",char=i%2}}});h.step() end
 		eq(#h.images,3,"both detail chunks must load despite continuous fire updates")
 		local found=false;for _,o in h.instances do if o.Name=="City_test_0_0_next" and not o.dead then found=true end end;assert(found)
 		h.destroy();eq(h.warnings,0)
@@ -228,6 +276,140 @@ return function(test:any,eq:any)
 		h.step();h.step();h.step();eq(h.renderer.stats().ready,2);eq(h.renderer.stats().warming,true)
 		local images=#h.images;h.step();eq(h.renderer.stats().ready,2);eq(#h.images,images)
 		h.destroy();for _=1,6 do h.step() end;eq(h.renderer.stats(),nil);eq(#h.images,images);eq(h.warnings,0)
+	end)
+	test("damage source warmup yields without changing the bound town image and commits current damage afterward",function()
+		local h=make();assert(h.renderer.build("test",{}));h.step();local images=#h.images;local old=h.images[2].last
+		h.yieldWarm=true;h.renderer.setForestFates({{1,{kind="burnt"}}});h.step()
+		eq(h.renderer.stats().warmKind,"bare");eq(h.images[2].last,old);eq(h.renderer.sample(.5,.5)[2],200)
+		for _=1,2 do h.step();eq(h.images[2].last,old) end
+		for _=1,5 do if not h.renderer.stats().warming then break end;h.step() end
+		eq(h.renderer.stats().warming,false);eq(h.renderer.sample(.5,.5)[2],0);eq(#h.images,images);eq(h.bareDecodes,1)
+		h.destroy();eq(h.warnings,0)
+	end)
+	test("pending damage source work cancels on reset or map teardown without publishing a stale burn",function()
+		for _,reset in {true,false} do
+			local h=make();assert(h.renderer.build("test",{}));h.step();h.yieldWarm=true
+			h.renderer.setForestFates({{1,{kind="burnt"}}});h.step();eq(h.renderer.stats().warmKind,"bare")
+			if reset then h.renderer.setForestFates({},true) else h.destroy() end
+			for _=1,6 do h.step() end
+			eq(h.bareDecodes,nil);eq(h.warnings,0)
+			if reset then eq(h.renderer.stats().warming,false);eq(h.renderer.sample(.5,.5)[2],200);h.destroy()
+			else eq(h.renderer.stats(),nil) end
+		end
+	end)
+	test("a yielded damage source does not block unrelated cold town coverage",function()
+		local h=make(3);assert(h.renderer.build("test",{}));h.step();eq(#h.images,2)
+		h.yieldWarm=true;h.renderer.setForestFates({{1,{kind="burnt"}}});h.step()
+		eq(h.renderer.stats().warmKind,"bare");eq(#h.images,3)
+		local found=false;for _,o in h.instances do if o.Name=="City_test_0_0_2" and not o.dead then found=true end end
+		assert(found,"unrelated static chunk should load while the damage base yields");h.destroy();eq(h.warnings,0)
+	end)
+	test("failed damage source disables that optional repaint once while explicit reset still restores the map",function()
+		local h=make();assert(h.renderer.build("test",{}));h.step();h.badBare=true
+		h.renderer.setForestFates({{1,{kind="burnt"}}});h.step();eq(h.warnings,1);eq(h.renderer.stats().warming,false)
+		for _=1,6 do h.renderer.setForestFates({{1,{kind="burning",char=0}}});h.step() end
+		eq(h.warnings,1);local decoded=h.fullDecodes
+		h.renderer.setForestFates({},true);h.step();assert(h.fullDecodes>decoded);eq(h.renderer.sample(.5,.5)[2],200)
+		h.destroy();eq(h.warnings,1)
+	end)
+	test("yielded tree composition keeps native pixels stable and coalesces continuing fire changes without starvation",function()
+		local h=make();assert(h.renderer.build("test",{}));h.step();local old=h.images[2].last;local images=#h.images
+		h.yieldPaint=true;h.renderer.setForestFates({{1,{kind="burning",char=0}}});h.step()
+		eq(h.renderer.stats().warmKind,"damage");eq(h.images[2].last,old);eq(h.renderer.sample(.5,.5)[2],200)
+		h.renderer.setForestFates({{1,{kind="burnt"}}});h.step();eq(h.images[2].last,old)
+		local intermediate=false
+		for _=1,24 do h.step();local green=h.renderer.sample(.5,.5)[2];if green==100 then intermediate=true end;if green==0 then break end end
+		assert(intermediate,"completed snapshots should progress instead of restarting on every update")
+		eq(h.renderer.sample(.5,.5)[2],0);eq(#h.images,images);h.destroy();eq(h.warnings,0)
+	end)
+	test("reset or teardown during yielded tree composition cannot publish the old snapshot",function()
+		for _,reset in {true,false} do
+			local h=make();assert(h.renderer.build("test",{}));h.step();h.yieldPaint=true
+			h.renderer.setForestFates({{1,{kind="burnt"}}});h.step();eq(h.renderer.stats().warmKind,"damage")
+			if reset then h.renderer.setForestFates({},true) else h.destroy() end
+			for _=1,12 do h.step() end
+			if reset then eq(h.renderer.sample(.5,.5)[2],200);eq(h.renderer.stats().warming,false);h.destroy() else eq(h.renderer.stats(),nil) end
+			eq(h.warnings,0)
+		end
+	end)
+	test("clearing ground scars cancels their private snapshot even while forest damage remains",function()
+		local h=make();assert(h.renderer.build("test",{}));h.step()
+		h.renderer.setForestFates({{1,{kind="burning",char=0}}});h.step();local before=h.renderer.sample(.2,.2)[3]
+		local config={color="#000000",darken=.8};local source={width=1,height=1,tileSize=14,roof=function() return false end}
+		h.yieldPaint=true;h.renderer.setGroundScorch({{cells={[0]=255}}},config,source);h.step()
+		eq(h.renderer.stats().warmKind,"damage");eq(h.renderer.sample(.2,.2)[3],before)
+		h.renderer.setGroundScorch({},config,nil)
+		for _=1,12 do h.step() end
+		eq(h.renderer.sample(.2,.2)[3],before);eq(h.renderer.sample(.5,.5)[2],100);h.destroy();eq(h.warnings,0)
+	end)
+	test("private raster failure leaves the shown map intact and a later state can retry",function()
+		local h=make();assert(h.renderer.build("test",{}));h.step();local old=h.images[2].last
+		h.failPaint=true;h.renderer.setForestFates({{1,{kind="burnt"}}});h.step();eq(h.warnings,1);eq(h.images[2].last,old)
+		for _=1,6 do h.step() end;eq(h.warnings,1)
+		h.failPaint=false;h.renderer.setForestFates({{1,{kind="burning",char=0}}});h.step()
+		eq(h.renderer.sample(.5,.5)[2],100);eq(h.warnings,1);h.destroy()
+	end)
+	test("coarse damaged detail and overview reuse scaling performed inside the cooperative job",function()
+		local h=make(true);h.headroom=600;assert(h.renderer.build("test",{}));h.step();h.step()
+		local count=h.syncDownsamples;h.renderer.setForestFates({{1,{kind="burning",char=0}}});h.step()
+		assert(h.cooperativeDownsamples and h.cooperativeDownsamples>0);assert(h.cooperativeOverviews and h.cooperativeOverviews>0)
+		eq(h.syncDownsamples,count);eq(h.renderer.sample(.5,.5)[2],100);h.destroy();eq(h.warnings,0)
+	end)
+	test("rejected coarse damage uploads retain prepared scaling until their pixels commit",function()
+		local h=make();h.headroom=200;assert(h.renderer.build("test",{}));h.step()
+		h.renderer.setForestFates({{1,{kind="burning",char=0}}});h.rejectNextUpload=true;h.step()
+		local count=h.syncDownsamples;h.step();eq(h.syncDownsamples,count)
+		eq(h.renderer.sample(.5,.5)[2],100);h.destroy();eq(h.warnings,0)
+	end)
+	test("a daylight jump cancels the old damage palette before publishing a completed snapshot",function()
+		local h=make();h.useBareLightDelta=true;assert(h.renderer.build("test",{}));h.step();h.yieldPaint=true
+		h.renderer.setForestFates({{1,{kind="burnt"}}});h.step();eq(h.renderer.stats().warmKind,"damage")
+		h.phase=0
+		for _=1,24 do
+			h.step();if h.renderer.sample(.5,.5)[2]==0 then eq(h.renderer.sample(.02,.02)[3],64);break end
+		end
+		eq(h.renderer.sample(.5,.5)[2],0);eq(h.renderer.sample(.02,.02)[3],64);h.destroy();eq(h.warnings,0)
+	end)
+	test("completed damage pixels survive native detail reclamation before publication",function()
+		local h=make();h.phase=0;assert(h.renderer.build("test",{}));h.step();h.yieldPaint=true
+		h.renderer.setForestFates({{1,{kind="burnt"}}});h.step()
+		for _=1,24 do h.step(1/60);if h.renderer.stats().paintReady then break end end
+		eq(h.renderer.stats().paintReady,true);h.reclaim(math.huge,nil)
+		for _=1,12 do h.step();if h.renderer.stats().ready==1 then break end end
+		eq(h.renderer.stats().ready,1);eq(h.renderer.sample(.5,.5)[2],0);h.destroy();eq(h.warnings,0)
+	end)
+	test("static restoration yields with its displayed damage intact and preserves the source light delta for later time changes",function()
+		local h=make();h.headroom=200;h.useLightDelta=true;assert(h.renderer.build("test",{}));h.step()
+		h.renderer.setForestFates({{1,{kind="burning",char=0}}});h.step();local old=h.images[2].last
+		local paints=h.compositions;local scaled=h.syncDownsamples;h.phase=0;h.yieldWarm=true
+		h.renderer.setForestFates({},true);h.step();eq(h.renderer.stats().warmKind,"restore");eq(h.images[2].last,old)
+		for _=1,24 do h.step();if not h.renderer.stats().warming and h.renderer.sample(.5,.5)[2]==200 then break end end
+		eq(h.renderer.sample(.5,.5)[2],200);eq(h.renderer.sample(.02,.02)[3],64);eq(h.compositions,paints);eq(h.syncDownsamples,scaled)
+		h.yieldWarm=false;h.phase=.3;h.step();eq(h.renderer.sample(.02,.02)[3],80);eq(h.compositions,paints)
+		h.destroy();eq(h.warnings,0)
+	end)
+	test("new fire cancels an in-flight static restore before intact art can overwrite it",function()
+		local h=make();assert(h.renderer.build("test",{}));h.step()
+		h.renderer.setForestFates({{1,{kind="burnt"}}});h.step();eq(h.renderer.sample(.5,.5)[2],0)
+		h.yieldWarm=true;h.renderer.setForestFates({},true);h.step();eq(h.renderer.stats().warmKind,"restore")
+		h.renderer.setForestFates({{1,{kind="burning",char=1}}})
+		for _=1,12 do h.step();assert(h.renderer.sample(.5,.5)[2]~=200,"obsolete intact state must never publish") end
+		eq(h.renderer.sample(.5,.5)[2],50);h.destroy();eq(h.warnings,0)
+	end)
+	test("an explicit repeated reset retries a failed restore without requiring a different authoritative state",function()
+		local h=make();assert(h.renderer.build("test",{}));h.step()
+		h.renderer.setForestFates({{1,{kind="burnt"}}});h.step();h.failOriginalWarm=true
+		h.renderer.setForestFates({},true);h.step();eq(h.renderer.sample(.5,.5)[2],0);eq(h.warnings,1)
+		for _=1,6 do h.step() end;eq(h.warnings,1)
+		h.failOriginalWarm=false;h.renderer.setForestFates({},true);h.step()
+		eq(h.renderer.sample(.5,.5)[2],200);eq(h.warnings,1);h.destroy()
+	end)
+	test("map teardown cancels yielded restoration without creating a new image or completing its source",function()
+		local h=make();assert(h.renderer.build("test",{}));h.step()
+		h.renderer.setForestFates({{1,{kind="burnt"}}});h.step();h.yieldWarm=true
+		h.renderer.setForestFates({},true);h.step();eq(h.renderer.stats().warmKind,"restore")
+		local count,decoded=#h.images,h.fullDecodes;h.destroy();for _=1,12 do h.step() end
+		eq(h.renderer.stats(),nil);eq(#h.images,count);eq(h.fullDecodes,decoded);eq(h.warnings,0)
 	end)
 	local function pendingSwap()
 		local h=make();h.useMips=true;h.async=true;assert(h.renderer.build("test",{}));h.step();h.uploads.step();h.uploads.step()

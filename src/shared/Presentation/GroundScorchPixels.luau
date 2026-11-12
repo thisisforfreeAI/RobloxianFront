@@ -2,7 +2,7 @@
 -- Source ground scar tones, applied to fresh tree-free town pixels before forest composition.
 -- Roof pixels retain their separate source char/ruin treatment; transparency is preserved.
 local Pixels={}
-function Pixels.apply(px:buffer,cx:number,cy:number,cw:number,ch:number,tile:number,width:number,cells:any,config:any,roof:any,tones:any?)
+function Pixels.apply(px:buffer,cx:number,cy:number,cw:number,ch:number,tile:number,width:number,cells:any,config:any,roof:any,tones:any?,checkpoint:any?)
 	local w,h=cw*tile,ch*tile;assert(buffer.len(px)==w*h*4,"invalid town scorch dimensions")
 	local palette={}
 	local function color(tone:number):{number}
@@ -16,7 +16,9 @@ function Pixels.apply(px:buffer,cx:number,cy:number,cw:number,ch:number,tile:num
 		if x<cx or y<cy or x>=cx+cw or y>=cy+ch then continue end
 		local rgb=color(if tones then tones[cell] or 0 else 0)
 		local amount=math.min(1,value/255*config.darken)
-		for py=0,tile-1 do for pxx=0,tile-1 do
+		for py=0,tile-1 do
+			if checkpoint then checkpoint() end
+			for pxx=0,tile-1 do
 			local gx,gy=x*tile+pxx,y*tile+py
 			if roof(gx,gy) then continue end
 			local at=(((y-cy)*tile+py)*w+(x-cx)*tile+pxx)*4

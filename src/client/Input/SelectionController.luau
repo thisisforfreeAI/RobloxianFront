@@ -196,6 +196,7 @@ function SelectionController.start(mySide: number, sendIntent: (any) -> (), opts
 					return v.side == mySide
 				end)
 				picked = if own then own.id else nil
+				StructureRenderer.setFocus(picked)
 				-- one of your rigs: open its card (the game's RigCard); a click anywhere else closes it
 				opts.openRig(if own and own.kind == "rig" then own.id else nil)
 				local st = structureUnder(b, function(v)
@@ -279,6 +280,7 @@ function SelectionController.start(mySide: number, sendIntent: (any) -> (), opts
 				table.clear(selected)
 				refresh()
 				picked = st
+				StructureRenderer.setFocus(picked)
 				if PRODUCERS[v.kind] then
 					producerId = st
 					opts.onProducer(st, v.kind)
@@ -573,6 +575,7 @@ function SelectionController.start(mySide: number, sendIntent: (any) -> (), opts
 			table.clear(selected)
 			refresh()
 			picked, producerId = nil, nil
+			StructureRenderer.setFocus(nil)
 			opts.onProducer(nil, nil)
 		elseif GROUP_KEYS[input.KeyCode] then
 			controlGroup(GROUP_KEYS[input.KeyCode])

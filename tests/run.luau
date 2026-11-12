@@ -4349,6 +4349,10 @@ require("./image_memory_uploads")(test, eq)
 require("./town_lods")(test, eq)
 require("./cooperative_inflate")(test, eq)
 require("./city_light_coverage")(test, eq)
+require("./cooperative_paint")(test, eq)
+
+require("./structure_labels")(test, eq)
+require("./structure_art")(test, eq)
 
 print(`\n{passed} passed, {failed} failed`)
 if failed > 0 then

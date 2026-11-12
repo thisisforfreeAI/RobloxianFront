@@ -2,11 +2,12 @@
 --!native
 -- Alpha-weighted 2x downsampling for town detail that is smaller on screen or under image pressure.
 local ImagePixels = {}
-function ImagePixels.half(src: buffer, width: number, height: number): (buffer, number, number)
+function ImagePixels.half(src: buffer, width: number, height: number,checkpoint:any?): (buffer, number, number)
 	assert(buffer.len(src) == width * height * 4, "pixel dimensions do not match buffer")
 	local w, h = math.ceil(width / 2), math.ceil(height / 2)
 	local out = buffer.create(w * h * 4)
 	for y = 0, h - 1 do
+		if checkpoint then checkpoint() end
 		for x = 0, w - 1 do
 			local r, g, b, a, count = 0, 0, 0, 0, 0
 			for dy = 0, 1 do

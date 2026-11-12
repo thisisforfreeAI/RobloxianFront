@@ -22,18 +22,21 @@ function Raster.over(out:buffer,at:number,r:number,g:number,b:number,a:number)
 	buffer.writeu8(out,at+2,math.clamp(round((b*ink+buffer.readu8(out,at+2)*under)/den),0,255))
 	buffer.writeu8(out,at+3,math.clamp(round(den/255),0,255))
 end
-local function blit(out:buffer,w:number,h:number,source:buffer,frame:any,x:number,y:number,tint:number,shadow:number?)
+local function blit(out:buffer,w:number,h:number,source:buffer,frame:any,x:number,y:number,tint:number,shadow:number?,checkpoint:any?)
 	local red,green,blue=bit32.extract(tint,16,8)/255,bit32.extract(tint,8,8)/255,bit32.extract(tint,0,8)/255
-	for py=math.max(0,-y),math.min(frame.h-1,h-y-1) do for px=math.max(0,-x),math.min(frame.w-1,w-x-1) do
+	for py=math.max(0,-y),math.min(frame.h-1,h-y-1) do
+		if checkpoint then checkpoint() end
+		for px=math.max(0,-x),math.min(frame.w-1,w-x-1) do
 		local at=frame.offset+(py*frame.w+px)*4;local a=buffer.readu8(source,at+3);if a==0 then continue end
 		if shadow then Raster.over(out,((y+py)*w+x+px)*4,0,0,0,round(a*shadow))
 		else Raster.over(out,((y+py)*w+x+px)*4,round(buffer.readu8(source,at)*red),round(buffer.readu8(source,at+1)*green),round(buffer.readu8(source,at+2)*blue),a) end
 	end end
 end
-local function fallen(out:buffer,w:number,h:number,source:buffer,frame:any,pose:any)
+local function fallen(out:buffer,w:number,h:number,source:buffer,frame:any,pose:any,checkpoint:any?)
 	local c,s=math.cos(pose.rotation),math.sin(pose.rotation);local radius=math.sqrt(frame.w^2+frame.h^2)
 	local tint=pose.tint;local red,green,blue=bit32.extract(tint,16,8)/255,bit32.extract(tint,8,8)/255,bit32.extract(tint,0,8)/255
 	for y=math.max(0,math.floor(pose.y-radius)),math.min(h-1,math.ceil(pose.y+radius)) do
+		if checkpoint then checkpoint() end
 		for x=math.max(0,math.floor(pose.x-radius)),math.min(w-1,math.ceil(pose.x+radius)) do
 			local dx,dy=x+.5-pose.x,y+.5-pose.y
 			local u,v=c*dx+s*dy+pose.anchorX*frame.w-.5,-s*dx+c*dy+pose.anchorY*frame.h-.5
@@ -48,7 +51,7 @@ local function fallen(out:buffer,w:number,h:number,source:buffer,frame:any,pose:
 		end
 	end
 end
-function Raster.paint(map:any,base:buffer,cx:number,cy:number,cw:number,ch:number,fates:any):buffer
+function Raster.paint(map:any,base:buffer,cx:number,cy:number,cw:number,ch:number,fates:any,checkpoint:any?):buffer
 	local data=map.data;local tile=data.tileSize;local w,h=cw*tile,ch*tile
 	assert(buffer.len(base)==w*h*4,"invalid forest base dimensions")
 	local out=buffer.create(buffer.len(base));buffer.copy(out,0,base)
@@ -56,22 +59,25 @@ function Raster.paint(map:any,base:buffer,cx:number,cy:number,cw:number,ch:numbe
 	local source=map.pixels()
 	-- Original layer order: fallen/stumps below standing-tree shadows, then upright crowns/branches.
 	for layer=1,3 do for _,t in list do
+		if checkpoint then checkpoint() end
 		local fate=fates[t.key];local kind=if fate and fate.kind~="burning" then fate.kind else "standing"
 		local down=kind=="fallen" or kind=="stump";if (layer==1)~=down then continue end
 		local family=data.families[t.sprite];local frame=assert(family[kind],"invalid forest fate")
 		local pose=Raster.pose(frame,t.x*tile-cx*tile,t.y*tile-cy*tile,1,fate,data)
 		if down then
-			if kind=="fallen" then fallen(out,w,h,source,frame,pose)
-			else blit(out,w,h,source,frame,round(pose.x),round(pose.y),pose.tint) end
+			if kind=="fallen" then fallen(out,w,h,source,frame,pose,checkpoint)
+			else blit(out,w,h,source,frame,round(pose.x),round(pose.y),pose.tint,nil,checkpoint) end
 		elseif layer==2 then
-			blit(out,w,h,source,frame,t.drawX-cx*tile+family.shadowX,t.drawY-cy*tile+family.shadowY,0,data.shadow.alpha)
-		else blit(out,w,h,source,frame,t.drawX-cx*tile,t.drawY-cy*tile,pose.tint) end
+			blit(out,w,h,source,frame,t.drawX-cx*tile+family.shadowX,t.drawY-cy*tile+family.shadowY,0,data.shadow.alpha,checkpoint)
+		else blit(out,w,h,source,frame,t.drawX-cx*tile,t.drawY-cy*tile,pose.tint,nil,checkpoint) end
 	end end
 	return out
 end
-function Raster.overview(px:buffer,w:number,h:number,tile:number,perCell:number):buffer
+function Raster.overview(px:buffer,w:number,h:number,tile:number,perCell:number,checkpoint:any?):buffer
 	local ow,oh=w/tile*perCell,h/tile*perCell;local out=buffer.create(ow*oh*4);local step=tile/perCell
-	for oy=0,oh-1 do for ox=0,ow-1 do
+	for oy=0,oh-1 do
+		if checkpoint then checkpoint() end
+		for ox=0,ow-1 do
 		local r,g,b,a=0,0,0,0
 		for sy=0,1 do for sx=0,1 do
 			local x=math.min(w-1,math.floor((ox+.25+sx*.5)*step));local y=math.min(h-1,math.floor((oy+.25+sy*.5)*step));local at=(y*w+x)*4

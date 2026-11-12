@@ -3271,3 +3271,201 @@ recovery, bounded passes/impossible plans/guard failure, actual SpriteBank activ
 followed by idle release, actual ImageMemory throttling/cancellation without allocation, and actual
 TownRenderer upgrades after stationary recovery while panning does not trigger it. **Studio
 B217-B218 have not been run.** Earlier Studio/player checks remain pending where not reported.
+
+## Avoid duplicate fire/ground town composition (2026-11-11)
+
+The next smoothness pass removes avoidable full-chunk raster work. If an unchanged tree fate is
+delivered again, TownRenderer now compares the final kind/char/rotation against the prior state
+before invalidating pixels or cached foreground. Multiple rows for one key are coalesced to their
+final value. A reset carrying an identical final state likewise leaves town pixels alone; genuinely
+removed/restored, charred, fallen or rotated trees still invalidate their affected chunks. The
+renderer owns a copy of the three scalar fields so a caller reusing/mutating its input table cannot
+silently alter the retained render state. Particle/actor transport and server rules are unchanged.
+
+Each affected chunk has a content version. Freshly decoded/composed source pixels carry that version.
+A pending dirty overview refresh or refused upload can reuse those pixels when the content version
+and lighting frame already match. True forest/ground tone/strength changes advance the version, and
+CPU eviction still requires fresh preparation. Reusing lit static pixels preserves their frame and
+reversible XOR-patch metadata, preventing a retry from applying the same light delta twice.
+
+Cold dynamic chunk loading and source prefetch now request the current lighting frame directly and
+record it when accepting the pixels. A changed chunk no longer needs to compose its forest once at
+base lighting and immediately compose it again at current time before first publication. The later
+overview refresh can use that same completed state. Redundant explicit sparse-patch validation was
+removed from forest composition because TownPatch.apply already validates the entire patch before
+mutating pixels. Original art, alpha treatment and source light deltas are unchanged.
+
+These are CPU-work reductions, not a new frame-time guarantee. A genuinely changed full forest/ground
+composition, downsample or overview refresh can still be synchronous and expensive. Cooperative full
+static-source warmup, existing dirty/load fairness, retained previews, shared upload scheduling and
+terrain recovery remain. No native image budget increased and no gameplay damage/fire state changed.
+
+Verified on installed files: **503 Lune tests passed, 0 failed**, changed Luau compiles (syntax only),
+and Rojo build passes. Four new actual-renderer regressions cover unchanged/coalesced/reset tree
+states and input ownership; fallen rotation/char invalidation; one current-light cold composition
+followed by overview reuse; and upload refusal/retry without recomposition or duplicate static XOR.
+The continuous-fire loading check now changes between two visibly different char stages so it still
+exercises genuinely dirty terrain. **Studio B219-B220 have not been run.** Native battle frame times
+and the effect of these reductions still need comparison in Studio/player.
+
+## Cooperative tree-free damage-source warmup (2026-11-11)
+
+Cold damage repaints no longer have to inflate their full tree-free town source in one frame.
+The existing per-map static warmup slot can also prepare a chunk's _Bare source through Inflate's
+output checkpoints. Both kinds share one coroutine resume per Heartbeat and the existing soft
+2 ms decoding target. A newly requested small job may finish in its first check; a larger one
+yields while the current town image/preview stays bound under normal admission. Source pixels
+join the same two-entry immutable CPU bare cache only after decoding and dimensions validate.
+Static source compressed bytes are kept separate from the _Bare stream.
+
+Dirty forest/ground repaints, cold dynamic detail and dynamic relighting wait for that source to
+be ready. Offscreen prefetch skips dynamic chunks with an unprepared bare source instead of
+bypassing the coroutine with a synchronous inflate. Other eligible chunks can continue loading.
+The job prepares only immutable source art: current fates/scars and current lighting are applied
+after it finishes, so ordinary fire changes do not repeatedly restart a long source decode. A
+reset removing the dynamic state cancels an obsolete job; map teardown clears it. Failed source
+preparation disables that chunk's optional dynamic repaint with one warning and retains the
+available view. Explicit reset can still restore static art even after a failed bare source;
+repairing the optional source requires a new map/session. Native detail admission and upload
+publication retain their existing safeguards.
+
+TownRenderer.stats() adds warmKind ("static" or "bare") alongside warming/warmProduced. The native
+image budgets and two-entry bare cache limit are unchanged. One pending decoded source buffer is
+additional temporary CPU storage. APPROX: this is cooperative decoding, not a worker or hard
+2 ms frame-time guarantee. Module/base64 preparation, buffer allocation, Huffman construction,
+individual checkpoint intervals and the later forest/scar raster, source light-patch work,
+downsample/overview steps can still cost more. Explicit static restoration and initial forest
+sprite loading are not made incremental by this batch. Preparing over frames also adds arrival
+latency, while retaining the existing picture instead of exposing partially decoded pixels.
+
+Local Lune profile of one actual 896x896 Saddle _Bare source, excluding its initial module/base64
+preparation: synchronous inflate **0.028669 s**; cooperative decode **15 resumes**, worst measured
+resume **0.002063 s**. Completed output matched byte for byte. This demonstrates smaller decoder
+slices for that local sample, not a native FPS improvement, hard budget or faster total arrival.
+
+Verified on installed files: **507 Lune tests passed, 0 failed**, changed Luau compiles (syntax
+only), Rojo build passes, and the local source profile matches. Four new actual-renderer tests
+cover yielded damage preparation retaining its bound image then applying current state; reset
+and teardown cancellation; unrelated cold coverage continuing; and failure isolation with explicit
+static reset recovery. **Studio B221-B222 have not been run.** Restart Play after sync to measure
+the reported battle view, source-arrival latency and remaining native frame spikes.
+
+## Cooperative forest/scar composition and publication (2026-11-11)
+
+Damage preparation now continues beyond _Bare inflation into the actual CPU drawing work.
+ForestRaster.paint/overview, GroundScorchPixels.apply, TownPatch.validate/apply and ImagePixels.half
+accept optional checkpoint callbacks. Existing synchronous callers retain the same defaults and
+pixel math. Tree shadows/crowns, rotated fallen sprites, scar coloring, sparse source light patches,
+overview sampling and the current native detail tier can yield inside the one per-map work slot.
+The former bare-source job is now the first phase of that same damage job; static upgrades still
+share its single resume per Heartbeat and soft 2 ms work target.
+
+A job captures immutable tree-state references and copies the chunk's scar strengths/tones, plus
+its source configuration, content version and requested source light frame. All composition happens
+in private CPU buffers. The displayed pixels stay bound until a completed result reaches the shared
+upload lane. Continuous ordinary fire/scar changes do not restart an in-flight snapshot: it can
+complete, publish, retain its actual version and leave the chunk dirty for the newer state. This
+allows progress during continuous battles instead of requiring a quiet interval. As a presentation
+tradeoff, displayed damage can lag the newest authoritative state while jobs catch up. Simulation,
+damage, sight/detection and particle clocks are unchanged.
+
+Explicit tree reset, clearing all ground scars and map teardown invalidate pending snapshots through
+a presentation epoch. A source light-frame change cancels obsolete work as well. Display-oriented
+and far-overview jobs track their respective current/base frame, including cold chunks without an
+image. Finished results are prioritized for publication rather than discarded for a newer nearby
+request. If native detail is reclaimed after preparation completes, its finished pixels remain
+usable for the replacement instead of briefly rebinding the older CPU view. Failure of the private
+raster retains the current image, suppresses repeats for that failed content/frame/epoch and permits
+a later changed state to retry. Missing bare-source handling remains isolated as before.
+
+Prepared overview/detail buffers avoid repeating reduction on the main update path. Cold dynamic
+jobs target the current planned detail tier; quarter views prepare both reductions cooperatively.
+Prepared scaled pixels survive rejected upload admission until a successful write. Uploaded previews
+carry the captured pixel version and lighting frame and can be reused for a matching dirty overview
+refresh, while stale scale/version/frame buffers are rejected. Retained-preview rollback restores
+these tags too. Dynamic offscreen prefetch is skipped so it cannot silently bypass the cooperative
+composition path. CPU eviction and teardown clear prepared references. TownRenderer.stats() adds
+paintReady/preparedBytes and reports warmKind bare/damage/static; sourceBytes includes a completed
+full damage result waiting to publish. These counters are not a complete Lua heap measurement.
+
+The existing native ceiling, detail/core limits and terrain allowance are unchanged. One active job
+and at most one completed result can retain private staging buffers; additional memory is CPU-side.
+The soft target is not a hard full-frame bound. Initial forest sprite/module loading, source/config
+snapshot creation, buffer allocation/copies and an individual row/checkpoint interval can still cost
+more. Static restoration is still synchronous; a resolution change or an unprepared fallback tier
+can require a synchronous reduction. Native upload/display timing is governed separately. Moving
+work across frames can add visible arrival latency even while reducing individual CPU bursts.
+
+Local Lune profile on an actual 896x896 Saddle chunk containing 77 trees, assigned mixed burn/fall/
+stump states for the profile: source light patch + forest + overview + half reduction took **0.011896 s**
+synchronously. Cooperative execution completed over **7 resumes**, worst **0.002467 s**; full pixels,
+overview and half pixels matched byte for byte. Source inflation, module/base64 preparation and
+initial forest sprite loading were excluded. This is a local slice measurement, not a Roblox FPS
+claim, hard limit, or faster total arrival. Synthetic scar tests separately cover exact roof/tone/
+transparency behavior with checkpoints.
+
+Verified on installed files: **519 Lune tests passed, 0 failed**, all changed Luau compiles (syntax
+only), and Rojo build passes. Twelve added regressions comprise eight actual-renderer checks for
+yielded private drawing/coalescing, reset/teardown, scar reset while forest remains, isolated failure,
+prepared coarse/overview reuse, time jumps, native reclaim before publication and rejected coarse
+uploads; four pure checks compare synchronous/yielded forest, scaling/overview, scars and reversible
+sparse patches, including corruption/cancellation behavior. Existing cold damaged coverage also now
+checks quarter-tier preparation without another synchronous resize. **Studio B223-B225 have not
+been run.** Restart Play after sync to compare the reported battle and its remaining native spikes.
+
+## Cooperative intact restoration and explicit pixel metadata (2026-11-11)
+
+Restoring a chunk after its last forest/ground fate clears now uses the existing shared preparation
+slot. The restore phase inflates the original intact source, validates/applies the requested source
+light patch and prepares its overview and matching detail tier through the optional checkpoints.
+Available damaged pixels remain visible until completed restoration can publish. A new fire/scar
+state, explicit presentation epoch, source-light-frame change or teardown invalidates obsolete work;
+an old intact snapshot cannot overwrite a later fire. Ordinary cold intact loading and precomputed
+LOD previews keep their existing path. Restoration follows existing reset/state transitions and
+adds no gameplay regeneration, health changes or automatic building repair.
+
+Prepared and direct decodes now return the actual pixel frame and reversible patch together with
+their dimensions. Cold loading, dirty refresh, relighting and prefetch accept that metadata rather
+than guessing the frame from a cached damaged/intact flag. Restored non-base pixels retain their
+applied XOR patch, so a later time change first removes it correctly instead of applying light twice.
+Intact LOD refresh/cold publication and full-source warm adoption clear stale dynamic-forest flags
+and stamp their current content version. This prevents an intact source later taking the unnecessary
+forest-composition path after CPU eviction/upgrading. Internal prepared state now uses generic paint
+names, and TownRenderer.stats().warmKind can report restore as well as bare/damage/static.
+
+An explicit repeated tree reset also requeues chunks whose displayed/prepared CPU version remains
+behind their authoritative content version after a rendering failure. It does not invalidate an
+already current intact view or rerender an otherwise identical successful state. Failed restoration
+keeps the available image and uses the existing content/frame/epoch failure suppression; a corrected
+source plus another explicit reset can retry without first inventing a different tree state.
+
+APPROX: the shared one-resume/Heartbeat, soft 2 ms policy applies to this path too. Module/base64
+preparation, allocation/copying, initial art loading and unprepared scale-change fallback remain
+possible synchronous costs. Source restoration can now take multiple frames; this is a presentation
+latency tradeoff, not a hard frame-time or native FPS guarantee. Native memory limits, upload lane,
+terrain reservation/recovery and existing damage persistence are unchanged.
+
+Verified on installed files: **523 Lune tests passed, 0 failed**, changed Luau compiles (syntax
+only), and Rojo build passes. Four new actual-renderer regressions cover yielded restoration with
+unchanged bound pixels, prepared coarse scaling and a nonempty light patch that later reverses;
+new fire canceling an obsolete restore; explicit repeated-reset recovery after a source failure;
+and teardown during source preparation without new images or late publication. **Studio B226-B227
+have not been run.** Restart Play after sync before testing reset/camera/time transitions.
+
+## Player-building art and readable structure labels (2026-11-11)
+
+- Replaced the large owner-colour player-building blocks with local original HQ, barracks, factory, bunker, AT gun, radar, SAM, artillery-base and night-ops sprites. The extractor follows original faction selection and latest-art fallback. Base/paint layers retain team tint without per-building image copies. Static weapon, cap, factory-door/crane art and source rotating-dish frames are included. Map buildings, oil-rig art and removed power infrastructure are separate.
+- Snapshot structure rows append optional army field 13, including remembered owner-side armies. Existing health, location, ownership and fog filtering remain authoritative. Fog memories use grey, dim resting art, unknown health, no window emission and no live dish animation. Minefields remain in their dedicated filtered cell overlay.
+- APPROX port UX: healthy idle structures have short names at close zoom; selecting/hovering exposes health. Damaged/unfinished structures keep priority indicators. Deterministic screen-space packing gives selection, hover, construction and damage priority, suppressing lower-priority overlapping labels. Targeting keeps the existing coordinates and structure view API. Old destroyed-HQ slab/anchor retention was removed; the separate collapse effects remain.
+- One lazy shared atlas per army: coalition 2,904,064 bytes, republic 2,646,016 bytes, both 5,550,080 bytes (about 5.29 MiB) if loaded. ImageMemory admission, throttled retries, queued uploads and a shared soft 2 ms cooperative atlas-decode slice avoid one image/decode per building. Existing blocks remain a fallback while pixels load or local art is absent/broken. No source pixels are installed into the original game.
+- APPROX limitations: build progress fades resting art; shadows offset the original silhouette with the sun. Full source scaffolding/raising, health damage overlays, height-band extruded shadows, production-door/crane activity, weapon aiming/recoil/reload and additional flags/beacons are still pending. Source window masks are drawn with native GUI alpha rather than the original additive canvas blend. This is resting-art/readability coverage, not complete structure animation parity.
+- Validation: 13 focused behavioral tests cover atlas sharing, asynchronous publication, optional-module failure, image refusal/retry, fog, cooperative cancellation, screen-space collisions, focus, teardown and minefield routing. All changed Luau compiles (syntax only); exporter JS/Python syntax checks pass. Generated original pixels round-trip through the real Luau inflater with 160 cropped rectangles checked for transparent packing guards; source contact sheet visually inspected. Final full suite: 536 passed, 0 failed. Rojo build succeeds. Native Studio/player visuals and frame times remain unverified; run B228-B230.
+
+Local-only generation (output data/art stay ignored):
+
+```powershell
+node tools/conversion/export_structure_art.cjs "A:/SteamLibrary/steamapps/common/WarFront Demo/resources/app.asar" docs/private/player-structures.json
+python tools/asset_pipeline/pack_structures.py docs/private/player-structures.json assets/original/warfront-demo-assets-20261110-104215/dist/tiles/buildings-top.png src/client/DevAssets/OrigStructures.luau
+```
+
+Next: Studio coverage for both armies, crowded labels, fog and battle memory; then finish source construction/damage and weapon/production animation. Paid cosmetic skins remain LAST.
