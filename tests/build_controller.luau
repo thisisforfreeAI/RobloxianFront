@@ -10,11 +10,11 @@ return function(test:any,eq:any)
 		local function instance(class) local o:any={ClassName=class};function o:Destroy() self.dead=true end;table.insert(h.instances,o);return o end
 		local world={STUDS_PER_CELL=4,GROUND_Y=0,TOP_GUI_YAW=-math.pi/2,toWorld=function(x,y,z) return rb.Vector3.new(x*4,z or 0,y*4) end,toCell=function(p) return p.X/4,p.Z/4 end}
 		local shared={Config={World="world"},Presentation={PlacementHint="hint"},Simulation={Roads="roads"}}
-		local modules={world=world,hint=H,roads=Roads,preview={update=function(part,kind,army,side,hint,pixels) h.preview={part=part,kind=kind,army=army,side=side,hint=hint,pixels=pixels};return h.previewEnabled end,hide=function() h.hidden=(h.hidden or 0)+1 end,destroy=function() h.destroyed=(h.destroyed or 0)+1 end}}
+		local modules={world=world,hint=H,roads=Roads,coverage={update=function(kind,cx,cy,side,rules,views,pixels) h.coverage={kind=kind,cx=cx,cy=cy,side=side,rules=rules,views=views,pixels=pixels} end,hide=function() h.coverageHidden=(h.coverageHidden or 0)+1 end,destroy=function() h.coverageDestroyed=(h.coverageDestroyed or 0)+1 end},preview={update=function(part,kind,army,side,hint,pixels) h.preview={part=part,kind=kind,army=army,side=side,hint=hint,pixels=pixels};return h.previewEnabled end,hide=function() h.hidden=(h.hidden or 0)+1 end,destroy=function() h.destroyed=(h.destroyed or 0)+1 end}}
 		local camera={CFrame=rb.CFrame.new(0,100,0),ViewportSize=rb.Vector2.new(800,600),FieldOfView=30,ViewportPointToRay=function(_,x,y) h.ray={x,y};return {Origin=rb.Vector3.zero,Direction=rb.Vector3.new(0,-1,0)} end}
 		local workspace={CurrentCamera=camera,FindFirstChild=function() return if h.noMap then nil else {FindFirstChild=function() return if h.noGround then nil else {} end} end,Raycast=function() return if h.hit then {Position=h.hit} else nil end}
 		local services={UserInputService=input,RunService={RenderStepped=h.render},ReplicatedStorage={Shared=shared,WaitForChild=function() return shared end}}
-		local env=setmetatable({game={GetService=function(_,key) return services[key] end},script={Parent={Parent={Rendering={BuildPreview="preview"}}}},require=function(key) return modules[key] end,workspace=workspace,
+		local env=setmetatable({game={GetService=function(_,key) return services[key] end},script={Parent={Parent={Rendering={BuildPreview="preview",CoverageRenderer="coverage"}}}},require=function(key) return modules[key] end,workspace=workspace,
 			Instance={new=instance},Vector3=rb.Vector3,Vector2=rb.Vector2,CFrame=rb.CFrame,Color3=rb.Color3,RaycastParams={new=function() return {} end},Enum={KeyCode=keys,UserInputType={MouseButton1="left",MouseButton2="right"},RaycastFilterType={Include=1},Material={Neon=1}},os={clock=function() local at=h.time;h.time+=h.work or 0;return at end},warn=function() h.warnings=(h.warnings or 0)+1 end},{__index=getfenv()})
 		h.controller=luau.load(fs.readFile("src/client/Input/BuildController.luau"),{environment=env})()
 		h.options={map={width=10,height=10,terrain=buffer.create(100),data={legend={"plains"},roads={},rigs={}}},rules={["terrain.plains.passable"]=true,["terrain.plains.buildable"]=true,["structures.barracks.cost"]=50},side=1,structures=function() return {} end}
@@ -25,8 +25,9 @@ return function(test:any,eq:any)
 	test("placement controller preserves cursor rays and sends exactly one server build even when locally refused",function()
 		local h=fixture();h.controller.update({army="republic",oil=0});h.input.InputBegan:fire({KeyCode="B"},false);h.render:fire()
 		eq(h.ray[1],200);eq(h.ray[2],100);eq(h.preview.kind,"barracks");eq(h.preview.army,"republic");eq(h.preview.hint.ok,false)
+		eq(h.coverage.kind,"barracks");eq(h.coverage.rules,h.options.rules);eq(h.coverage.cx,2);eq(h.coverage.cy,2)
 		h:click("left");eq(#h.sent,1);eq(h.sent[1].kind,"build");eq(h.sent[1].x,2);eq(h.sent[1].y,2)
-		h:click("left");eq(#h.sent,1);h.render:fire();assert(h.hidden>0)
+		h:click("left");eq(#h.sent,1);h.render:fire();assert(h.hidden>0);assert(h.coverageHidden>0)
 	end)
 	test("shift placement, processed UI clicks and cancellation keep existing intent behavior",function()
 		local h=fixture();h.controller.begin("factory");h.down.LeftShift=true;h:click("left",true);eq(#h.sent,0)

@@ -20,6 +20,7 @@ local World = require(ReplicatedStorage:WaitForChild("Shared").Config.World)
 local Hint=require(ReplicatedStorage.Shared.Presentation.PlacementHint)
 local Roads=require(ReplicatedStorage.Shared.Simulation.Roads)
 local Preview=require(script.Parent.Parent.Rendering.BuildPreview)
+local Coverage=require(script.Parent.Parent.Rendering.CoverageRenderer)
 
 local BuildController = {}
 
@@ -45,6 +46,7 @@ local side=0
 local army="coalition"
 local privateState:any=nil
 local structures:any=function() return {} end
+local placementRules:any=nil
 local sendIntent: (any) -> () = function(_p: any) end
 
 local function groundPoint(screen: Vector2): Vector3?
@@ -87,15 +89,16 @@ end
 local function connect(signal:any,fn:any) table.insert(connections,signal:Connect(fn)) end
 function BuildController.destroy()
 	for _,connection in connections do connection:Disconnect() end;table.clear(connections)
-	Preview.destroy();if ghost then ghost:Destroy();ghost=nil :: any end
+	Preview.destroy();Coverage.destroy();if ghost then ghost:Destroy();ghost=nil :: any end
 	for _,part in strokeParts do part:Destroy() end;table.clear(strokeParts);table.clear(stroke);table.clear(inside)
-	placing=nil;drawing=false;model=nil;preparing=nil;privateState=nil;structures=function() return {} end;trenchIds={};lastPlaced=-1
+	placing=nil;drawing=false;model=nil;preparing=nil;privateState=nil;placementRules=nil;structures=function() return {} end;trenchIds={};lastPlaced=-1
 end
 function BuildController.start(mapWidth: number, send: (any) -> (),options:any?)
 	BuildController.destroy()
 	width = mapWidth
 	height=if options and options.map then options.map.height else 0;side=if options then options.side or 0 else 0;army="coalition"
 	if options and options.structures then structures=options.structures end
+	placementRules=options and options.rules
 	if options and options.map and options.rules then
 		preparing=coroutine.create(function()
 			local count=0;local deadline=os.clock()+.002
@@ -121,6 +124,7 @@ function BuildController.start(mapWidth: number, send: (any) -> (),options:any?)
 		end
 		if placing == "minefield" or placing == "trench" then
 			Preview.hide()
+			Coverage.hide()
 			ghost.Transparency = 1
 			if drawing then
 				local hit = groundPoint(UserInputService:GetMouseLocation())
@@ -151,20 +155,24 @@ function BuildController.start(mapWidth: number, send: (any) -> (),options:any?)
 		end
 		if not placing then
 			Preview.hide()
+			Coverage.hide()
 			ghost.Transparency = 1
 			return
 		end
 		local cx, cy = cursorCell()
 		if not cx or not cy then
 			Preview.hide()
+			Coverage.hide()
 			ghost.Transparency = 1
 			return
 		end
 		ghost.CFrame = CFrame.new(World.toWorld(cx + 0.5, cy + 0.5, 0.7))*CFrame.Angles(0,World.TOP_GUI_YAW,0)
-		local hint=if model then Hint.check(model,cx,cy,FOOT,inside,structures(),side,placing,privateState) else {ok=allInside(cx,cy),blocked={},clashes={}}
+		local known=structures()
+		local hint=if model then Hint.check(model,cx,cy,FOOT,inside,known,side,placing,privateState) else {ok=allInside(cx,cy),blocked={},clashes={}}
 		local camera=workspace.CurrentCamera
 		local pixels=math.max(1,(FOOT*2+1)*S*camera.ViewportSize.Y/(2*math.max(1,camera.CFrame.Position.Y-World.GROUND_Y)*math.tan(math.rad(camera.FieldOfView/2))))
 		local rendered=Preview.update(ghost,placing,army,side,hint,pixels)
+		Coverage.update(placing,cx,cy,side,placementRules,known,pixels/(FOOT*2+1))
 		ghost.Color = if hint.ok then Color3.fromRGB(110, 230, 120) else Color3.fromRGB(235, 90, 80)
 		ghost.Transparency = if rendered then 1 else .45
 	end)

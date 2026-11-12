@@ -95,6 +95,7 @@ function Art.scale(kind:string):number
 	local meta=data and data.armies.coalition and data.armies.coalition.looks[kind]
 	return if meta and meta.defence and data.site and data.site.preview then data.site.preview.defenceShare else 1
 end
+function Art.coverageStyle():any return data and data.site and data.site.coverage end
 function Art.preview(kind:string,army:string,side:number):any
 	if not data then return nil end
 	local core=sheet(army)

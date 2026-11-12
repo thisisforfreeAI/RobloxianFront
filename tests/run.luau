@@ -4380,6 +4380,8 @@ require("./placement_motion")(test, eq)
 require("./placement_hint")(test, eq)
 require("./build_preview")(test, eq)
 require("./build_controller")(test, eq)
+require("./coverage_motion")(test, eq)
+require("./coverage_renderer")(test, eq)
 
 print(`\n{passed} passed, {failed} failed`)
 if failed > 0 then

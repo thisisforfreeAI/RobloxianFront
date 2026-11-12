@@ -211,6 +211,7 @@ return function(test:any,eq:any)
 	end)
 	test("cursor shares the faction core page and original defence scale without requesting weapon pages",function()
 		local h=fixture();h.data.site={preview={defenceShare=.75}};h.data.armies.coalition.looks.hq.defence=true
+		local coverage={marker={}};h.data.site.coverage=coverage;eq(h.art.coverageStyle(),coverage);eq(h.created,0)
 		eq(h.art.scale("hq"),.75);eq(h.art.scale("missing"),1)
 		local resource=h.art.preview("hq","coalition",1);eq(resource.sheet,nil);assert(resource.meta);eq(h.created,1)
 		h:flush(true);resource=h.art.preview("hq","coalition",1);assert(resource.sheet)

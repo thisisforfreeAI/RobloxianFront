@@ -5,7 +5,7 @@ return function(test:any,eq:any)
 	local function fixture():any
 		local h:any={time=0,instances={},contents=0}
 		local function instance(class)
-			local o:any={ClassName=class,Destroying={callbacks={}}};function o.Destroying:Connect(fn) table.insert(self.callbacks,fn) end
+			local o:any={ClassName=class,Destroying={callbacks={}}};function o.Destroying:Connect(fn) local c={};function c:Disconnect() self.dead=true end;table.insert(self.callbacks,function() if not c.dead then fn() end end);return c end
 			function o:Destroy() if self.dead then return end;self.dead=true;for _,fn in self.Destroying.callbacks do fn() end;for _,child in h.instances do if child.Parent==self then child:Destroy() end end end
 			table.insert(h.instances,o);return o
 		end
@@ -13,8 +13,8 @@ return function(test:any,eq:any)
 		h.sheet={image={},meta={rects={["1"]={2,2,8,8,0,0},["2"]={12,2,8,8,0,0},["3"]={2,12,8,8,0,0}}}}
 		h.resource={style=style,sheet=h.sheet,tint={.4,.6,.8},meta={frame=8,defence=true,base=1,paint=2,siteMask={tile=3,frame=8}}}
 		local modules={motion=Motion,site=Site,art={preview=function(kind,army,side) h.requested={kind,army,side};return h.resource end}}
-		local shared={Presentation={PlacementMotion="motion",SiteMotion="site"}}
-		local env=setmetatable({game={GetService=function() return {WaitForChild=function() return shared end} end},script={Parent={StructureArt="art"}},require=function(key) return modules[key] end,
+		local shared={Presentation={PlacementMotion="motion",SiteMotion="site"}};h.ui=instance("PlayerGui");h.center=rb.Vector3.new(350,250,1)
+		local env=setmetatable({game={GetService=function(_,name) if name=="Players" then return {LocalPlayer=if h.noPlayer then nil else {FindFirstChild=function() return h.ui end}} end;return {WaitForChild=function() return shared end} end},workspace={CurrentCamera={WorldToViewportPoint=function() return h.center end}},script={Parent={StructureArt="art"}},require=function(key) return modules[key] end,
 			Instance={new=instance},Vector2=rb.Vector2,UDim2=rb.UDim2,Color3=rb.Color3,NumberSequence=rb.NumberSequence,NumberSequenceKeypoint=rb.NumberSequenceKeypoint,Enum={NormalId={Top=1},SurfaceGuiSizingMode={FixedSize=1},ResamplerMode={Pixelated=1}},Content={fromObject=function(image) h.contents+=1;return image end},os={clock=function() return h.time end}},{__index=getfenv()})
 		h.preview=luau.load(fs.readFile("src/client/Rendering/BuildPreview.luau"),{environment=env})();h.part=instance("Part")
 		function h:draw(pixels,ok) return self.preview.update(self.part,"bunker","republic",2,{ok=ok~=false,blocked={},clashes={}},pixels or 120) end
@@ -23,6 +23,7 @@ return function(test:any,eq:any)
 	end
 	test("placement cursor shares body/paint/mask images and reuses one GUI across kinds and frames",function()
 		local h=fixture();eq(h:draw(),true);eq(h.requested[2],"republic");local gui=h:gui();assert(gui)
+		eq(gui.ClassName,"ScreenGui");eq(gui.DisplayOrder,-1);eq(gui.IgnoreGuiInset,true)
 		local count=#h.instances;for i=1,20 do h.time=i*.01;h:draw() end;assert(#h.instances<=count+4);eq(h:gui(),gui);eq(h.contents,1)
 		for _,o in h.instances do
 			assert(o.ClassName~="EditableImage")
@@ -42,6 +43,13 @@ return function(test:any,eq:any)
 		h:draw(1000);local strips=0;for _,o in h.instances do if o.ClassName=="ImageLabel" and o.ImageRectSize and o.ImageRectSize.Y==1 then strips+=1 end end;assert(strips<=64,strips)
 		local newImage={};h.sheet.image=newImage;h:draw(120,false)
 		for _,o in h.instances do if o.ClassName=="ImageLabel" and o.Visible then eq(o.ImageContent,newImage) end end
+	end)
+	test("screen-space ghost reprojects without a world canvas and hides behind the camera",function()
+		local h=fixture();h:draw(120);local root
+		for _,item in h.instances do if item.Parent==h:gui() and item.ClassName=="Frame" then root=item;break end end
+		assert(root);eq(root.Position,rb.UDim2.fromOffset(290,190));eq(root.Size,rb.UDim2.fromOffset(120,120))
+		h.center=rb.Vector3.new(500,300,1);h:draw(180);eq(root.Position,rb.UDim2.fromOffset(410,210));eq(root.Size,rb.UDim2.fromOffset(180,180))
+		h.center=rb.Vector3.new(500,300,-1);h:draw();eq(h:gui().Enabled,false)
 	end)
 	test("cursor cancellation, ghost replacement and teardown hide or destroy all native preview owners",function()
 		local h=fixture();h:draw();local gui=h:gui();h.preview.hide();eq(gui.Enabled,false)

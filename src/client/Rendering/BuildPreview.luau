@@ -1,6 +1,7 @@
 --!strict
 -- One cursor GUI, sharing the structure core pages and their alpha masks. No EditableImages.
 local ReplicatedStorage=game:GetService("ReplicatedStorage")
+local Players=game:GetService("Players")
 local Shared=ReplicatedStorage:WaitForChild("Shared")
 local Motion=require(Shared.Presentation.PlacementMotion)
 local SiteMotion=require(Shared.Presentation.SiteMotion)
@@ -21,21 +22,23 @@ local function bind(h:any,item:any,sheet:any,key:any,frame:number,alpha:number,c
 	local k=scale or 1;item.Position=UDim2.fromScale((x or 0)+r[5]/frame*k,(y or 0)+r[6]/frame*k);item.Size=UDim2.fromScale(r[3]/frame*k,r[4]/frame*k)
 	item.ImageTransparency=1-alpha;item.ImageColor3=color
 end
-function Preview.destroy() if current then local h=current;current=nil;h.gui:Destroy() end end
+function Preview.destroy() if current then local h=current;current=nil;if h.partConnection then h.partConnection:Disconnect() end;h.gui:Destroy() end end
 function Preview.hide() if current then current.gui.Enabled=false end end
 local function attach(part:any):any
 	Preview.destroy()
-	local gui=Instance.new("SurfaceGui");gui.Name="PlacementPreview";gui.Face=Enum.NormalId.Top;gui.SizingMode=Enum.SurfaceGuiSizingMode.FixedSize
-	gui.CanvasSize=Vector2.new(256,256);gui.LightInfluence=0;gui.MaxDistance=0;gui.ClipsDescendants=false;gui.Parent=part
-	local sprite=Instance.new("Frame");sprite.BackgroundTransparency=1;sprite.ClipsDescendants=false;sprite.ZIndex=3;sprite.Parent=gui
-	local h:any={part=part,gui=gui,sprite=sprite,pool={},previous={},bands={},body=image(sprite,1),paint=image(sprite,2),shadow=image(gui,2),scan=image(sprite,4)}
+	local player=Players.LocalPlayer;local parent=player and player:FindFirstChild("PlayerGui");if not parent then return nil end
+	local gui=Instance.new("ScreenGui");gui.Name="PlacementPreview";gui.IgnoreGuiInset=true;gui.DisplayOrder=-1;gui.ResetOnSpawn=false;gui.Parent=parent
+	local root=Instance.new("Frame");root.BackgroundTransparency=1;root.ClipsDescendants=false;root.Parent=gui
+	local sprite=Instance.new("Frame");sprite.BackgroundTransparency=1;sprite.ClipsDescendants=false;sprite.ZIndex=3;sprite.Parent=root
+	local h:any={part=part,gui=gui,root=root,sprite=sprite,pool={},previous={},bands={},body=image(sprite,1),paint=image(sprite,2),shadow=image(root,2),scan=image(sprite,4)}
 	h.gradient=Instance.new("UIGradient");h.gradient.Rotation=90;h.gradient.Parent=h.scan
-	current=h;gui.Destroying:Connect(function() if current==h then current=nil end end)
+	current=h;gui.Destroying:Connect(function() if h.partConnection then h.partConnection:Disconnect();h.partConnection=nil end;if current==h then current=nil end end)
+	if part.Destroying then h.partConnection=part.Destroying:Connect(function() if current==h then Preview.destroy() end end) end
 	return h
 end
 local function geometry(h:any,pose:any)
 	for i,r in pose.rects do
-		local item=h.pool[i];if not item then item=Instance.new("Frame");item.BorderSizePixel=0;item.ZIndex=1;item.Parent=h.gui;h.pool[i]=item end
+		local item=h.pool[i];if not item then item=Instance.new("Frame");item.BorderSizePixel=0;item.ZIndex=1;item.Parent=h.root;h.pool[i]=item end
 		local old=h.previous[i]
 		if not old then item.Visible=true end
 		if not old or old.z~=r.z then item.ZIndex=r.z end
@@ -51,8 +54,13 @@ end
 function Preview.update(part:any,kind:string,army:string,side:number,hint:any,pixels:number):boolean
 	pixels=math.max(1,pixels)
 	local resource=Art.preview(kind,army,side);local cfg=resource and resource.style
-	if not cfg then Preview.hide();return false end
+	local camera=workspace.CurrentCamera
+	if not cfg or not camera then Preview.hide();return false end
 	local h=if current and current.part==part then current else attach(part)
+	if not h then return false end
+	local center=camera:WorldToViewportPoint(part.Position)
+	if center.Z<=0 then Preview.hide();return true end
+	h.root.Position=UDim2.fromOffset(center.X-pixels/2,center.Y-pixels/2);h.root.Size=UDim2.fromOffset(pixels,pixels)
 	h.gui.Enabled=true
 	local meta,sheet=resource.meta,resource.sheet
 	local share=if meta and meta.defence and cfg.preview then cfg.preview.defenceShare else 1

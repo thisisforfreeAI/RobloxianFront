@@ -26,6 +26,15 @@ const gunMotion={holdSec:look.holdSec,slits:look.slits,initialStep:Number(initia
 const artillery=object('R8');artillery.motion=true;
 const site=object('Pa'),survey=object('Qk');
 const preview=object('i2');site.preview={from:preview.from,fadePx:preview.fadePx,defenceShare:preview.defenceShare};
+const ui=object('Je'),detection=object('DS'),range=object('IV');
+const screenStart=source.indexOf('previewScreen(t,o,n,s,a,r,i,l)'),screen=source.slice(screenStart,source.indexOf('const p=n.ghost.ok',screenStart));
+const radarAlpha=[...screen.matchAll(/DS\.ink\}, ([\d.]+)/g)].map(m=>Number(m[1])),radarLine=screen.match(/setLineDash\((\[[\d,]+\])\),t.lineWidth=([\d.]+)/);
+const backing=source.match(/sameKindRing\(t,o,n,s,a,r\)\{.*?t\.strokeStyle="rgba\((\d+),\s*(\d+),\s*(\d+),\s*([\d.]+)\)"/);
+const sameWidth=screen.match(/t\.lineWidth=([\d.]+)/);
+if(screenStart<0||radarAlpha.length!==2||!radarLine||!backing||!sameWidth)throw Error('Changed coverage preview styles');
+site.coverage={same:{...range,linePx:Number(sameWidth[1])},marker:object('voe'),token:object('tr'),detail:site.preview,
+ own:ui.secured,other:ui.isolated,backing:{rgb:backing.slice(1,4).map(Number),alpha:Number(backing[4])},
+ radar:{rgb:detection.ink.split(',').map(Number),lineAlpha:radarAlpha[0],fillAlpha:radarAlpha[1],dash:JSON.parse(radarLine[1]),linePx:Number(radarLine[2])}};
 const yard=[...source.matchAll(/buildYardShare:([\d.]+)/g)];if(yard.length!==1)throw Error('Ambiguous construction yard share');
 site.yardShare=Number(yard[0][1]);site.survey={ink:survey.string,alpha:survey.stringAlpha,dash:survey.stringDash,pegPx:survey.pegPx};
 function gradientInks(name,next){const at=source.indexOf('function '+name+'('),end=source.indexOf('function '+next+'(',at);if(at<0||end<0)throw Error('Missing site gradient');return [...source.slice(at,end).matchAll(/rgba\((\d+),(\d+),(\d+),[01]\)/g)].map(m=>m.slice(1).map(Number));}
