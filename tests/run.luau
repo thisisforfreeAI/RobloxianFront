@@ -2277,10 +2277,16 @@ if fs.isFile(matchPath) then
 		end
 		local n0 = #sim.strikes
 		assert(sim.artyStrike(1, b.id, "barrage", 111.5, 41))
+		eq(#b.artilleryVisual.pod.fires,18);eq(b.artilleryVisual.pod.x,111.5);eq(b.artilleryVisual.pod.y,41)
+		for i,shot in sim.salvoPattern(sim.salvoSeed(-2-b.id,sim.time),18,rulesData["artyBase.barrage.gapSec"]) do
+			near(b.artilleryVisual.pod.fires[i],sim.time+shot.at,"cosmetic schedule observes the actual salvo")
+		end
 		eq(#sim.strikes - n0, 18, "18 shells")
 		eq(sim.killsOf(1), 5, "15 more spent")
 		eq(select(2, sim.artyStrike(1, b.id, "barrage", 111.5, 41)), "cooldown")
 		eq(select(2, sim.artyStrike(1, b.id, "flare", 111.5, 41)), nil, "flares are separate and cost 5")
+		eq(#b.artilleryVisual.gun.fires,#sim.flares)
+		for i,flare in sim.flares do near(b.artilleryVisual.gun.fires[i],flare.firedAt,"cosmetic schedule observes actual flare times") end
 		eq(sim.killsOf(1), 0)
 		for i = 1, 20 * 25 do
 			sim.step(0.05)
@@ -4334,6 +4340,7 @@ require("./fire_particle_renderer")(test, eq)
 require("./house_world")(test, eq)
 require("./house_fire_renderer")(test, eq)
 require("./admin_fire")(test, eq)
+require("./admin_kills")(test, eq)
 require("./forest_world")(test, eq)
 require("./forest_raster")(test, eq)
 require("./forest_town_renderer")(test, eq)
@@ -4365,6 +4372,10 @@ require("./factory_motion")(test, eq)
 require("./factory_renderer")(test, eq)
 require("./gun_motion")(test, eq)
 require("./gun_renderer")(test, eq)
+require("./artillery_motion")(test, eq)
+require("./artillery_renderer")(test, eq)
+require("./site_motion")(test, eq)
+require("./site_renderer")(test, eq)
 
 print(`\n{passed} passed, {failed} failed`)
 if failed > 0 then

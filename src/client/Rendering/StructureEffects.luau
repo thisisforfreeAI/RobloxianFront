@@ -81,7 +81,13 @@ end
 function Effects.request(handle:any,built:number,hp:number,maxHp:number,stale:boolean,id:number,tint:any,side:number,importance:number?):string?
 	if not handle or not config or not handle.meta.effects or stale then Effects.release(handle);return nil end
 	local mode,step
-	if built<1 and handle.meta.effects.top>0 then mode="construction";step=Pixels.buildStep(config.construction,built)
+	local progress=built
+	if built<1 and config.site then
+		local yard=config.site.yardShare
+		if built<yard then Effects.release(handle);return "yard" end
+		progress=math.min(1,(built-yard)/math.max(1e-6,1-yard))
+	end
+	if built<1 and handle.meta.effects.top>0 then mode="construction";step=Pixels.buildStep(config.construction,progress)
 	elseif built>=1 then
 		handle.stage=Pixels.damageStage(config.damage,handle.stage,hp,maxHp)
 		if handle.stage>0 then mode="damage";step=handle.stage end

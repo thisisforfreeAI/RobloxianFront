@@ -40,11 +40,15 @@ end
 local function render(h:any,now:number)
 	if not h.at then return end
 	local cfg=h.cfg;local live=h.built>=1
-	local name=if cfg.parts then cfg.parts[Motion.samStage(cfg,Motion.time(h.state,now)-h.state.shotAt,h.state.reload or 0)+1] else cfg.part
+	local name=if h.driven then h.driven.part elseif cfg.parts then cfg.parts[Motion.samStage(cfg,Motion.time(h.state,now)-h.state.shotAt,h.state.reload or 0)+1] else cfg.part
 	if h.stale then name=if cfg.parts then cfg.parts[3] else cfg.part end
 	local part=h.bank and h.bank.meta.parts[name]
 	local sheet=if part then h.bank else h.core
-	local pose=Motion.pose(h.state,cfg,now,if part then #part.frames else 1)
+	local pose:any
+	if h.driven then
+		local headings=if part then #part.frames else 1;local fraction=(h.driven.heading/(math.pi*2))%1;local index=math.floor(fraction*headings+.5)
+		pose={index=index%headings+1,residual=if headings>1 then (fraction-index/headings)*math.pi*2 else 0,x=h.driven.x,y=h.driven.y,kick=h.driven.kick}
+	else pose=Motion.pose(h.state,cfg,now,if part then #part.frames else 1) end
 	if not part or h.stale then pose={index=1,residual=0,x=cfg.x,y=cfg.y,kick=0} end
 	local frame=if part then part.frames[pose.index] else cfg.fallback
 	if h.boundImage~=sheet.image or h.index~=pose.index or h.boundPart~=name or h.wasVisible~=live then
@@ -70,16 +74,17 @@ local function render(h:any,now:number)
 		h.capBound=true;h.capVisible=live
 	end
 end
-function Gun.sync(h:any,built:number,stale:boolean,sample:any,id:number,base:Color3,paint:Color3,alpha:number,light:any,bank:any)
+function Gun.sync(h:any,built:number,stale:boolean,sample:any,id:number,base:Color3,paint:Color3,alpha:number,light:any,bank:any,driven:any?)
 	if not h or h.dead then return end
 	local now=os.clock();local dt=if h.at then math.max(0,now-h.at) else 0
 	if h.id~=id then h.state=Motion.new(h.cfg,id) end
-	h.id=id;h.built=built;h.stale=stale;h.sample=sample;h.baseTint=base;h.paintTint=paint;h.alpha=alpha;h.light=light;h.bank=bank;h.last=now
-	Motion.advance(h.state,h.cfg,sample,now,dt,not stale and built>=1,id);h.at=now;render(h,now)
+	h.id=id;h.built=built;h.stale=stale;h.sample=sample;h.baseTint=base;h.paintTint=paint;h.alpha=alpha;h.light=light;h.bank=bank;h.last=now;h.driven=driven
+	if not driven then Motion.advance(h.state,h.cfg,sample,now,dt,not stale and built>=1,id) end;h.at=now;render(h,now)
 end
 function Gun.step()
 	local now=os.clock()
 	for h in views do
+		if h.driven then continue end -- The artillery owner advances these paired mechanisms together.
 		if not h.at then continue end
 		if now-h.last>.25 then
 			Motion.advance(h.state,h.cfg,nil,now,0,false,h.id);h.at=nil

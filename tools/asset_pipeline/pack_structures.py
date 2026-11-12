@@ -65,7 +65,7 @@ def pack_tiles(tiles,width=1024):
     height=max(heights);canvas=canvas.crop((0,0,width,height))
     return {'width':width,'height':height,'deflate':packed(canvas.tobytes()),'rects':rects}
 
-def weapon_parts(data,sheet,names=None):
+def weapon_parts(data,sheet,names=None,width=512):
     tiles=[];parts={}
     for name in names or [data['gun'][kind]['part'] for kind in ('atgun','bunker')]:
         actual=name+'@2' if name+'@2' in data['atlas']['parts'] else name
@@ -77,7 +77,7 @@ def weapon_parts(data,sheet,names=None):
                 if box:tiles.append((image.crop(box),box));frame['base' if layer==0 else 'paint']=len(tiles)
             frames.append(frame)
         parts[name]={'frames':frames,'frame':f,'cells':m['cells'],'tall':m['tall'],'sourceName':actual}
-    result=pack_tiles(tiles,512);result['parts']=parts
+    result=pack_tiles(tiles,width);result['parts']=parts
     print('Shared weapon parts',len(tiles),'tiles',result['width'],result['height'],'RGBA bytes',result['width']*result['height']*4)
     return result
 
@@ -111,7 +111,7 @@ def pack(data,sheet,normal=None):
                 if m.get('cap'):
                     cap=x+f*(3+len(atlas['bands']))
                     b.alpha_composite(sheet.crop((cap,y,cap+f,y+f)));p.alpha_composite(sheet.crop((cap+f,y,cap+2*f,y+f)))
-            if kind=='artybase':
+            if kind=='artybase' and not data['artillery'].get('motion'):
                 cfg=data['artillery']
                 for key in ('gun','pod'):
                     partname=cfg['parts'][key][0];meta=atlas['parts'][latest(partname,atlas['parts'])]
@@ -129,6 +129,11 @@ def pack(data,sheet,normal=None):
                 if not name.startswith('rep_'):
                     crane=pos['crane'];paste_part(b,p,'factory-crane',(crane['x']-.5,crane['y']-.5),cells)
             look={'cells':cells,'frame':f,'base':tile(b),'paint':tile(p),'night':tile(sheet.crop((x+f*(2+len(atlas['bands'])),y,x+f*(3+len(atlas['bands'])),y+f))),'sourceName':actual}
+            if data.get('site'):
+                # APPROX: half-resolution alpha, shared in the existing core image; body art is unchanged.
+                alpha=sheet.crop((x,y,x+f,y+f)).getchannel('A').resize((f//2,f//2),Image.Resampling.BOX)
+                mask=Image.new('RGBA',alpha.size,(255,255,255,0));mask.putalpha(alpha)
+                look['siteMask']={'tile':tile(mask),'frame':mask.width}
             shadow=caster_mask(sheet,m,atlas['bands'])
             look['shadow']={'tile':tile(shadow),'frame':shadow.width}
             look['defence']=kind in ('bunker','atgun','radar','sam','nightops')
@@ -147,6 +152,17 @@ def pack(data,sheet,normal=None):
                     cap=x+f*(3+len(atlas['bands']))
                     cfg['cap']={'base':tile(sheet.crop((cap,y,cap+f,y+f))),'paint':tile(sheet.crop((cap+f,y,cap+2*f,y+f)))}
                 look['gun']=cfg
+            if kind=='artybase' and data['artillery'].get('motion'):
+                cfg=copy.deepcopy(data['artillery']);cfg.update(cells=cells,slots=[])
+                for key in ('gun','pod'):
+                    partname=cfg['parts'][key][0];gm=atlas['parts'][latest(partname,atlas['parts'])]
+                    heading=round((cfg['rest']%(2*3.141592653589793))/(2*3.141592653589793)*gm['headings'])%gm['headings']
+                    gb,gp,_=part(partname,heading)
+                    cfg['slots'].append({'kind':'artillery','part':partname,'x':cfg[key][0],'y':cfg[key][1],
+                        'frame':gm['frame'],'cells':gm['cells'],'tall':gm['tall'],'footprint':cells,'initialStep':0,
+                        'shadowScale':data['shadow']['shadowPerHeight'],'shadowInk':data['shadow']['ink'],
+                        'fallback':{'base':tile(gb),'paint':tile(gp)}})
+                look['artillery']=cfg
             if kind=='factory' and data.get('factory'):
                 factory=factory_layout(data['factory'],pos,cells,f,name.startswith('rep_'),data['factoryFps'])
                 db,dp,dm=part('factory-door');factory['door']={'base':tile(db,False),'paint':tile(dp,False),'frame':dm['frame'],'cells':dm['cells']}
@@ -166,7 +182,8 @@ def pack(data,sheet,normal=None):
     launchers=None
     if data.get('gunMotion',{}).get('sam'):
         launchers={army:weapon_parts(data,sheet,[('rep_' if army=='republic' else '')+data['gun']['sam']['part']+str(stage) for stage in range(3)]) for army in ('coalition','republic')}
-    return {'armies':output,'nightAlpha':data['nightAlpha'],'construction':data.get('construction'),'damage':data.get('damage'),'weapons':weapon_parts(data,sheet) if data.get('gunMotion') else None,'launchers':launchers}
+    artillery=weapon_parts(data,sheet,[name for names in data['artillery']['parts'].values() for name in names],1024) if data['artillery'].get('motion') else None
+    return {'armies':output,'nightAlpha':data['nightAlpha'],'construction':data.get('construction'),'damage':data.get('damage'),'weapons':weapon_parts(data,sheet) if data.get('gunMotion') else None,'launchers':launchers,'artillery':artillery,'site':data.get('site')}
 
 if __name__=='__main__':
     data=json.loads(pathlib.Path(sys.argv[1]).read_text());sheet=Image.open(sys.argv[2]).convert('RGBA')

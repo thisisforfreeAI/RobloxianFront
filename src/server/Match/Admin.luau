@@ -1,6 +1,6 @@
 --!strict
 --[[
-	Admin: the owner's test panel commands (time of day, weather, oil). Not part of WarFront; a
+	Admin: the owner's test panel commands (time of day, weather, oil, kills). Not part of WarFront; a
 	development tool for this port.
 
 	Who may use it: anyone in Roblox Studio (play testing), the place's owner (game.CreatorId, or the
@@ -13,6 +13,9 @@
 	  weather { weather = "clear" | "fog" | "downpour" | "storm" | "sandstorm" }  sets the weather the
 	          clients draw. Rain/storm also suppress roof fires; sight and pace do not change.
 	  oil     { amount = number, add = bool? }  sets (or adds to) the sender's side's oil.
+	  kills   { amount = number, add = bool? }  adds to (or sets) the sender's side's kills to spend (the
+	          HUD's kill count: kills less those spent on kill-cost buildings and artillery strikes).
+	          Adding raises the side's kill tally; setting moves it so that kills to spend = amount.
 ]]
 local RunService = game:GetService("RunService")
 
@@ -21,6 +24,7 @@ local Admin = {}
 local EXTRA: { [number]: boolean } = {} -- more admin user ids, if wanted
 local WEATHERS = { clear = true, fog = true, downpour = true, storm = true, sandstorm = true }
 local MAX_OIL = 1000000
+local MAX_KILLS = 100000
 
 local groupOwner: number? = nil
 local known: { [Player]: boolean } = {}
@@ -128,6 +132,17 @@ function Admin.handle(sim: any, player: Player, side: number, raw: any): string
 		end
 		s.oil = math.clamp(if raw.add == true then s.oil + amount else amount, 0, MAX_OIL)
 		return `Oil: {math.floor(s.oil)}`
+	elseif op == "kills" then
+		local amount = tonumber(raw.amount)
+		local s = sim.sides[side]
+		if not amount or amount ~= amount or math.abs(amount) == math.huge or not s then
+			return "Bad kill amount"
+		end
+		local spent = s.killsSpent or 0
+		local now = math.max(0, (s.kills or 0) - spent)
+		local want = math.clamp(math.floor(if raw.add == true then now + amount else amount), 0, MAX_KILLS)
+		s.kills = spent + want
+		return `Kills: {want}`
 	end
 	return "Unknown admin command"
 end

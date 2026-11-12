@@ -1,6 +1,6 @@
 --!strict
 --[[
-	AdminPanel: the owner's test panel (time of day, weather, oil). Not part of WarFront; a development
+	AdminPanel: the owner's test panel (time of day, weather, oil, kills). Not part of WarFront; a development
 	tool for this port. Shown only when the server says this player is an admin (in Studio, or the
 	place's owner); the server checks every command again (server/Match/Admin.luau).
 
@@ -26,6 +26,7 @@ local clockLabel: TextLabel
 local weatherLabel: TextLabel
 local freezeButton: TextButton
 local oilBox: TextBox
+local killBox: TextBox
 local isAdmin = false
 local phase = 0.25
 local frozen = false
@@ -85,6 +86,16 @@ local function setOil(add: boolean, amount: number?)
 	send({ kind = "admin", op = "oil", amount = n, add = add })
 end
 
+local function setKills(add: boolean, amount: number?)
+	local n = amount or tonumber(killBox.Text)
+	if not n then
+		killBox.Text = ""
+		killBox.PlaceholderText = "type a number"
+		return
+	end
+	send({ kind = "admin", op = "kills", amount = n, add = add })
+end
+
 function AdminPanel.start(sendIntent: (any) -> ())
 	send = sendIntent
 	root = Instance.new("ScreenGui")
@@ -107,7 +118,7 @@ function AdminPanel.start(sendIntent: (any) -> ())
 	toggle.Parent = root
 
 	panel = Instance.new("Frame")
-	panel.Size = UDim2.fromOffset(300, 344)
+	panel.Size = UDim2.fromOffset(300, 398)
 	panel.AnchorPoint = Vector2.new(1, 0)
 	panel.Position = UDim2.new(1, -8, 0.32, 30)
 	panel.BackgroundColor3 = Color3.fromRGB(24, 27, 32)
@@ -171,18 +182,34 @@ function AdminPanel.start(sendIntent: (any) -> ())
 		setOil(true, 10000)
 	end)
 
-	label(panel, "World fires (view centre)", 262)
-	button(panel, "Ignite roofs", 8, 286, 140, function()
+	label(panel, "Kills (to spend)", 260)
+	killBox = oilBox:Clone()
+	killBox.Position = UDim2.fromOffset(8, 282)
+	killBox.Text = ""
+	killBox.PlaceholderText = "amount"
+	killBox.Parent = panel
+	button(panel, "Set", 92, 282, 44, function()
+		setKills(false)
+	end)
+	button(panel, "+10", 140, 282, 72, function()
+		setKills(true, 10)
+	end)
+	button(panel, "+100", 216, 282, 76, function()
+		setKills(true, 100)
+	end)
+
+	label(panel, "World fires (view centre)", 316)
+	button(panel, "Ignite roofs", 8, 340, 140, function()
 		local camera=workspace.CurrentCamera;if not camera then return end
 		local p=camera.CFrame.Position
 		send({kind="admin",op="townFire",x=p.X/World.STUDS_PER_CELL,y=p.Z/World.STUDS_PER_CELL})
 	end)
-	button(panel, "Ignite trees", 152, 286, 140, function()
+	button(panel, "Ignite trees", 152, 340, 140, function()
 		local camera=workspace.CurrentCamera;if not camera then return end
 		local p=camera.CFrame.Position
 		send({kind="admin",op="forestFire",x=p.X/World.STUDS_PER_CELL,y=p.Z/World.STUDS_PER_CELL})
 	end)
-	button(panel, "Reset forest / ground damage", 8, 312, 284, function() send({kind="admin",op="rebuildFires"}) end)
+	button(panel, "Reset forest / ground damage", 8, 366, 284, function() send({kind="admin",op="rebuildFires"}) end)
 	toggle.Activated:Connect(function()
 		panel.Visible = not panel.Visible
 	end)

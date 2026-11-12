@@ -16,6 +16,7 @@ local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Rules = require(Shared.Config.Rules)
 local FactoryMotion=require(Shared.Presentation.FactoryMotion)
 local GunMotion=require(Shared.Presentation.GunMotion)
+local ArtilleryMotion=require(Shared.Presentation.ArtilleryMotion)
 local MapCodec = require(Shared.Maps.MapCodec)
 local Movement = require(Shared.Simulation.Movement)
 local Pathing = require(Shared.Simulation.Pathing)
@@ -465,13 +466,13 @@ end
 local viewers: { [number]: any } = {}
 local sentVision: { [Player]: string } = {}
 
-local function structureRow(e: any, owner: number, details: boolean, production:any?, weapon:any?): { any }
+local function structureRow(e: any, owner: number, details: boolean, production:any?, weapon:any?, artillery:any?): { any }
 	return {
 		e.id, e.kind, owner, e.x, e.y, e.hp, e.maxHp,
 		if details then e.capSide or 0 else 0,
 		if details then e.capProgress or 0 else 0,
 		if details then e.store or 0 else 0,
-		e.built or 1, 0, sim.armyOf(owner), if weapon and not production then false else production, weapon,
+		e.built or 1, 0, sim.armyOf(owner), if (weapon or artillery) and not production then false else production, if artillery and not weapon then false else weapon,artillery,
 	}
 end
 
@@ -641,12 +642,14 @@ end
 local factoryViews: {[number]:any}={}
 local factorySim:any=nil
 local weaponViews: {[number]:any}={}
+local artilleryViews: {[number]:any}={}
 local function viewFor(side: number): ({ any }, { any }, { number }?)
-	if factorySim~=sim then factoryViews={};weaponViews={};factorySim=sim end
+	if factorySim~=sim then factoryViews={};weaponViews={};artilleryViews={};factorySim=sim end
 	local previousFactory=factoryViews[side] or {}
 	local nextFactory={}
 	local previousWeapon=weaponViews[side] or {}
 	local nextWeapon={}
+	local previousArtillery=artilleryViews[side] or {};local nextArtillery={}
 	local viewer = if side > 0 then viewers[side] else nil
 	if side > 0 and not viewer then
 		viewer = Fog.newViewer(sim, side)
@@ -674,7 +677,9 @@ local function viewFor(side: number): ({ any }, { any }, { number }?)
 				if known then nextFactory[e.id]=known end
 				local weapon,observed=GunMotion.snapshot(e,true,if GunMotion.supports(e.kind) then sim.inactiveReason(e)==nil else false,previousWeapon[e.id],sim.time,if e.kind=="sam" then rules.data["structures.sam.reloadSec"] :: number else nil,not sim.winner and (not sim.drop or sim.drop.phase=="done"))
 				if observed then nextWeapon[e.id]=observed end
-				table.insert(structures, structureRow(e, e.side, true,production,weapon))
+				local artillery,artKnown=ArtilleryMotion.snapshot(e,true,if e.kind=="artybase" then sim.inactiveReason(e)==nil else false,previousArtillery[e.id],sim.time,not sim.winner and (not sim.drop or sim.drop.phase=="done"))
+				if artKnown then nextArtillery[e.id]=artKnown end
+				table.insert(structures, structureRow(e, e.side, true,production,weapon,artillery))
 				listed[e.id] = true
 			end
 		end
@@ -687,7 +692,7 @@ local function viewFor(side: number): ({ any }, { any }, { number }?)
 			end
 		end
 	end
-	factoryViews[side]=nextFactory;weaponViews[side]=nextWeapon
+	factoryViews[side]=nextFactory;weaponViews[side]=nextWeapon;artilleryViews[side]=nextArtillery
 	return units, structures, if viewer then viewer.runs() else nil
 end
 

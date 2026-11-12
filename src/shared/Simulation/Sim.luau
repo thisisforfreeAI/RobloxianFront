@@ -4569,6 +4569,10 @@ function Sim.new(deps: Deps)
 		b.strikeReady = b.strikeReady or {}
 		b.strikeReady[kind] = self.time + wait
 		b.firedAt, b.fired = self.time, kind
+		-- Cosmetic source schedule; this observes existing fire times without drawing gameplay RNG.
+		b.artilleryVisual=b.artilleryVisual or {}
+		local visual={x=x,y=y,last=self.time,fires={}}
+		b.artilleryVisual[if kind=="barrage" then "pod" else "gun"]=visual
 		local bx, by = centre(b.cell)
 		if kind == "barrage" then
 			local seed = self.salvoSeed(-2 - b.id, self.time)
@@ -4576,6 +4580,7 @@ function Sim.new(deps: Deps)
 			local spread = num("artyBase.barrage.spread")
 			local list = {}
 			for _, k in self.salvoPattern(seed, n, num("artyBase.barrage.gapSec")) do
+				table.insert(visual.fires,self.time+k.at);visual.last=math.max(visual.last,self.time+k.at)
 				local px, py = x + math.cos(k.a) * k.r * spread, y + math.sin(k.a) * k.r * spread
 				table.insert(list, { x = px, y = py, at = k.at + math.sqrt(d2(bx, by, px, py)) / SHOT_SPEED.barrage })
 			end
@@ -4604,6 +4609,8 @@ function Sim.new(deps: Deps)
 				local f = math.sqrt(rand()) * spread
 				local px, py = math.clamp(x + math.cos(a) * f, 0.5, W - 0.5), math.clamp(y + math.sin(a) * f, 0.5, H - 0.5)
 				local burst = t + math.sqrt(d2(bx, by, px, py)) / SHOT_SPEED.flare
+				-- APPROX presentation: retain this base's actual schedule, rather than the source's owner-wide flare scan.
+				table.insert(visual.fires,t);visual.last=math.max(visual.last,t)
 				table.insert(self.flares, { id = nextFlare, side = side, x = px, y = py, firedAt = t, burstAt = burst,
 					untilT = burst + num("artyBase.flare.burnSec"), r = num("artyBase.flare.radius") })
 				nextFlare += 1

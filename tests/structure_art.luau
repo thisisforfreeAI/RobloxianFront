@@ -17,12 +17,12 @@ return function(test:any,eq:any)
 		local shared:any={Config={World="world"},Maps={MapCodec="codec"},Utilities={Inflate="inflate"}}
 		function shared:FindFirstChild() return nil end
 		local assets={FindFirstChild=function() return "art" end}
-		local modules:any={world={},codec={base64Decode=function() return buffer.create(0) end},inflate={raw=function(_,_,checkpoint)
+		local modules:any={world={STUDS_PER_CELL=4},codec={base64Decode=function() return buffer.create(0) end},inflate={raw=function(_,_,checkpoint)
 			if h.slow then for _=1,8 do h.time+=.001;checkpoint() end end
 			return buffer.create(64)
-		end},memory=memory,art=data,gun={attach=function(_,m) return if m.gun then {} else nil end,sync=function(_,_,_,_,_,_,_,_,_,bank) h.gunBank=bank end,step=function() end,reset=function() end,forgetSheet=function() h.forgotWeapon=(h.forgotWeapon or 0)+1 end},factory={attach=function() return {} end,step=function() end,reset=function() end,sync=function(_,_,_,sample) h.factorySample=sample end},effects={configure=function() end,step=function() end,attach=function() return {} end,request=function(_,_,hp,maxHp,stale) h.effectHp=hp;h.effectMax=maxHp;return if stale then nil else h.effectMode end}}
+		end},memory=memory,art=data,site={attach=function(_,_,_,config) return if config then {} else nil end,sync=function(_,state,stale,side) h.siteState=state;h.siteStale=stale;h.siteSide=side end,step=function() end,reset=function() end},artillery={attach=function(_,meta) return if meta.artillery then {} else nil end,sync=function(_,_,_,sample,_,_,_,_,_,bank) h.artillerySample=sample;h.artilleryBank=bank end,step=function() end,reset=function() end,forgetSheet=function() end},gun={attach=function(_,m) return if m.gun then {} else nil end,sync=function(_,_,_,_,_,_,_,_,_,bank) h.gunBank=bank end,step=function() end,reset=function() end,forgetSheet=function() h.forgotWeapon=(h.forgotWeapon or 0)+1 end},factory={attach=function() return {} end,step=function() end,reset=function() end,sync=function(_,_,_,sample) h.factorySample=sample end},effects={configure=function() end,step=function() end,attach=function() return {} end,request=function(_,_,hp,maxHp,stale) h.effectHp=hp;h.effectMax=maxHp;return if stale then nil else h.effectMode end}}
 		local env:any=setmetatable({game={GetService=function() return {WaitForChild=function() return shared end} end},
-			script={Parent={ImageMemory="memory",StructureEffects="effects",FactoryRenderer="factory",GunRenderer="gun",Parent={FindFirstChild=function() return assets end}}},require=function(key) if bad and key=="art" then error("bad local art") end;return assert(modules[key],key) end,
+			script={Parent={ImageMemory="memory",StructureEffects="effects",FactoryRenderer="factory",GunRenderer="gun",ArtilleryRenderer="artillery",SiteRenderer="site",Parent={FindFirstChild=function() return assets end}}},require=function(key) if bad and key=="art" then error("bad local art") end;return assert(modules[key],key) end,
 			Instance={new=instance},Vector2=roblox.Vector2,UDim2=roblox.UDim2,Color3=roblox.Color3,
 			Enum={NormalId={Top=1},SurfaceGuiSizingMode={FixedSize=1},ResamplerMode={Pixelated=1}},Content={fromObject=function(image) return image end},
 			os={clock=function() return h.time end},warn=function() h.warnings+=1 end},{__index=getfenv()})
@@ -83,7 +83,7 @@ return function(test:any,eq:any)
 		h.slow=false;h.art.attach({},"hq","coalition");h:flush(true);assert(h.art.attach({},"hq","coalition"))
 	end)
 	local function renderer():any
-		local h:any={instances={},resets=0,mouse=roblox.Vector2.new(700,500)}
+		local h:any={instances={},resets=0,time=0,mouse=roblox.Vector2.new(700,500)}
 		local function signal():any
 			local s:any={connections={}};function s:Connect(fn) local c:any={fn=fn};function c:Disconnect() self.dead=true end;table.insert(self.connections,c);return c end
 			function s:fire(dt) for _,c in table.clone(self.connections) do if not c.dead then c.fn(dt) end end end;return s
@@ -97,15 +97,15 @@ return function(test:any,eq:any)
 		h.camera={CFrame=roblox.CFrame.new(0,1000,0),ViewportSize=roblox.Vector2.new(800,600),FieldOfView=30}
 		function h.camera:WorldToViewportPoint(pos) return roblox.Vector3.new(200+pos.X*2,150+pos.Z*2,1),true end
 		local world={STUDS_PER_CELL=4,GROUND_Y=0,TOP_GUI_YAW=-math.pi/2,toWorld=function(x,y,z) return roblox.Vector3.new(x*4,z or 0,y*4) end}
-		local shared:any={Config={World="world"},Presentation={StructureLabels="labels"}}
+		local shared:any={Config={World="world"},Presentation={StructureLabels="labels",SiteMotion="siteMotion"}}
 		local rep={Shared=shared,WaitForChild=function() return shared end}
-		local modules:any={world=world,labels=require("../src/shared/Presentation/StructureLabels"),daylight={get=function() return {} end},
+		local modules:any={world=world,labels=require("../src/shared/Presentation/StructureLabels"),siteMotion=require("../src/shared/Presentation/SiteMotion"),daylight={get=function() return {} end},
 			art={reset=function() h.resets+=1 end,step=function() end,attach=function() return {gui=instance("SurfaceGui")} end,update=function() end}}
 		local services={ReplicatedStorage=rep,RunService={Heartbeat=h.heartbeat},UserInputService={GetMouseLocation=function() return h.mouse end},GuiService={GetGuiInset=function() return roblox.Vector2.zero end}}
 		local env:any=setmetatable({game={GetService=function(_,name) return services[name] end},script={Parent={StructureArt="art",DaylightController="daylight"}},
 			require=function(name) return assert(modules[name],name) end,workspace={CurrentCamera=h.camera},Instance={new=instance},
 			Vector2=roblox.Vector2,Vector3=roblox.Vector3,CFrame=roblox.CFrame,UDim2=roblox.UDim2,Color3=roblox.Color3,
-			Enum={Material={SmoothPlastic=1,Concrete=2,Neon=3},PartType={Cylinder=1},Font={GothamBold=1}}},{__index=getfenv()})
+			Enum={Material={SmoothPlastic=1,Concrete=2,Neon=3},PartType={Cylinder=1},Font={GothamBold=1}},os={clock=function() return h.time end}},{__index=getfenv()})
 		h.renderer=luau.load(fs.readFile("src/client/Rendering/StructureRenderer.luau"),{environment=env})();h.renderer.start()
 		return h
 	end
@@ -172,6 +172,42 @@ return function(test:any,eq:any)
 		h.weaponReclaim();eq(h.forgotWeapon,2);eq(h.released,2)
 		for _,bank in {"$sam:coalition","$sam:republic"} do art.meta.gun.bank=bank;h.art.update(art,1,false,1,light,1,100,100);eq(h.gunBank,nil) end
 		eq(h.created,3)
+	end)
+	test("artillery uses a separate optional page shared across structures and preserves its sample",function()
+		local h=fixture();h.data.artillery={width=4,height=4,deflate="synthetic",parts={},rects={}}
+		h.data.armies.coalition.looks.hq.artillery={}
+		local part={Position=roblox.Vector3.new(20,0,40),Size=roblox.Vector3.new(12,.02,12)}
+		h.art.attach(part,"hq","coalition");h:flush(true);local art=h.art.attach(part,"hq","coalition")
+		local packet={1,2,1,{1,10,10,2,{2}},{0,0,0,0,{}}};local light={night=0,shadow={0,1},shadowAlpha=1}
+		h.art.update(art,1,false,1,light,1,100,100,0,nil,nil,packet);eq(h.created,2);eq(h.kinds[2],"detail");eq(h.artillerySample,packet)
+		h:flush(true);h.art.update(art,1,false,1,light,1,100,100,0,nil,nil,packet);assert(h.artilleryBank)
+		for _=1,20 do local another=h.art.attach(part,"hq","coalition");h.art.update(another,1,false,1,light,1,100,100,0,nil,nil,packet) end
+		eq(h.created,2);h.weaponReclaim();eq(h.released,1)
+		h.art.update(art,1,false,1,light,1,100,100,0,nil,nil,packet);eq(h.artilleryBank,nil);eq(h.created,2)
+	end)
+	test("artillery snapshots preserve dense factory and gun placeholders and clear in fog",function()
+		local h=renderer();local packet={1,2,1,{1,10,10,2,{2}},{0,0,0,0,{}}}
+		local row={4,"artybase",1,5,5,100,100,0,0,0,1,0,"coalition",false,false,packet}
+		eq(#row,16);h.renderer.apply(1,{row});eq(h.renderer.each()[4].artillery,packet)
+		h.renderer.apply(2,{{4,"artybase",1,5,5,1,1,0,0,0,1,1,"coalition"}})
+		eq(h.renderer.each()[4].artillery,nil);eq(h.renderer.each()[4].weapon,nil)
+	end)
+	test("site accents preserve a blueprint fallback while construction pixels are pending or refused",function()
+		local h=fixture();h.data.site={yardShare=.3};h.art.attach({},"hq","coalition");h:flush(true);local art=h.art.attach({},"hq","coalition")
+		local state={built=.1,placed=0,done=-math.huge};local light={night=0,shadow={0,1},shadowAlpha=1}
+		h.art.update(art,1,false,.1,light,1,100,100,0,nil,nil,nil,state,80)
+		eq(art.body.Visible,false);eq(art.paint.Visible,false);eq(h.siteState,state);eq(h.siteSide,80);eq(h.created,1)
+		h.art.update(art,1,false,.8,light,1,100,100,0,nil,nil,nil,state,80);eq(art.body.Visible,false)
+		h.art.update(art,1,false,1,light,1,100,100,0,nil,nil,nil,state,80);eq(art.body.Visible,true)
+	end)
+	test("site times follow snapshots before artwork loads and never replay on reveal or restart",function()
+		local h=renderer();local function row(id,built,stale) return {id,"barracks",1,5,5,100,100,0,0,0,built,stale or 0,"coalition"} end
+		h.renderer.apply(1,{row(1,.01)});eq(h.renderer.each()[1].site.placed,-math.huge)
+		h.time=10;h.renderer.apply(2,{row(1,.8),row(2,.01)});eq(h.renderer.each()[2].site.placed,10)
+		h.time=20;h.renderer.apply(3,{row(1,1),row(2,.9)});eq(h.renderer.each()[1].site.done,20)
+		h.time=30;h.renderer.apply(4,{row(1,1),row(2,1,1)});eq(h.renderer.each()[2].site.hidden,true)
+		h.time=40;h.renderer.apply(5,{row(1,1),row(2,1)});eq(h.renderer.each()[2].site.done,-math.huge)
+		h.renderer.start();h.renderer.apply(1,{row(1,.01)});eq(h.renderer.each()[1].site.placed,-math.huge)
 	end)
 	test("weapon snapshot tails preserve the factory slot and are discarded for fog memories",function()
 		local h=renderer();local packet={1,1,.5,2,.02,.5}

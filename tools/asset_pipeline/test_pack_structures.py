@@ -73,6 +73,22 @@ class CasterTests(unittest.TestCase):
             self.assertEqual(len(part['frames']),1);self.assertEqual(part['tall'],parts[name]['tall'])
             self.assertIn(part['frames'][0]['base'],result['rects'])
 
+    def test_artillery_mechanisms_leave_the_body_and_keep_core_fallbacks(self):
+        sheet=Image.new('RGBA',(24,8),(0,0,0,0));sheet.paste((60,80,70,255),(0,0,4,4));sheet.paste((160,180,170,255),(8,0,12,4))
+        body={'x':0,'y':0,'frame':4,'cells':2};part={'x':8,'y':0,'frame':4,'cells':1,'headings':1,'tall':4}
+        names=['g0','g1','g2','p0','p1'];positions={kind:{} for kind in KINDS}
+        positions['factory']={'door':{'x':.5,'y':.5,'w':.5},'crane':{'x':.5,'y':.5}}
+        data={'atlas':{'buildings':{kind:body for kind in KINDS},'parts':{name:part for name in names+['factory-door','factory-crane']},'bands':[1,2,3]},
+              'positions':{'coalition':positions,'republic':positions},'gun':{},'dish':{},'nightAlpha':1,'shadow':{'shadowPerHeight':1,'ink':'#000000'},
+              'artillery':{'motion':True,'parts':{'gun':names[:3],'pod':names[3:]},'gun':[-.4,-.2],'pod':[.4,.2],'rest':0}}
+        result=pack(data,sheet);self.assertEqual(set(result['artillery']['parts']),set(names))
+        for army,page in result['armies'].items():
+            look=page['looks']['artybase'];rig=look['artillery'];self.assertEqual(len(rig['slots']),2)
+            self.assertEqual(rig['slots'][0]['x'],-.4);self.assertEqual(rig['slots'][1]['y'],.2)
+            for slot in rig['slots']:self.assertIn(slot['fallback']['base'],page['rects'])
+            raw=zlib.decompress(base64.b64decode(page['deflate']),-15);r=page['rects'][look['base']]
+            self.assertEqual(raw[(r[1]*page['width']+r[0])*4:(r[1]*page['width']+r[0])*4+4],bytes((60,80,70,255)))
+
     def test_packed_runtime_pages_retain_every_building_look_for_the_live_renderer(self):
         sheet=Image.new('RGBA',(24,8),(0,0,0,0));sheet.paste((60,80,70,255),(0,0,4,4))
         body={'x':0,'y':0,'frame':4,'cells':1};part={'x':0,'y':0,'frame':4,'cells':1,'headings':1}
@@ -84,5 +100,12 @@ class CasterTests(unittest.TestCase):
         for page in result['armies'].values():
             self.assertEqual(set(page['looks']),set(KINDS))
             for look in page['looks'].values():self.assertIn(look['base'],page['rects'])
+        data['site']={'yardShare':.25};result=pack(data,sheet)
+        for page in result['armies'].values():
+            pixels=zlib.decompress(base64.b64decode(page['deflate']),-15)
+            for look in page['looks'].values():
+                mask=look['siteMask'];self.assertEqual(mask['frame'],2);r=page['rects'][mask['tile']]
+                at=(r[1]*page['width']+r[0])*4;self.assertEqual(pixels[at:at+4],bytes((255,255,255,255)))
+                body=page['rects'][look['base']];at=(body[1]*page['width']+body[0])*4;self.assertEqual(pixels[at:at+4],bytes((60,80,70,255)))
 
 if __name__=='__main__':unittest.main()

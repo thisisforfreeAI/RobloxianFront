@@ -42,6 +42,13 @@ return function(test:any,eq:any)
 		function h:flush(ok) local queue=self.pending;self.pending={};for _,job in queue do job.done(ok~=false) end end
 		return h
 	end
+	test("survey phase allocates no canvas and raising normalizes the remaining build interval",function()
+		local h=fixture();h.effects.configure({site={yardShare=.3},construction={slabShare=.25,pourSteps=2,steps=4},damage={below={.8,.5,.2},back=.05}})
+		local handle=h:handle();eq(h:request(handle,.29,100),"yard");eq(h.created,0);eq(h.decodes,0);eq(handle.slot,nil)
+		h:request(handle,.3,100);eq(h.created,1);eq(handle.step,0);h:step();h:flush()
+		h:request(handle,.65,100);eq(handle.step,3)
+		eq(h:request(handle,.1,100),"yard");eq(handle.slot,nil);eq(handle.label.Visible,false)
+	end)
 	test("structure effects allocate lazily, share one optional image and bound slots and CPU source cache",function()
 		local h=fixture();local healthy=h:handle();h:request(healthy,1,100);eq(h.created,0)
 		local handles={};for i=1,12 do local handle=h:handle();h:request(handle,.4,100,i);handles[i]=handle end
