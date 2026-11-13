@@ -77,7 +77,7 @@ function Preview.update(part:any,kind:string,army:string,side:number,hint:any,pi
 	if not meta then return true end
 	if not full then
 		local badgeSheet=resource.badgeSheet or sheet;if not badgeSheet then return true end
-		if h.badgeImage~=badgeSheet.image then h.badgeImage=badgeSheet.image;h.badgeContent=if h.image==badgeSheet.image then h.coreContent else Content.fromObject(badgeSheet.image) end;h.content=h.badgeContent
+		if h.badgeImage~=badgeSheet.image then h.badgeImage=badgeSheet.image;h.badgeContent=badgeSheet.content or (if h.image==badgeSheet.image then h.coreContent else Content.fromObject(badgeSheet.image)) end;h.content=h.badgeContent
 		if meta.badge and cfg.coverage then
 			local definition=(rules and rules[`structures.{kind}.kind`]) or (if kind=="hq" then "hq" else "facility")
 			local size=CoverageMotion.token(cfg.coverage,definition or "facility",pixels/3,if rules then rules["production.spacing"] or 0 else 0)
@@ -89,7 +89,7 @@ function Preview.update(part:any,kind:string,army:string,side:number,hint:any,pi
 		return true
 	end
 	if not sheet then return true end
-	if h.image~=sheet.image then h.image=sheet.image;h.coreContent=if h.badgeImage==sheet.image then h.badgeContent else Content.fromObject(sheet.image) end;h.content=h.coreContent
+	if h.image~=sheet.image then h.image=sheet.image;h.coreContent=sheet.content or (if h.badgeImage==sheet.image then h.badgeContent else Content.fromObject(sheet.image)) end;h.content=h.coreContent
 	local tone=ink(pose.ink);local tint=resource.tint;local team=Color3.new(tint[1],tint[2],tint[3])
 	-- APPROX: native multiplicative tint/layer alpha replaces the source's precomposited source-atop copy.
 	bind(h,h.body,sheet,meta.base,meta.frame,pose.alpha,Color3.new(1,1,1):Lerp(tone,cfg.hover.tint))

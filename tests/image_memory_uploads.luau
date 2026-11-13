@@ -8,6 +8,7 @@ return function(test:any,eq:any)
 		function signal:fire() h.now+=1/60;for _,c in table.clone(self.items) do if not c.dead then c.fn() end end end
 		local asset={CreateEditableImage=function()
 			h.attempts=(h.attempts or 0)+1
+			if h.refuseCreate then return nil end
 			if h.denyCreate then error("EditableImage is not accessible. Go to the Security Tab in Experience Settings to enable this API.") end
 			local image:any={};function image:Destroy() self.dead=true end
 			function image:WritePixelsBuffer(_pos,_size,pixels)
@@ -17,8 +18,8 @@ return function(test:any,eq:any)
 			end
 			table.insert(h.images,image);return image
 		end}
-		local shared={Presentation={ImageBudget="budget",ImageUploads="uploads"}}
-		local modules={budget=require("../src/shared/Presentation/ImageBudget"),uploads=require("../src/shared/Presentation/ImageUploads")}
+		local shared={Presentation={ImageBudget="budget",ImageUploads="uploads",ImagePressure="pressure"}}
+		local modules={budget=require("../src/shared/Presentation/ImageBudget"),uploads=require("../src/shared/Presentation/ImageUploads"),pressure=require("../src/shared/Presentation/ImagePressure")}
 		local env=setmetatable({game={GetService=function(_,name)
 			if name=="AssetService" then return asset elseif name=="RunService" then return {RenderStepped=signal} end
 			return {WaitForChild=function() return shared end}
@@ -75,4 +76,13 @@ return function(test:any,eq:any)
 		eq(h.memory.write(a,{X=0,Y=0},{X=1,Y=1},buffer.create(4)),false);assert(h.memory.accessFailure());eq(h.warnings,1)
 		eq(h.memory.canDetail({X=1,Y=1}),false);eq(h.memory.detailHeadroom(),0);eq(h.memory.recoverTerrain(4),0);eq(h.memory.pressureStats().accessDisabled,true)
 	end)
+	test("actual memory diagnostics identify owners and pressure while native retries await a real release",function()
+		local h=make();local first=h.memory.create({X=2,Y=2},"core","test-unit")
+		h.refuseCreate=true;eq(h.image(),nil);local before=h.attempts
+		for _=1,50 do h.now+=2;eq(h.image(),nil)end;eq(h.attempts,before)
+		local stats=h.memory.pressureStats();eq(stats.quality,2);eq(stats.owners["test-unit"].bytes,16)
+		h.refuseCreate=false;h.memory.release(first);local nextImage=h.image();assert(nextImage);eq(h.attempts,before+1)
+		h.memory.release(nextImage);h.now+=20;h.memory.quality();h.now+=6;eq(h.memory.quality(),1);h.now+=10;eq(h.memory.quality(),0)
+	end)
+
 end

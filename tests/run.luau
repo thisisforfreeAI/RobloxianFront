@@ -4412,6 +4412,8 @@ require("./rifle_fire")(test, eq)
 
 require("./vehicle_muzzles")(test, eq)
 
+require("./image_residency")(test, eq)
+
 print(`\n{passed} passed, {failed} failed`)
 if failed > 0 then
 	error("tests failed")

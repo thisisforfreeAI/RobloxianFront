@@ -36,7 +36,7 @@ function Renderer.start(world:any,clock:any,assets:Instance,parent:Instance,mapI
 	end
 	local function allocate(variant:any):boolean
 		local size=Vector2.new(variant.width,variant.height)
-		body=Memory.create(size);if body then shade=Memory.create(size) end
+		body=Memory.create(size,"detail","CivilianPeopleRenderer");if body then shade=Memory.create(size,"detail","CivilianPeopleRenderer") end
 		if not body or not shade then clear();return false end
 		display=variant
 		return true

@@ -10,7 +10,7 @@ function ImageBudget.new(factory: (number, number) -> any, options: any?)
 		terrain = 0, terrainReserve = o.terrainReserve or 0,
 		recoveryLimit = o.recoveryLimit or 4 * 1024 * 1024,
 		records = {}, reclaimers = {}, listeners = {}, epoch = 0, guard = nil, knownCeiling = nil, reclaiming = false,
-		refusals={core=0,detail=0,terrain=0},nativeRefusals=0,lastRefusal=nil }
+		refusals={core=0,detail=0,terrain=0},nativeRefusals=0,lastRefusal=nil,blockedEpoch=nil,suppressed=0 }
 	function self:protect(): any
 		return if self.guard then self.guard() else {}
 	end
@@ -94,7 +94,7 @@ function ImageBudget.new(factory: (number, number) -> any, options: any?)
 		end
 		return self:detailHeadroom(credit,"terrain")
 	end
-	function self:create(w: number, h: number, kind: string?): any
+	function self:create(w: number, h: number, kind: string?,owner:string?): any
 		kind = kind or "core"
 		assert(w > 0 and h > 0 and w <= 1024 and h <= 1024 and w % 1 == 0 and h % 1 == 0, "invalid image dimensions")
 		local bytes = w * h * 4
@@ -109,11 +109,14 @@ function ImageBudget.new(factory: (number, number) -> any, options: any?)
 		else
 			local ceiling = math.min(self.ceiling, self.knownCeiling or math.huge)
 			self:reclaim(math.max(0, self.used + bytes - ceiling))
-			if self.knownCeiling and self.used + bytes > self.knownCeiling then return refused() end
+			if self.used + bytes > ceiling then return refused() end
 		end
+		-- A native refusal is a session-wide signal. No native re-probe until a tracked
+		-- image was actually destroyed; merely waiting or retrying another owner is not progress.
+		if self.blockedEpoch==self.epoch then self.suppressed+=1;return refused() end
 		local ok, image = pcall(factory, w, h)
 		if not ok or not image then
-			self.nativeRefusals+=1
+			self.nativeRefusals+=1;self.blockedEpoch=self.epoch
 			-- First native refusal teaches a conservative ceiling. Release reusable detail and unused
 			-- art before retrying a core image; do not retry an identical allocation without freeing.
 			self.knownCeiling = math.min(self.knownCeiling or math.huge, self.used)
@@ -122,11 +125,12 @@ function ImageBudget.new(factory: (number, number) -> any, options: any?)
 			self:reclaim(math.huge)
 			if self.used < before then
 				ok, image = pcall(factory, w, h)
-				if not ok or not image then self.nativeRefusals+=1 end
+				if not ok or not image then self.nativeRefusals+=1;self.blockedEpoch=self.epoch end
 			end
 			if not ok or not image then return refused() end
 		end
-		self.records[image] = { bytes = bytes, kind = kind }
+		self.blockedEpoch=nil
+		self.records[image] = { bytes = bytes, kind = kind,owner=owner or kind,width=w,height=h }
 		self.used += bytes
 		if kind == "detail" or kind == "terrain" then self.detail += bytes end
 		if kind == "terrain" then self.terrain += bytes end

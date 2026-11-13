@@ -56,7 +56,7 @@ function Tokens.draw(v:any,point:any,pixels:number,rules:any,viewer:number,width
 	local x,y=math.floor(point.X+.5),math.floor(point.Y+.5)
 	if h.x~=x or h.y~=y then h.x=x;h.y=y;h.root.Position=UDim2.fromOffset(x,y) end
 	if not changed then return plan end
-	if bankImage~=sheet.image then bankImage=sheet.image;bankContent=Content.fromObject(sheet.image) end
+	if bankImage~=sheet.image then bankImage=sheet.image;bankContent=sheet.content or Content.fromObject(sheet.image) end
 	h.image=sheet.image;h.sheet=sheet;h.content=bankContent
 	local tint=resource.tint;local team=if v.side<=0 then ink(resource.style.tokens.neutral) else Color3.new(tint[1],tint[2],tint[3]);local white=Color3.new(1,1,1)
 	bind(h,h.back,meta.back,meta,plan.size,white,if plan.stale then 0 else plan.alpha)

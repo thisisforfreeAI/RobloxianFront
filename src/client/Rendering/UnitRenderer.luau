@@ -1138,6 +1138,33 @@ local function stepCrews(dt: number)
 	end
 end
 
+local function imageOnScreen(x:number,y:number):boolean
+	local camera=workspace.CurrentCamera;if not camera then return true end
+	local point=camera:WorldToViewportPoint(World.toWorld(x,y,.4))
+	if point.Z<=0 then return false end
+	-- Generous camera margin protects formation spread and prewarms art before it reaches the edge.
+	local margin=120+5*S*camera.ViewportSize.Y/math.max(1,2*point.Z*math.tan(math.rad(camera.FieldOfView)/2))
+	return point.X>=-margin and point.Y>=-margin and point.X<=camera.ViewportSize.X+margin and point.Y<=camera.ViewportSize.Y+margin
+end
+local function observeLook(look:any,visible:boolean)
+	if not look then return end
+	SpriteBank.observe(look,visible);SpriteBank.observe(look.body,visible);SpriteBank.observe(look.turret,visible);SpriteBank.observe(look.empty,visible)
+	for _,sheet in look.fx or {}do SpriteBank.observe(sheet,visible)end
+end
+local function observeMan(man:any,visible:boolean)
+	SpriteBank.observe(man.fig,visible)
+	if man.effects then SpriteBank.observe(man.effects.atlas,visible)end
+end
+local function observeView(v:any,pos:Vector3)
+	local visible=v.statusCode~=4 and imageOnScreen(pos.X/S,pos.Z/S)
+	observeLook(v.base,visible);observeLook(v.look,visible)
+	for _,sp in v.sprites do SpriteBank.observe(sp.sootSheet,visible)end
+	for _,fx in v.fx do SpriteBank.observe(fx.sheet,visible)end
+	for _,man in v.men do observeMan(man,visible)end
+	if v.tube then observeMan(v.tube,visible)end
+	for _,hand in v.hands or {}do observeMan(hand.ms,visible)end
+end
+
 local function activeImageContent(): any
 	local protected = {}
 	local function mark(content: any) if content then protected[content] = true end end
@@ -1174,7 +1201,6 @@ function UnitRenderer.start()
 	ImageMemory.setGuard(activeImageContent)
 	SpriteBank.preload()
 	RunService.RenderStepped:Connect(function(dt)
-		SpriteBank.step()
 		local light = DaylightController.get()
 		SUN = Vector2.new(light.shadow[1], light.shadow[2])
 		SHADOW_FADE = light.shadowAlpha
@@ -1183,6 +1209,7 @@ function UnitRenderer.start()
 		for _, v in views do
 			v.t = math.min(1, v.t + dt / SNAPSHOT_SEC)
 			local pos = v.from:Lerp(v.to, v.t)
+			observeView(v,pos)
 			place(v, pos, lerpAngle(v.fromYaw, v.toYaw, v.t), dt)
 			if #v.men > 0 then
 				placeMen(v, pos, dt)
@@ -1193,12 +1220,14 @@ function UnitRenderer.start()
 		end
 		if #crews > 0 then
 			stepCrews(dt)
+			for _,hand in crews do observeMan(hand.ms,imageOnScreen(hand.x,hand.y)and not FogOverlay.hidden(hand.x,hand.y))end
 		end
 		if #wrecks > 0 then
 			local now = os.clock()
 			local keep = 0
 			for i = 1, #wrecks do
 				local w = wrecks[i]
+				observeLook(w.look,imageOnScreen(w.x,w.y)and not FogOverlay.hidden(w.x,w.y))
 				if placeWreck(w, now) then
 					keep += 1
 					wrecks[keep] = w
@@ -1208,6 +1237,7 @@ function UnitRenderer.start()
 				wrecks[i] = nil
 			end
 		end
+		SpriteBank.step() -- after current camera ownership is marked
 	end)
 end
 

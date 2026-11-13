@@ -15,7 +15,7 @@ return function(test:any,eq:any)
 		local modules={motion=Motion,site=Site,coverage=require("../src/shared/Presentation/CoverageMotion"),art={preview=function(kind,army,side) h.requested={kind,army,side};return h.resource end}}
 		local shared={Presentation={PlacementMotion="motion",SiteMotion="site",CoverageMotion="coverage"}};h.ui=instance("PlayerGui");h.center=rb.Vector3.new(350,250,1)
 		local env=setmetatable({game={GetService=function(_,name) if name=="Players" then return {LocalPlayer=if h.noPlayer then nil else {FindFirstChild=function() return h.ui end}} end;return {WaitForChild=function() return shared end} end},workspace={CurrentCamera={WorldToViewportPoint=function() return h.center end}},script={Parent={StructureArt="art"}},require=function(key) return modules[key] end,
-			Instance={new=instance},Vector2=rb.Vector2,UDim2=rb.UDim2,Color3=rb.Color3,NumberSequence=rb.NumberSequence,NumberSequenceKeypoint=rb.NumberSequenceKeypoint,Enum={NormalId={Top=1},SurfaceGuiSizingMode={FixedSize=1},ResamplerMode={Pixelated=1}},Content={fromObject=function(image) h.contents+=1;return image end},os={clock=function() return h.time end}},{__index=getfenv()})
+			Instance={new=instance},Vector2=rb.Vector2,UDim2=rb.UDim2,Color3=rb.Color3,NumberSequence=rb.NumberSequence,NumberSequenceKeypoint=rb.NumberSequenceKeypoint,Enum={NormalId={Top=1},SurfaceGuiSizingMode={FixedSize=1},ResamplerMode={Pixelated=1}},Content={fromObject=function(image) assert(not image.external,"regular asset passed to Content.fromObject");h.contents+=1;return image end},os={clock=function() return h.time end}},{__index=getfenv()})
 		h.preview=luau.load(fs.readFile("src/client/Rendering/BuildPreview.luau"),{environment=env})();h.part=instance("Part")
 		function h:draw(pixels,ok) return self.preview.update(self.part,"bunker","republic",2,{ok=ok~=false,blocked={},clashes={}},pixels or 120,self.rules) end
 		function h:gui() for _,o in self.instances do if o.Name=="PlacementPreview" and not o.dead then return o end end end
@@ -99,5 +99,13 @@ return function(test:any,eq:any)
 		local h=fixture();h:draw();local gui=h:gui();h.preview.hide();eq(gui.Enabled,false)
 		h:draw();h.part={};h:draw();eq(gui.dead,true);h.preview.destroy();eq(h:gui(),nil)
 		h:draw();h:gui():Destroy();h.preview.destroy();eq(h:gui(),nil)
+	end)
+	test('placement swaps separate hosted badge and body pages across zoom without editable conversion',function()
+		local h=fixture();h:badges();h.sheet.image={external=true};h.sheet.content='hosted-body';h.resource.badgeSheet={image={external=true},content='hosted-badges',meta=h.sheet.meta}
+		for _=1,20 do
+			h:draw(6);eq(h:badge('BadgeInk').ImageContent,'hosted-badges');eq(h:badge('BadgeInk').Visible,true)
+			h:draw(120);for _,o in h.instances do if o.ClassName=='ImageLabel'and o.Visible then eq(o.ImageContent,'hosted-body')end end
+		end
+		eq(h.contents,0);h.sheet.image={};h.sheet.content=nil;h:draw(120);eq(h.contents,1);h:draw(6);eq(h:badge('BadgeInk').ImageContent,'hosted-badges');eq(h.contents,1)
 	end)
 end

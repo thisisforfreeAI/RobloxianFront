@@ -161,7 +161,11 @@ def main():
     for target, data in targets:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("-- Generated from your local install/shape strips; git-ignored.\nreturn " + lua(data) + "\n", newline="\n")
-    print(f"All figure masks: {total/1048576:.2f} MiB raw; loaded per figure when first drawn.")
+    from pack_men_fx_lods import generate
+    for target, data in targets:
+        if target.stem.startswith("OrigMen"):
+            generate(target, target.parent)
+    print(f"All figure masks: {total/1048576:.2f} MiB raw; loaded per figure when first drawn, with smaller native LODs.")
 
 
 if __name__ == "__main__":

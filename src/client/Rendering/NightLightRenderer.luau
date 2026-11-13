@@ -82,7 +82,7 @@ function Renderer.start(map:any,parent:Instance?)
 		if pageWidth>1024 then return false end
 		for x=0,w-1,pageWidth do
 			local width=math.min(pageWidth,w-x)
-			local image=Memory.create(Vector2.new(width,h))
+			local image=Memory.create(Vector2.new(width,h),"detail","NightLightRenderer")
 			if not image then clearPages();return false end
 			table.insert(session.pages,{image=image,x=x,w=width,h=h})
 		end

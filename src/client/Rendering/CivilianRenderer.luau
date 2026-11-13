@@ -63,7 +63,7 @@ function Renderer.start(map:any,parent:Instance)
 		if body and shade then return true end
 		if os.clock()<retry then return false end
 		local size=Vector2.new(data.width,data.height)
-		body=Memory.create(size);if body then shade=Memory.create(size) end
+		body=Memory.create(size,"detail","CivilianRenderer");if body then shade=Memory.create(size,"detail","CivilianRenderer") end
 		if not body or not shade then clear();retry=os.clock()+5;return false end
 		local loaded,err=pcall(function()
 			bodyPixels=bodyPixels or Inflate.raw(Codec.base64Decode(data.deflate),data.width*data.height*4)

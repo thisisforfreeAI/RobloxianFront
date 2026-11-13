@@ -267,14 +267,16 @@ return function(test: any, eq: any)
 		local attempts,warnings,decodes,releases=0,0,0,0;local blocked,bad=true,false;local listener
 		local memory={create=function() attempts+=1;if blocked then return nil end;return {WritePixelsBuffer=function() end} end,
 			release=function(image) if image then releases+=1;if listener then listener() end end end,register=function() end,onRelease=function(fn) listener=fn end,stats=function() return 0 end}
-		local settings={tag="config"};local art={tag="art"}
-		local shared={Presentation={MenShadows="shadows"},Maps={MapCodec="codec"},Assets={PixelCodec="pixels",Facing="facing"},Config={World="world"}}
+		local settings={tag="config"};local art={tag="art",IsA=function()return true end}
+		local shared={Presentation={MenShadows="shadows",SpriteLod="lod",TownLods="hash"},Maps={MapCodec="codec"},Assets={PixelCodec="pixels",Facing="facing"},Config={World="world"}}
 		function shared:FindFirstChild() return {FindFirstChild=function() return settings end} end
 		local modules={memory=memory,shadows={},codec={base64Decode=function() return buffer.create(0) end},pixels={decode=function() decodes+=1;if bad then error("invalid local pixels") end;return buffer.create(4) end},facing={},world={}}
+		modules.lod=require("../src/shared/Presentation/SpriteLod");modules.hash=require("../src/shared/Presentation/TownLods")
 		local env=setmetatable({workspace={},game={GetService=function() return {WaitForChild=function() return shared end} end},
-			script={Parent={ImageMemory="memory",Parent={FindFirstChild=function() return {FindFirstChild=function() return art end} end}}},
+			script={Parent={ImageMemory="memory",SpriteBank="bank",Parent={FindFirstChild=function() return {FindFirstChild=function() return art end} end}}},
 			require=function(key) if key==settings then return {} elseif key==art then return {width=1,height=1,rle=""} end;return modules[key] end,
 			Vector2={new=function(x,y) return {X=x,Y=y} end,zero={X=0,Y=0}},Content={fromObject=function(image) return image end},warn=function() warnings+=1 end},{__index=getfenv()})
+		modules.bank=luau.load(fs.readFile("src/client/Rendering/SpriteBank.luau"),{environment=env})()
 		local masks=luau.load(fs.readFile("src/client/Rendering/ManEffects.luau"),{environment=env})()
 		for _=1,50 do eq(masks.attach({}, {}, {}, {}, "gunner"),nil) end;eq(attempts,1);eq(warnings,0);eq(decodes,0)
 		listener();blocked=false;bad=true

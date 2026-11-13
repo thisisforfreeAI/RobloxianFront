@@ -5,6 +5,8 @@ local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Budget = require(ReplicatedStorage:WaitForChild("Shared").Presentation.ImageBudget)
 local Uploads = require(ReplicatedStorage:WaitForChild("Shared").Presentation.ImageUploads)
+local Pressure=if ReplicatedStorage:WaitForChild("Shared").Presentation.ImagePressure then require(ReplicatedStorage:WaitForChild("Shared").Presentation.ImagePressure)else nil
+local quality=if Pressure then Pressure.new()else nil
 local accessFailure:string?=nil
 local accessListeners:{any}={}
 local function reportAccess(err:any)
@@ -58,9 +60,18 @@ end
 function ImageMemory.cancelUploads(image:any) uploads.cancel(image) end
 function ImageMemory.uploadStats():any return uploads.stats() end
 
-function ImageMemory.create(size: Vector2, kind: string?): EditableImage?
+function ImageMemory.quality():number
+	if not quality then return 0 end
+	return Pressure.sample(quality,budget.used,budget.detail,math.min(budget.ceiling,budget.knownCeiling or math.huge),budget.detailLimit,budget.nativeRefusals,os.clock())
+end
+function ImageMemory.stride(kind:string,visible:boolean):number
+	return if Pressure then Pressure.floor(ImageMemory.quality(),kind,visible)else (if visible then 1 else 4)
+end
+function ImageMemory.create(size: Vector2, kind: string?,owner:string?): EditableImage?
 	if accessFailure then return nil end
-	return budget:create(size.X, size.Y, kind)
+	-- Optional large effects yield before another native failure; terrain has its separate reserve.
+	if kind=="detail" and ImageMemory.quality()>=2 and size.X*size.Y*4>512*1024 then return nil end
+	return budget:create(size.X, size.Y, kind,owner)
 end
 -- Bootstrap writes before the image is displayed. Normal displayed images keep using upload().
 function ImageMemory.write(image:any,position:any,size:any,pixels:buffer):(boolean,any)
@@ -83,8 +94,11 @@ function ImageMemory.register(priority: number, fn: (number, any) -> ()) return 
 function ImageMemory.onRelease(fn: () -> ()) budget:onRelease(fn) end
 function ImageMemory.setGuard(fn: () -> any) budget.guard = fn end
 function ImageMemory.stats(): (number, number) return budget.used, budget.detail end
+function ImageMemory.epoch():number return budget.epoch end
 function ImageMemory.pressureStats():any
-	return {used=budget.used,detail=budget.detail,terrain=budget.terrain,terrainReserve=budget.terrainReserve,detailLimit=budget.detailLimit,ceiling=math.min(budget.ceiling,budget.knownCeiling or math.huge),recoveryPasses=recoveryPasses,recoveryReleased=recoveryReleased,
+	local owners={}
+	for _,record in budget.records do local key=record.owner or record.kind;local item=owners[key]or{bytes=0,count=0};owners[key]=item;item.bytes+=record.bytes;item.count+=1 end
+	return {quality=ImageMemory.quality(),owners=owners,suppressed=budget.suppressed,epoch=budget.epoch,used=budget.used,detail=budget.detail,terrain=budget.terrain,terrainReserve=budget.terrainReserve,detailLimit=budget.detailLimit,ceiling=math.min(budget.ceiling,budget.knownCeiling or math.huge),recoveryPasses=recoveryPasses,recoveryReleased=recoveryReleased,
 		accessDisabled=accessFailure~=nil,
 		refusals=table.clone(budget.refusals),nativeRefusals=budget.nativeRefusals,lastRefusal=if budget.lastRefusal then table.clone(budget.lastRefusal) else nil}
 end

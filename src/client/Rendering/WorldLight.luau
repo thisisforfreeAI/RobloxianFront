@@ -31,7 +31,7 @@ function WorldLight.start()
 	local module=data and data:FindFirstChild("WorldLook")
 	if not module then warn("[WorldLight] Generate source look with export_world_look.cjs");return end
 	config=require(module :: ModuleScript)
-	image=Memory.create(Vector2.new(192,128))
+	image=Memory.create(Vector2.new(192,128),"detail","WorldLight")
 	if not image then return end
 	local gui=Instance.new("ScreenGui")
 	gui.Name="WorldLight";gui.IgnoreGuiInset=true;gui.ResetOnSpawn=false;gui.DisplayOrder=-20

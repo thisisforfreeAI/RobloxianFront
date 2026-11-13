@@ -29,6 +29,7 @@ local Shared = ReplicatedStorage:WaitForChild("Shared")
 local MapCodec = require(Shared.Maps.MapCodec)
 local PixelCodec = require(Shared.Assets.PixelCodec)
 
+local Static=if script.Parent.StaticImages then require(script.Parent.StaticImages)else nil
 local SpriteBank = {}
 local Lod=require(Shared.Presentation.SpriteLod)
 local TownLods=require(Shared.Presentation.TownLods)
@@ -94,29 +95,55 @@ local function cells(name:string,meta:any):number
 end
 local function variant(p:any,stride:number,checkpoint:any?):any
 	if stride==1 then return p.meta end
+	p.variants=p.variants or {}
+	if p.variants[stride] then return p.variants[stride] end
 	local folder=script.Parent.Parent:FindFirstChild("DevAssets")
 	local module=folder and folder:FindFirstChild(p.name.."_Mip"..stride)
 	if not module then return nil end
 	p.hash=p.hash or TownLods.signature(p.meta.rle,checkpoint)
 	local data=require(module)
-	return if Lod.valid(p.meta,data,stride,p.hash) then data else nil
+	if p.cropped then
+		if type(data)~="table"or data.lod~=stride or data.sourceHash~=p.hash or type(data.rects)~="table"or type(data.rle)~="string"or data.frame~=p.meta.frame/stride then return nil end
+		for pose,layers in p.meta.poses do for layer,frames in layers do for index,rect in frames do
+			local native=data.rects[pose..":"..layer..":"..index]
+			if not native or native[1]<0 or native[2]<0 or native[3]<0 or native[4]<0 or native[1]+native[3]>data.width or native[2]+native[4]>data.height or rect[3]>0 and rect[4]>0 and (native[3]<1 or native[4]<1)then return nil end
+		end end end
+		p.variants[stride]=data;return data
+	end
+	if Lod.valid(p.meta,data,stride,p.hash) then p.variants[stride]=data;return data end
+	return nil
 end
 local function warning(name:string,why:any)
 	if not warned[name] then warned[name]=true;warn(`[SpriteBank] {name} unavailable; existing fallback stays:`,why) end
 end
-local manager=Lod.new({now=os.clock,vector=Vector2.new,content=Content.fromObject,
-	create=function(w,h,kind)return ImageMemory.create(Vector2.new(w,h),kind)end,
+local function imageContent(image:any):any return if type(image)=="table"and image.content then image.content else Content.fromObject(image)end
+local function external(p:any,stride:number,data:any?):any
+	if not Static then return nil end
+	local name=p.name..(if stride==1 then ""else "_Mip"..stride)
+	if Static.has and not Static.has(name) then return nil end
+	data=data or variant(p,stride);if not data then return nil end
+	local asset=Static.get(name,data)
+	if asset then asset.meta=data end
+	return asset
+end
+local manager=Lod.new({now=os.clock,vector=Vector2.new,content=imageContent,emptyContent=Content.none,
+	minimum=if ImageMemory.stride then function(p,visible)return ImageMemory.stride(p.kind,visible)end else nil,
+	epoch=ImageMemory.epoch,asset=external,
+	create=function(w,h,kind,name)return ImageMemory.create(Vector2.new(w,h),kind,name)end,
 	cancel=function(image)ImageMemory.cancelUploads(image)end,release=ImageMemory.release,warn=warning,
 	prepare=function(p,stride,checkpoint)
 		local data=variant(p,stride,checkpoint);if not data then return nil end
-		return {width=data.width,height=data.height,pixels=PixelCodec.decode(MapCodec.base64Decode(data.rle,checkpoint),data.width,data.height,checkpoint)}
+		local asset=external(p,stride,data)
+		return {asset=asset,meta=data,width=data.width,height=data.height,pixels=if asset then nil else PixelCodec.decode(MapCodec.base64Decode(data.rle,checkpoint),data.width,data.height,checkpoint)}
 	end,
 	upload=function(image,data,done)return ImageMemory.upload(image,Vector2.zero,Vector2.new(data.width,data.height),data.pixels,{priority=2,key="sprite-lod",done=done})end})
 function SpriteBank.bind(label:any,record:any,frame:number?)manager.bind(label,record,frame)end
 function SpriteBank.share(record:any,source:any):any return if source.page then manager.track(record,source.page) else record end
 function SpriteBank.step()manager.step(cellPixels())end
-function SpriteBank.stats():any return manager.stats()end
-local function page(name: string): any
+function SpriteBank.stats():any local stats=manager.stats();if Static then stats.assets=Static.stats()end;return stats end
+function SpriteBank.observe(record:any,visible:boolean)manager.observe(record,visible)end
+function SpriteBank.bindCrop(label:any,record:any,key:string,rect:any):boolean return manager.bindCrop(label,record,key,rect)end
+local function page(name: string,cropped:boolean?): any
 	local got=pages[name]
 	if got~=nil then if got then got.at=os.clock() end;return got end
 	pages[name]=false
@@ -125,20 +152,30 @@ local function page(name: string): any
 	local allocated:EditableImage?=nil
 	local ok,result=pcall(function()
 		local meta=require(module)
+		if cropped then meta=table.clone(meta);meta.frame=48 end
 		local optional=string.find(name,"Wreck",1,true) or string.match(name,"RimHalf$") or string.match(name,"Rim$") or string.match(name,"Shade$")
-		local p:any={name=name,meta=meta,cells=cells(name,meta),kind=if optional then "detail" else "core",at=os.clock(),missing={}}
-		local stride=Lod.stride(meta.frame,p.cells*cellPixels());local data=variant(p,stride)
+		local p:any={name=name,meta=meta,cells=cells(name,meta),kind=if optional or cropped then "detail" else "core",at=os.clock(),missing={},cropped=cropped}
+		local stride=math.max(Lod.stride(meta.frame,p.cells*cellPixels()),if ImageMemory.stride then ImageMemory.stride(p.kind,true)else 1);local data=variant(p,stride)
 		if not data then p.missing[stride]=true;stride=if stride==4 then 2 else 1;data=variant(p,stride) end
 		if not data then p.missing[stride]=true;stride=1;data=meta end
-		local size=Vector2.new(data.width,data.height);local image=ImageMemory.create(size,p.kind)
+		local size=Vector2.new(data.width,data.height);local asset=external(p,stride,data)
+		local image=asset or ImageMemory.create(size,p.kind,name)
 		if not image then return nil end
 		allocated=image
-		image:WritePixelsBuffer(Vector2.zero,size,PixelCodec.decode(MapCodec.base64Decode(data.rle),data.width,data.height))
-		p.image,p.content,p.stride=image,Content.fromObject(image),stride;manager.register(p);return p
+		if not asset then image:WritePixelsBuffer(Vector2.zero,size,PixelCodec.decode(MapCodec.base64Decode(data.rle),data.width,data.height))end
+		p.image,p.content,p.stride=image,imageContent(image),stride
+		p.external=asset~=nil;p.layout=data;p.nativeWidth=data.width;p.nativeHeight=data.height
+		manager.register(p);return p
 	end)
 	if not ok then ImageMemory.release(allocated);pages[name]=false;warning(name,result);return false end
 	if not result then return false end
 	pages[name]=result;return result
+end
+
+function SpriteBank.cropped(name:string):any
+	local p=page(name,true);if not p then return nil end
+	p.cropRecord=p.cropRecord or manager.track({meta=p.meta},p)
+	return p.cropRecord
 end
 
 local function touchCached(value: any)
@@ -416,7 +453,7 @@ ImageMemory.register(20, function(needed: number, protected: any,detailOnly:bool
 	local before = ImageMemory.stats()
 	local candidates = {}
 	for name, p in pages do
-		if p and (not detailOnly or p.kind=="detail") and not protected[p.content] and os.clock() - p.at >= 1 then table.insert(candidates, { name = name, page = p }) end
+		if p and p.image and not p.external and (not detailOnly or p.kind=="detail") and not protected[p.content] and os.clock() - p.at >= 1 then table.insert(candidates, { name = name, page = p }) end
 	end
 	table.sort(candidates, function(a, b) return a.page.at < b.page.at end)
 	for _, candidate in candidates do

@@ -59,7 +59,7 @@ function WeatherGround.start(map:any)
 		if state.wet<=0 and state.mud<=0 then if image then clear() end;return end
 		if not image then
 			if os.clock()<retry then return end
-			image=Memory.create(Vector2.new(w,h));if not image then retry=os.clock()+5;return end
+			image=Memory.create(Vector2.new(w,h),"detail","WeatherGround");if not image then retry=os.clock()+5;return end
 			local p=Instance.new("Part");part=p
 			p.Name="WeatherGround";p.Anchored=true;p.CanCollide=false;p.CanQuery=false;p.CanTouch=false;p.CastShadow=false;p.Transparency=1
 			p.Size=Vector3.new(map.height*World.STUDS_PER_CELL,.01,map.width*World.STUDS_PER_CELL)

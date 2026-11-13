@@ -30,7 +30,7 @@ function Renderer.start(world:any,clock:any,assets:Instance,parent:Instance,mapI
 	local function atlas():boolean
 		if image then return true end
 		if os.clock()<retry or disabled then return false end
-		image=Memory.create(Vector2.new(data.width,data.height))
+		image=Memory.create(Vector2.new(data.width,data.height),"detail","ChimneySmokeRenderer")
 		if not image then retry=os.clock()+5;return false end
 		local loaded,err=pcall(function()
 			pixels=pixels or Inflate.raw(Codec.base64Decode(data.deflate),data.width*data.height*4)

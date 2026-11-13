@@ -16,6 +16,7 @@ local Fade=require(script.Parent.StructureFade)
 local Shadows=require(script.Parent.StructureShadows)
 local fades:{[any]:boolean}={}
 local Art={}
+local Static=if script.Parent.StaticImages then require(script.Parent.StaticImages)else nil
 local assets=script.Parent.Parent:FindFirstChild("DevAssets")
 local module=assets and assets:FindFirstChild("OrigStructures")
 local data:any=nil
@@ -42,7 +43,10 @@ local function sheet(army:string):any
 	local optional=string.sub(army,1,1)=="$" and army~="$badges"
 	local meta=if army=="$badges" then data.badges elseif army=="$weapons" then data.weapons elseif army=="$artillery" then data.artillery elseif string.sub(army,1,5)=="$sam:" then data.launchers and data.launchers[string.sub(army,6)] else data.armies[army];if not meta then return nil end
 	local state={retry=os.clock()+5,ready=false};sheets[army]=state
-	local image=Memory.create(Vector2.new(meta.width,meta.height),if optional then "detail" else "core");if not image then return nil end
+	local asset=Static and Static.get("OrigStructures:"..army,meta)
+	if asset then state.image=asset;state.content=asset.content;state.meta=meta;state.ready=true;state.external=true;return state end
+	if Static and Static.waiting("OrigStructures:"..army)then state.retry=os.clock()+.1;return nil end
+	local image=Memory.create(Vector2.new(meta.width,meta.height),if optional then "detail" else "core","StructureArt:"..army);if not image then return nil end
 	state.image=image;state.meta=meta
 	local function done(success:boolean)
 		if sheets[army]~=state then return end
@@ -65,7 +69,7 @@ local function sheet(army:string):any
 end
 Memory.register(10,function()
 	for name,state in sheets do
-		if name=="$badges" or string.sub(name,1,1)~="$" or not state.image then continue end
+		if name=="$badges" or string.sub(name,1,1)~="$" or not state.image or state.external then continue end
 		local image=state.image;Artillery.forgetSheet(image);Gun.forgetSheet(image)
 		sheets[name]={retry=os.clock()+5,ready=false}
 		Memory.release(image)
@@ -90,7 +94,7 @@ end
 local function rectLabel(gui:SurfaceGui,s:any,key:any,frame:number,cells:number,x:number?,y:number?):ImageLabel?
 	local rect=key and s.meta.rects[tostring(key)];if not rect then return nil end
 	local image=Instance.new("ImageLabel");image.BackgroundTransparency=1
-	image.ImageContent=Content.fromObject(s.image);image.ResampleMode=Enum.ResamplerMode.Pixelated
+	image.ImageContent=(s.content or Content.fromObject(s.image));image.ResampleMode=Enum.ResamplerMode.Pixelated
 	image.ImageRectOffset=Vector2.new(rect[1],rect[2]);image.ImageRectSize=Vector2.new(rect[3],rect[4])
 	image.Size=UDim2.fromScale(rect[3]/frame*cells,rect[4]/frame*cells)
 	image.Position=UDim2.fromScale((x or 0)+rect[5]/frame*cells,(y or 0)+rect[6]/frame*cells)
@@ -168,7 +172,7 @@ local function ground(art:any,side:number,stale:boolean,light:any,screenSide:num
 	if not h then
 		h={};for _,key in {"shade","ink"} do local label=Instance.new("ImageLabel");label.BackgroundTransparency=1;label.ZIndex=1;label.Parent=art.groundRoot;h[key]=label end;art.ground=h
 	end
-	if h.image~=core.image then h.image=core.image;h.content=Content.fromObject(core.image) end
+	if h.image~=core.image then h.image=core.image;h.content=(core.content or Content.fromObject(core.image)) end
 	local r=core.meta.rects[tostring(meta.ghost)];if not r then h.shade.Visible=false;h.ink.Visible=false;return end
 	local rgb=palette and palette[side];local tone=if rgb then Color3.new(rgb[1],rgb[2],rgb[3]) else Color3.fromRGB(cfg.inkRgb[1],cfg.inkRgb[2],cfg.inkRgb[3])
 	for key,label in {shade=h.shade,ink=h.ink} do

@@ -13,7 +13,7 @@ return function(test:any,eq:any)
 		h.sheet={image={},meta={rects={}}};for i=1,5 do h.sheet.meta.rects[tostring(i)]={i*10,2,8,8,0,0} end
 		h.resource={style=style,sheet=h.sheet,tint={.2,.5,.8},meta={frame=8,back=1,fill=2,face=3,ghost=4}}
 		local modules={motion=require('../src/shared/Presentation/StructureTokens'),art={token=function() return h.resource end}}
-		h.playerGui=instance('PlayerGui');local env=setmetatable({game={GetService=function(_,name) return if name=='Players' then {LocalPlayer={FindFirstChild=function() return if h.noParent then nil else h.playerGui end}} else {WaitForChild=function() return {Presentation={StructureTokens='motion'}} end} end},require=function(k) return modules[k] end,script={Parent={StructureArt='art'}},Instance={new=instance},Color3=rb.Color3,Vector2=rb.Vector2,UDim2=rb.UDim2,UDim=rb.UDim,Content={fromObject=function(v) h.contents+=1;return v end}},{__index=getfenv()})
+		h.playerGui=instance('PlayerGui');local env=setmetatable({game={GetService=function(_,name) return if name=='Players' then {LocalPlayer={FindFirstChild=function() return if h.noParent then nil else h.playerGui end}} else {WaitForChild=function() return {Presentation={StructureTokens='motion'}} end} end},require=function(k) return modules[k] end,script={Parent={StructureArt='art'}},Instance={new=instance},Color3=rb.Color3,Vector2=rb.Vector2,UDim2=rb.UDim2,UDim=rb.UDim,Content={fromObject=function(v) assert(not v.external,"regular asset passed to Content.fromObject");h.contents+=1;return v end}},{__index=getfenv()})
 		h.tokens=luau.load(fs.readFile('src/client/Rendering/StructureTokens.luau'),{environment=env})();h.v={id=1,kind='factory',army='coalition',side=1,built=1,hp=100,maxHp=100}
 		h.rules={}
 		function h:draw(px,x,y,z) return self.tokens.draw(self.v,rb.Vector3.new(x or 100,y or 100,z or 1),px or 3,self.rules,1,800,600) end
@@ -50,5 +50,18 @@ return function(test:any,eq:any)
 		local h=fixture();h.resource.sheet=nil;eq(h:draw(),nil);eq(h.tokens.count(),0);h.resource.sheet=h.sheet;h.resource.meta.ghost=nil;eq(h:draw(),nil)
 		h.resource.meta.ghost=4;h.noParent=true;eq(h:draw(),nil);h.noParent=false;assert(h:draw())
 		for _,o in h.instances do if o.Name=='StructureTokens' then o:Destroy() end end;eq(h.tokens.count(),0);assert(h:draw());eq(h.tokens.count(),1)
+	end)
+	test('hosted badge textures draw all token layers and warning icons without editable conversion',function()
+		local h=fixture();h.sheet.image={external=true};h.sheet.content='hosted-badges'
+		h.resource.style.tokens.status={minPx=11,sizeShare=.4,offsetShare=.45,discShare=.6,ink='#ffff00',plate='rgba(11, 16, 24, 0.88)'};h.resource.status={damaged={frame=8,tile=5}};h.v.markerFlags=1;h.v.hp=20
+		h:draw(8);eq(h.contents,0);local n=0
+		for _,o in h.instances do if o.ClassName=='ImageLabel'and o.Visible then eq(o.ImageContent,'hosted-badges');n+=1 end end
+		assert(n>=4);local count=#h.instances;for _=1,60 do h.tokens.begin();h:draw(8);h.tokens.finish({[1]=h.v})end;eq(h.contents,0);eq(#h.instances,count)
+	end)
+	test('placed tokens rebind native and hosted sheet replacements without retaining nil or stale content',function()
+		local h=fixture();h:draw();eq(h.contents,1);h.sheet.image={external=true};h.sheet.content='hosted';h:draw();eq(h.contents,1)
+		for _,o in h.instances do if o.ClassName=='ImageLabel'and o.Visible then eq(o.ImageContent,'hosted')end end
+		h.v.id=2;h:draw();eq(h.contents,1);h.sheet.image={};h.sheet.content=nil;h:draw();eq(h.contents,2)
+		for _,o in h.instances do if o.ClassName=='ImageLabel'and o.Visible and o.Parent.Name=='Building2'then eq(o.ImageContent,h.sheet.image)end end
 	end)
 end

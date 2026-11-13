@@ -16,7 +16,7 @@ function Factory.attach(gui:SurfaceGui,meta:any,sheet:any):any
 	local function layer(key:any):any
 		local r=key and sheet.meta.rects[tostring(key)];if not r then return nil end
 		local label=Instance.new("ImageLabel");label.BackgroundTransparency=1;label.ResampleMode=Enum.ResamplerMode.Pixelated
-		label.ImageContent=Content.fromObject(sheet.image);label.ImageRectOffset=Vector2.new(r[1],r[2]);label.ImageRectSize=Vector2.new(r[3],r[4]);label.Visible=false
+		label.ImageContent=(sheet.content or Content.fromObject(sheet.image));label.ImageRectOffset=Vector2.new(r[1],r[2]);label.ImageRectSize=Vector2.new(r[3],r[4]);label.Visible=false
 		label.ZIndex=4;label.Parent=gui;table.insert(h.all,label)
 		return {label=label,rect=r}
 	end

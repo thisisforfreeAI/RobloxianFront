@@ -1,60 +1,22 @@
 --!strict
 -- Soldier shape rows: full/half rims and full/half shadows, from the game's jht/XF/Kht/T8.
--- Separate from SpriteBank so this does not change its preload/lazy-loading policy.
--- One cropped atlas per figure is loaded only when that figure is first drawn.
+-- Lazy cropped atlases share SpriteBank camera residency, zoom tiers and complete-image swaps.
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local ImageMemory = require(script.Parent.ImageMemory)
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local MenShadows = require(Shared.Presentation.MenShadows)
-local MapCodec = require(Shared.Maps.MapCodec)
-local PixelCodec = require(Shared.Assets.PixelCodec)
 local Facing = require(Shared.Assets.Facing)
 local World = require(Shared.Config.World)
 local ManEffects = {}
-local warned: { [string]: boolean } = {}
-local pages: { [string]: any } = {}
-local config: any = nil
-local tried = false
-
-local function page(kind: string): any
-	if pages[kind] ~= nil then
-		if pages[kind] then pages[kind].at = os.clock() end
-		return pages[kind] or nil
-	end
-	pages[kind] = false
+local Bank=require(script.Parent.SpriteBank)
+local config:any=nil
+local tried=false
+local function page(kind:string):any
 	if not tried then
-		tried = true
-		local data = Shared:FindFirstChild("GameData")
-		local mod = data and data:FindFirstChild("MenFx")
-		if mod then
-			local ok, value = pcall(require, mod :: ModuleScript)
-			if ok then config = value else warn("[ManEffects] Local MenFx configuration could not load:", value) end
-		end
+		tried=true;local data=Shared:FindFirstChild("GameData");local source=data and data:FindFirstChild("MenFx")
+		if source then local ok,value=pcall(require,source);if ok then config=value end end
 	end
-	if not config then return nil end -- older local assets retain their existing body/paint drawing
-	local folder = script.Parent.Parent:FindFirstChild("DevAssets")
-	local name = "OrigMen" .. string.upper(string.sub(kind, 1, 1)) .. string.sub(kind, 2) .. "Fx"
-	local mod = folder and folder:FindFirstChild(name)
-	if not mod then return nil end
-	local image: EditableImage? = nil
-	local ok, value = pcall(function()
-		local meta = require(mod :: ModuleScript) :: any
-		local size = Vector2.new(meta.width, meta.height)
-		local created = ImageMemory.create(size,"detail") -- Optional figure rims/shadows preserve terrain coverage.
-		if not created then return nil end -- Optional rims/shadows may be omitted under image pressure.
-		image = created
-		created:WritePixelsBuffer(Vector2.zero, size, PixelCodec.decode(MapCodec.base64Decode(meta.rle), meta.width, meta.height))
-		return { image = created, content = Content.fromObject(created), meta = meta, at = os.clock() }
-	end)
-	if not ok then
-		ImageMemory.release(image)
-		pages[kind]=false
-		if not warned[kind] then warned[kind] = true; warn(`[ManEffects] {kind} masks unavailable; its body still draws:`, value) end
-		return nil
-	end
-	if not value then return nil end
-	pages[kind] = value
-	return value
+	if not config then return nil end
+	return Bank.cropped("OrigMen"..kind:sub(1,1):upper()..kind:sub(2).."Fx")
 end
 
 local function label(parent: Instance, content: Content, smooth: boolean): ImageLabel
@@ -67,11 +29,10 @@ local function label(parent: Instance, content: Content, smooth: boolean): Image
 	return image
 end
 
-local function crop(image: ImageLabel, rect: { number }?)
-	if not rect or rect[3] <= 0 or rect[4] <= 0 then image.Visible = false; return end
+local function crop(image: ImageLabel, rect: { number }?,atlas:any,key:string)
+	if not rect then image.Visible=false;return end
 	image.Visible = true
-	image.ImageRectOffset = Vector2.new(rect[1], rect[2])
-	image.ImageRectSize = Vector2.new(rect[3], rect[4])
+	Bank.bindCrop(image,atlas,key,rect)
 	-- rect: atlas x/y, cropped w/h, offset inside original facing frame x/y, original frame size.
 	image.Size = UDim2.fromScale(rect[3] / rect[7], rect[4] / rect[7])
 	image.Position = UDim2.fromScale(rect[5] / rect[7], rect[6] / rect[7])
@@ -132,8 +93,8 @@ function ManEffects.place(handle: any, pose: string, heading: number, facing: nu
 	end
 	local half = pixels < config.frame * config.halfBelow
 	if not handle.ready or handle.pose ~= pose or handle.facing ~= facing or handle.half ~= half then
-		crop(handle.rim, poses[if half then "rimHalf" else "rim"][facing + 1])
-		crop(handle.shade, poses[if half then "shadeHalf" else "shade"][facing + 1])
+		crop(handle.rim, poses[if half then "rimHalf" else "rim"][facing + 1],handle.atlas,pose..":"..(if half then "rimHalf"else "rim")..":"..(facing+1))
+		crop(handle.shade, poses[if half then "shadeHalf" else "shade"][facing + 1],handle.atlas,pose..":"..(if half then "shadeHalf"else "shade")..":"..(facing+1))
 		handle.pose, handle.facing, handle.half = pose, facing, half
 	end
 	local dx, dy, axis, stretch = MenShadows.project(config, handle.kind, pose, heading, size, sunX, sunY)
@@ -145,20 +106,5 @@ function ManEffects.place(handle: any, pose: string, heading: number, facing: nu
 	handle.turn.Rotation = math.deg(Facing.residual(heading, facing, config.facings) - axis)
 	handle.ready, handle.gui.Enabled = true, true
 end
-
-ImageMemory.register(20, function(needed: number, protected: any)
-	local before = ImageMemory.stats()
-	for kind, p in pages do
-		if p and not protected[p.content] and os.clock() - p.at >= 1 then
-			pages[kind] = nil
-			ImageMemory.release(p.image)
-			local used = ImageMemory.stats()
-			if before - used >= needed then break end
-		end
-	end
-end)
-ImageMemory.onRelease(function()
-	for kind, value in pages do if value == false then pages[kind] = nil end end
-end)
 
 return ManEffects

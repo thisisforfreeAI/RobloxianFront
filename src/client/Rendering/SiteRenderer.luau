@@ -39,7 +39,7 @@ local function picture(h:any,z:number):any
 	local mask=h.meta.siteMask;local r=mask and h.core.meta.rects[tostring(mask.tile)]
 	if not r then return nil end
 	local item=Instance.new("ImageLabel");item.BackgroundTransparency=1;item.ZIndex=z;item.Visible=false
-	item.ImageContent=Content.fromObject(h.core.image);item.ImageRectOffset=Vector2.new(r[1],r[2]);item.ImageRectSize=Vector2.new(r[3],r[4])
+	item.ImageContent=(h.core.content or Content.fromObject(h.core.image));item.ImageRectOffset=Vector2.new(r[1],r[2]);item.ImageRectSize=Vector2.new(r[3],r[4])
 	item.ResampleMode=Enum.ResamplerMode.Pixelated;item.Size=UDim2.fromScale(r[3]/mask.frame,r[4]/mask.frame);item.Parent=if z>=6 then h.overlay else h.root
 	return {label=item,x=r[5]/mask.frame,y=r[6]/mask.frame}
 end
@@ -83,7 +83,7 @@ local function renderPieces(h:any)
 		h.pieceRoot=frame(h.root,3);h.pieceRoot.Name="ConstructionPieces";h.pieceRoot.BackgroundTransparency=1;h.pieceRoot.Size=UDim2.fromScale(1,1);h.pieceRoot.ClipsDescendants=false
 		h.pieceLayers={};h.pieceFrames={}
 	end
-	if h.pieceImage~=h.core.image then h.pieceImage=h.core.image;h.pieceContent=Content.fromObject(h.core.image) end
+	if h.pieceImage~=h.core.image then h.pieceImage=h.core.image;h.pieceContent=(h.core.content or Content.fromObject(h.core.image)) end
 	for _,layers in h.pieceLayers do for _,label in layers do label.Visible=false end end
 	local pose=Pieces.geometry(h.cfg,progress,h.side,h.order)
 	for _,tile in pose.tiles do

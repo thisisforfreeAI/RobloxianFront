@@ -10,6 +10,8 @@ local MapCodec = require(Shared.Maps.MapCodec)
 local PixelCodec = require(Shared.Assets.PixelCodec)
 local World = require(Shared.Config.World)
 local Fog = require(script.Parent.FogOverlay)
+local Static=if script.Parent.StaticImages then require(script.Parent.StaticImages)else nil
+local staticMeta:any=nil
 local DeathRenderer = {}
 local engine: any = nil
 local content: Content? = nil
@@ -39,7 +41,10 @@ local function load(): boolean
 	end
 	local ok, err = pcall(function()
 		local meta = require(pixels :: ModuleScript) :: any
-		local image = ImageMemory.create(Vector2.new(meta.width, meta.height),"detail")
+		staticMeta=meta
+		local asset=Static and Static.get("OrigDeathFx",meta)
+		if asset then content=asset.content;frame=meta.frame;engine=DeathEffects.new(require(config :: ModuleScript));return end
+		local image = ImageMemory.create(Vector2.new(meta.width, meta.height),"detail","DeathRenderer")
 		assert(image, "EditableImage budget refused particle atlas")
 		atlasImage = image
 		image:WritePixelsBuffer(Vector2.zero, Vector2.new(meta.width, meta.height), PixelCodec.decode(MapCodec.base64Decode(meta.rle), meta.width, meta.height))
@@ -104,6 +109,13 @@ end
 
 function DeathRenderer.step(dt: number)
 	if not engine then return end
+	if Static and staticMeta and atlasImage then
+		local asset=Static.get("OrigDeathFx",staticMeta)
+		if asset then
+			for _,slot in slots do slot.image.ImageContent=asset.content end
+			local old=atlasImage;atlasImage=nil;content=asset.content;ImageMemory.release(old)
+		end
+	end
 	engine:step(dt)
 	local used = 0
 	local scale = World.STUDS_PER_CELL

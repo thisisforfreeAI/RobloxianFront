@@ -159,10 +159,10 @@ function Renderer.start(data:any,profile:any,parent:Instance,born:number,damage:
 		if not image then
 			if os.clock()<retry then return end
 			local variant=if preferHalf and data.half then data.half else data
-			image=Memory.create(Vector2.new(variant.width,variant.height))
+			image=Memory.create(Vector2.new(variant.width,variant.height),"detail","NightWindowRenderer")
 			if not image and not preferHalf and data.half then
 				preferHalf=true;variant=data.half
-				image=Memory.create(Vector2.new(variant.width,variant.height))
+				image=Memory.create(Vector2.new(variant.width,variant.height),"detail","NightWindowRenderer")
 			end
 			if not image then retry=os.clock()+5;return end
 			imageDivisor=if preferHalf then 2 else 1

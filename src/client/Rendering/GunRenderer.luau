@@ -33,7 +33,7 @@ local function bind(image:ImageLabel,sheet:any,key:any,frame:number,visible:bool
 	local rect=key and sheet.meta.rects[tostring(key)]
 	image.Visible=visible and rect~=nil
 	if not rect then return end
-	image.ImageContent=Content.fromObject(sheet.image)
+	image.ImageContent=(sheet.content or Content.fromObject(sheet.image))
 	image.ImageRectOffset=Vector2.new(rect[1],rect[2]);image.ImageRectSize=Vector2.new(rect[3],rect[4])
 	image.Position=UDim2.fromScale(rect[5]/frame,rect[6]/frame);image.Size=UDim2.fromScale(rect[3]/frame,rect[4]/frame)
 end
