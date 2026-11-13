@@ -33,9 +33,9 @@ return function(test:any,eq:any)
 			os={clock=function() return h.time end},warn=function() h.warnings+=1 end},{__index=getfenv()})
 		h.effects=luau.load(fs.readFile("src/client/Rendering/StructureEffects.luau"),{environment=env})()
 		h.effects.configure({construction={slabShare=.25,pourSteps=2,steps=4},damage={below={.8,.5,.2},back=.05}})
-		function h:handle():any
+		function h:handle(onDisplay:any?):any
 			local gui=instance("SurfaceGui");local meta={frame=8,cells=3,effects={n=4,top=8,size=688,deflate=buffer.create(688)}}
-			local handle=self.effects.attach(gui,meta,{{Visible=true},{Visible=true}});return handle
+			local handle=self.effects.attach(gui,meta,{{Visible=true},{Visible=true}},onDisplay);return handle
 		end
 		function h:request(handle,built,hp,id,stale,importance) return self.effects.request(handle,built,hp,100,stale or false,id or 1,{1,1,1},1,importance or 0) end
 		function h:step() self.effects.step(self.time+.002) end
@@ -63,6 +63,14 @@ return function(test:any,eq:any)
 		h:step();eq(#h.pending,1);eq(handle.label.Visible,true);h:flush()
 		eq(h:request(handle,.7,100),"construction");local renders=h.renders
 		for _=1,10 do h:request(handle,.7,100);h:step();h:flush() end;eq(h.renders,renders)
+	end)
+	test("construction publication and reclamation notify fallbacks atomically without repeated callbacks",function()
+		local h=fixture();local events={};local handle
+		handle=h:handle(function(mode) table.insert(events,{mode=mode});eq(handle.label.Visible,mode~=nil);eq(handle.static[1].Visible,mode~="construction") end)
+		h:request(handle,.4,100);h:step();eq(#events,0);h:flush();eq(#events,1);eq(events[1].mode,"construction")
+		for _=1,5 do h:request(handle,.4,100);h:step();h:flush() end;eq(#events,1)
+		h.reclaim();eq(#events,2);eq(events[2].mode,nil);h:flush();eq(#events,2)
+		h.effects.release(handle);eq(#events,2)
 	end)
 	test("repair and fog invalidate queued damage; hidden or completed sites never resurrect pending pixels",function()
 		local h=fixture();local handle=h:handle();h:request(handle,1,10);h:step();eq(#h.pending,1)

@@ -15,6 +15,9 @@ local HttpService = game:GetService("HttpService")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Rules = require(Shared.Config.Rules)
 local FactoryMotion=require(Shared.Presentation.FactoryMotion)
+local StructureMarkers=require(Shared.Presentation.StructureMarkers)
+local CrewMotion=require(Shared.Presentation.CrewMotion)
+local VehicleRecoil=require(Shared.Presentation.VehicleRecoil)
 local GunMotion=require(Shared.Presentation.GunMotion)
 local ArtilleryMotion=require(Shared.Presentation.ArtilleryMotion)
 local MapCodec = require(Shared.Maps.MapCodec)
@@ -38,6 +41,7 @@ local ForestWorld = require(Shared.Simulation.ForestWorld)
 local GroundScorchWorld = require(Shared.Simulation.GroundScorchWorld)
 local WorldFireImpacts = require(Shared.Simulation.WorldFireImpacts)
 local CollapseEvents = require(Shared.Protocol.CollapseEvents)
+local BlastEvents=require(Shared.Protocol.BlastEvents)
 local Hash = require(Shared.Utilities.Hash)
 local UnitStages = require(Shared.Presentation.UnitStages)
 local TerritoryPixels = require(Shared.Presentation.TerritoryPixels)
@@ -207,23 +211,29 @@ local function onIntent(player: Player, raw: any)
 		elseif i.power == "demo" then
 			ok, why = sim.deployDemo(side, i.x, i.y)
 		elseif i.power == "barrage" or i.power == "flare" then
-			-- the nearest own artillery base that can fire there now; else the first reason
-			local best, bd, first = nil, math.huge, "noArtyBase"
-			for _, b in sim.list do
-				if b.alive and b.kind == "artybase" and b.side == side then
-					local w = sim.artyProblem(side, b.id, i.power, i.x, i.y)
-					local d = (b.x - i.x) ^ 2 + (b.y - i.y) ^ 2
-					if not w and d < bd then
-						best, bd = b, d
-					elseif w and first == "noArtyBase" then
-						first = w
+			if i.structureId then
+				-- Exact selected base: Sim checks ownership/readiness/range; never switch bases silently.
+				ok,why=sim.artyStrike(side,i.structureId,i.power,i.x,i.y)
+				Net.sendState(player,{artyResult={i.structureId,i.power,i.requestId or 0,ok,why or false}})
+			else
+				-- the nearest own artillery base that can fire there now; else the first reason
+				local best, bd, first = nil, math.huge, "noArtyBase"
+				for _, b in sim.list do
+					if b.alive and b.kind == "artybase" and b.side == side then
+						local w = sim.artyProblem(side, b.id, i.power, i.x, i.y)
+						local d = (b.x - i.x) ^ 2 + (b.y - i.y) ^ 2
+						if not w and d < bd then
+							best, bd = b, d
+						elseif w and first == "noArtyBase" then
+							first = w
+						end
 					end
 				end
-			end
-			if best then
-				ok, why = sim.artyStrike(side, best.id, i.power, i.x, i.y)
-			else
-				ok, why = false, first
+				if best then
+					ok, why = sim.artyStrike(side, best.id, i.power, i.x, i.y)
+				else
+					ok, why = false, first
+				end
 			end
 		else
 			-- the nearest own airfield town that could fly there now; else the first reason
@@ -476,14 +486,14 @@ end
 local viewers: { [number]: any } = {}
 local sentVision: { [Player]: string } = {}
 
-local function structureRow(e: any, owner: number, details: boolean, production:any?, weapon:any?, artillery:any?): { any }
-	return {
+local function structureRow(e: any, owner: number, details: boolean, production:any?, weapon:any?, artillery:any?, markers:number?): { any }
+	return StructureMarkers.append({
 		e.id, e.kind, owner, e.x, e.y, e.hp, e.maxHp,
 		if details then e.capSide or 0 else 0,
 		if details then e.capProgress or 0 else 0,
 		if details then e.store or 0 else 0,
 		e.built or 1, 0, sim.armyOf(owner), if (weapon or artillery) and not production then false else production, if artillery and not weapon then false else weapon,artillery,
-	}
+	},markers)
 end
 
 -- 0 none, 1 scout deployed (recon), 2 gun packing up, 3 gun setting up, 4 inside a settlement,
@@ -653,13 +663,15 @@ local factoryViews: {[number]:any}={}
 local factorySim:any=nil
 local weaponViews: {[number]:any}={}
 local artilleryViews: {[number]:any}={}
+local vehicleViews:{[number]:any}={}
 local function viewFor(side: number): ({ any }, { any }, { number }?)
-	if factorySim~=sim then factoryViews={};weaponViews={};artilleryViews={};factorySim=sim end
+	if factorySim~=sim then factoryViews={};weaponViews={};artilleryViews={};vehicleViews={};factorySim=sim end
 	local previousFactory=factoryViews[side] or {}
 	local nextFactory={}
 	local previousWeapon=weaponViews[side] or {}
 	local nextWeapon={}
 	local previousArtillery=artilleryViews[side] or {};local nextArtillery={}
+	local previousVehicle=vehicleViews[side]or{};local nextVehicle={}
 	local viewer = if side > 0 then viewers[side] else nil
 	if side > 0 and not viewer then
 		viewer = Fog.newViewer(sim, side)
@@ -674,8 +686,12 @@ local function viewFor(side: number): ({ any }, { any }, { number }?)
 		if e.cat == "unit" then
 			if not viewer or viewer.unitVisible(e) then
 				local flags, aimX, aimY, since = unitLook(e)
-				table.insert(units, { e.id, e.kind, e.side, e.x, e.y, e.heading, e.hp, e.maxHp, unitStatus(e), e.rank or 0, if e.cargo then #e.cargo else 0, flags, aimX, aimY, since, e.turret or e.heading, unitStage(e),
-					if e.hitAt then math.clamp(sim.time-e.hitAt,0,9) else 9 }) -- visible/own combat age for fleeing civilians
+				local row = { e.id, e.kind, e.side, e.x, e.y, e.heading, e.hp, e.maxHp, unitStatus(e), e.rank or 0, if e.cargo then #e.cargo else 0, flags, aimX, aimY, since, e.turret or e.heading, unitStage(e),
+					if e.hitAt then math.clamp(sim.time-e.hitAt,0,9) else 9,
+					CrewMotion.snapshot(e,sim.time,not sim.winner and (not sim.drop or sim.drop.phase=="done"),rules.data["mortar.setupSec"],rules.data["mortar.packSec"]) } -- field 18: civilian combat age; optional 19: crew actions
+				local recoil,observed=VehicleRecoil.snapshot(e,previousVehicle[e.id],sim)
+				if recoil then row[19]=row[19]or false;row[20]=recoil;nextVehicle[e.id]=observed end
+				table.insert(units,row)
 			end
 		elseif e.kind == "rig" then
 			local seen = not viewer or e.side == side or viewer.visibleAt(e.x, e.y)
@@ -689,7 +705,7 @@ local function viewFor(side: number): ({ any }, { any }, { number }?)
 				if observed then nextWeapon[e.id]=observed end
 				local artillery,artKnown=ArtilleryMotion.snapshot(e,true,if e.kind=="artybase" then sim.inactiveReason(e)==nil else false,previousArtillery[e.id],sim.time,not sim.winner and (not sim.drop or sim.drop.phase=="done"))
 				if artKnown then nextArtillery[e.id]=artKnown end
-				table.insert(structures, structureRow(e, e.side, true,production,weapon,artillery))
+				table.insert(structures, structureRow(e, e.side, true,production,weapon,artillery,StructureMarkers.sample(e,side,true,sim.inactiveReason)))
 				listed[e.id] = true
 			end
 		end
@@ -702,13 +718,15 @@ local function viewFor(side: number): ({ any }, { any }, { number }?)
 			end
 		end
 	end
-	factoryViews[side]=nextFactory;weaponViews[side]=nextWeapon;artilleryViews[side]=nextArtillery
+	factoryViews[side]=nextFactory;weaponViews[side]=nextWeapon;artilleryViews[side]=nextArtillery;vehicleViews[side]=nextVehicle
 	return units, structures, if viewer then viewer.runs() else nil
 end
 
 -- vehicles destroyed since the last snapshot (the client leaves the game's wrecks for them)
 local deaths: { any } = {}
 local collapses: { any } = {}
+local blasts:{any}={}
+local blastSequence=0
 
 local function snapshot()
 	local bySide: { [number]: any } = {}
@@ -724,8 +742,9 @@ local function snapshot()
 					table.insert(seen, d)
 				end
 			end
+			local seenBlasts=BlastEvents.visible(blasts,function(x,y)return not viewer or viewer.visibleAt(x,y)end,tick)
 			local seenCollapses=CollapseEvents.visible(collapses,function(x,y) return not viewer or viewer.visibleAt(x,y) end)
-			v = { units = units, structures = structures, runs = runs, key = if runs then table.concat(runs, ",") else "all", deaths = seen, collapses=seenCollapses }
+			v = { units = units, structures = structures, runs = runs, key = if runs then table.concat(runs, ",") else "all", deaths = seen, collapses=seenCollapses,blasts=seenBlasts }
 			bySide[side] = v
 		end
 		local vision = nil
@@ -734,10 +753,12 @@ local function snapshot()
 			vision = v.runs or {}
 		end
 		Net.sendSnapshot(player, tick, v.units, v.structures, vision, side == 0 or not sim.fogOn(), if #v.deaths > 0 then v.deaths else nil,
-			if readyView[player] and #v.collapses>0 then v.collapses else nil)
+			if readyView[player] and #v.collapses>0 then v.collapses else nil,if #v.blasts>0 then v.blasts else nil,
+			{sim.time,if not sim.winner and (not sim.drop or sim.drop.phase=="done")then 1 else 0})
 	end
 	table.clear(deaths)
 	table.clear(collapses)
+	table.clear(blasts)
 end
 
 -- Own territory as row runs { y, x0, x1, ... } (sent only when it changes): the client tints the
@@ -1099,15 +1120,21 @@ local function privateState()
 			end
 			payload.nv = { if sim.nightVisionFor(side) then 1 else 0, math.ceil(sim.nightOpsRebuildIn(side)), towerOff }
 			local artyB, artyF = -1, -1
+			local artyBases={}
 			for _, b in sim.list do
-				if b.alive and b.kind == "artybase" and b.side == side and not sim.inactiveReason(b) then
+				if b.alive and b.kind == "artybase" and b.side == side then
 					local r = b.strikeReady or {}
 					local wb, wf = math.ceil(math.max(0, (r.barrage or 0) - sim.time)), math.ceil(math.max(0, (r.flare or 0) - sim.time))
-					artyB = if artyB < 0 then wb else math.min(artyB, wb)
-					artyF = if artyF < 0 then wf else math.min(artyF, wf)
+					local reason=sim.inactiveReason(b)
+					table.insert(artyBases,{b.id,wb,wf,reason or false})
+					if not reason then
+						artyB = if artyB < 0 then wb else math.min(artyB, wb)
+						artyF = if artyF < 0 then wf else math.min(artyF, wf)
+					end
 				end
 			end
 			payload.arty = { artyB, artyF }
+			payload.artyBases=artyBases
 			local airfields = {}
 			for _, st in sim.settlements do
 				if st.trait == "airfield" and st.owner == side then
@@ -1340,6 +1367,7 @@ function MatchService.setLobby(lobby:any) MatchService.lobby=lobby end
 function MatchService.lobbyState():any return MatchLobby.state(map,sim,sideOf) end
 
 function MatchService.start(mapModule: string)
+	table.clear(blasts);blastSequence=0
 	assert(GameData:FindFirstChild("RulesMatch"), "GameData.RulesMatch missing: rerun tools/conversion/generate_all.py")
 	rules = Rules.new(require(GameData.RulesMatch) :: any)
 	map = MapCodec.decode(require(GameData.Maps[mapModule]) :: any)
@@ -1439,7 +1467,16 @@ function MatchService.start(mapModule: string)
 			if ok then sim.forestFires=world else warn("[Match] Forest fires unavailable:",world) end
 		end
 	end
-	if sim.houseFires or sim.forestFires or sim.groundScorch then
+	local blastSizes={}
+	local blastSource=GameData:FindFirstChild("FireRules")
+	if blastSource then local ok,data=pcall(require,blastSource);if ok and type(data)=="table"and type(data.weaponBlast)=="table"then blastSizes=data.weaponBlast end end
+	sim.presentBlast=function(x,y,weapon,size)
+		local visualSize=size or blastSizes[weapon]
+		if type(visualSize)=="number"and visualSize>=BlastEvents.MIN_SIZE then
+			blastSequence+=1;BlastEvents.push(blasts,blastSequence,x,y,visualSize,sim.time,map.width,map.height)
+		end
+	end
+	do
 		local config:any=nil;local source=GameData:FindFirstChild("FireImpactRules")
 		if source then
 			local ok,value=pcall(require,source)
@@ -1454,6 +1491,7 @@ function MatchService.start(mapModule: string)
 				local kind=MapCodec.terrainName(map,x,y);return kind=="deep" or kind=="shallow" or kind=="river"
 			end,
 			emit=function(x,y,weapon,size,preset)
+				if sim.presentBlast then sim.presentBlast(x,y,weapon,size)end
 				if sim.houseFires then sim.houseFires.blast(x,y,weapon,size) end
 				if sim.forestFires then sim.forestFires.blast(x,y,weapon,size) end
 				if sim.groundScorch then sim.groundScorch.blast(x,y,weapon,size,preset) end

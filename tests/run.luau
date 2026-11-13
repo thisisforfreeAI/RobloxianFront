@@ -4389,6 +4389,28 @@ require("./lobby_browser")(test, eq)
 require("./lobby_adapter")(test, eq)
 require("./map_startup")(test, eq)
 require("./client_readiness")(test, eq)
+require("./construction_pieces")(test, eq)
+require("./structure_tokens")(test, eq)
+require("./structure_fade")(test, eq)
+require("./structure_token_renderer")(test, eq)
+require("./structure_shadows")(test, eq)
+require("./structure_shadow_renderer")(test, eq)
+require("./structure_markers")(test, eq)
+
+require("./artillery_controls")(test,eq)
+require("./artillery_panel")(test,eq)
+
+require("./crew_actions")(test,eq)
+
+require("./sprite_lod")(test,eq)
+
+require("./squad_reactions")(test,eq)
+
+require("./vehicle_recoil")(test,eq)
+
+require("./rifle_fire")(test, eq)
+
+require("./vehicle_muzzles")(test, eq)
 
 print(`\n{passed} passed, {failed} failed`)
 if failed > 0 then

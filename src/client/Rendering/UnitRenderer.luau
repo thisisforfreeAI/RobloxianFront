@@ -28,9 +28,28 @@ local SpriteBank = require(script.Parent.SpriteBank)
 local FogOverlay = require(script.Parent.FogOverlay)
 local Hash = require(Shared.Utilities.Hash)
 local SquadMen = require(script.Parent.SquadMen)
+local CrewMotion=require(ReplicatedStorage:WaitForChild("Shared").Presentation.CrewMotion)
+local VehicleRecoil=require(Shared.Presentation.VehicleRecoil)
+local SquadReaction=require(Shared.Presentation.SquadReaction)
+local BlastEvents=require(Shared.Protocol.BlastEvents)
+local reactions=SquadReaction.new(SquadMen.hash)
+local reactionTick=0
+local reactionWidth,reactionHeight=math.huge,math.huge
 local ManEffects = require(script.Parent.ManEffects)
 local DaylightController = require(script.Parent.DaylightController)
 local DeathRenderer = require(script.Parent.DeathRenderer)
+
+local RifleFire=require(Shared.Presentation.RifleFire)
+local VehicleMuzzle=require(Shared.Presentation.VehicleMuzzle)
+local vehicleMuzzleConfig:any=nil
+local rifleConfig:any=nil
+local rifleBudget=RifleFire.newBudget()
+-- Infantry and vehicle muzzle effects share one attempt budget and the existing particle pool.
+local function emitRifleParticle(p:any):boolean
+	if rifleBudget.particles<=0 then return false end
+	rifleBudget.particles-=1
+	return DeathRenderer.request("spawn",p,rifleBudget)
+end
 
 local UnitRenderer = {}
 
@@ -76,6 +95,10 @@ export type View = {
 	inTrench: boolean,
 	statusCode: number, -- the unit row's status (u[9])
 	sinceShot: number,
+	crew: any?,
+	vehicle: any?,
+	rifle: any?,
+	muzzle: any?,
 	tube: ManSprite?,
 	empty: boolean,
 	turretWant: number, -- the sim's turret angle (latest snapshot)
@@ -130,8 +153,7 @@ local function spriteQuad(parent: Instance, look: SpriteBank.Look, layer: Sprite
 		local l = Instance.new("ImageLabel")
 		l.BackgroundTransparency = 1
 		l.Size = UDim2.fromScale(1, 1)
-		l.ImageContent = layer.content
-		l.ImageRectSize = Vector2.new(look.frame, look.frame)
+		SpriteBank.bind(l,layer,look.frame)
 		l.ResampleMode = Enum.ResamplerMode.Pixelated
 		l.ZIndex = z
 		l.Parent = gui
@@ -168,8 +190,7 @@ local function fxQuad(parent: Instance, sheet: SpriteBank.FxSheet, kind: string,
 	local image = Instance.new("ImageLabel")
 	image.BackgroundTransparency = 1
 	image.Size = UDim2.fromScale(1, 1)
-	image.ImageContent = sheet.content
-	image.ImageRectSize = Vector2.new(sheet.frame, sheet.frame)
+	SpriteBank.bind(image,sheet,sheet.frame)
 	image.ResampleMode = if smooth then Enum.ResamplerMode.Default else Enum.ResamplerMode.Pixelated
 	image.ImageTransparency = 1 - alpha
 	image.Parent = gui
@@ -248,8 +269,7 @@ local function manQuad(parent: Instance, fig: SpriteBank.Figure, color: Color3, 
 		local l = Instance.new("ImageLabel")
 		l.BackgroundTransparency = 1
 		l.Size = UDim2.fromScale(1, 1)
-		l.ImageContent = fig.content
-		l.ImageRectSize = Vector2.new(fig.frame, fig.frame)
+		SpriteBank.bind(l,fig,fig.frame)
 		l.ResampleMode = Enum.ResamplerMode.Pixelated
 		l.ZIndex = z
 		l.Parent = gui
@@ -405,7 +425,7 @@ local function shadowOf(look: SpriteBank.Look, hull: number): (number, number, n
 	return SUN.X / a * r * 0.5, SUN.Y / a * r * 0.5, (l + r) / l
 end
 
-local function placeFx(v: View, look: SpriteBank.Look, pos: Vector3, hull: number, turret: number)
+local function placeFx(v: View, look: SpriteBank.Look, pos: Vector3, hull: number, turret: number,slide:number?)
 	local sheets = look.fx :: any
 	-- State-body art may fit while an optional mask is refused by the device image budget.
 	if not sheets then
@@ -423,6 +443,7 @@ local function placeFx(v: View, look: SpriteBank.Look, pos: Vector3, hull: numbe
 	local sx, sy, stretch = shadowOf(look, hull)
 	local W = look.cells * S
 	local tpos = turretAt(look, pos, hull)
+	if slide and slide~=0 then tpos-=Vector3.new(math.cos(turret)*slide*S,0,math.sin(turret)*slide*S)end
 	for _, f in v.fx do
 		local at = if f.layer == "turret" then tpos else pos
 		if f.layer == "turret" and not look.turret then
@@ -445,8 +466,7 @@ local function placeFx(v: View, look: SpriteBank.Look, pos: Vector3, hull: numbe
 		f.image.Visible = true
 		if sheet ~= f.sheet then
 			f.sheet = sheet
-			f.image.ImageContent = sheet.content
-			f.image.ImageRectSize = Vector2.new(sheet.frame, sheet.frame)
+			SpriteBank.bind(f.image,sheet,sheet.frame)
 			f.gui.CanvasSize = Vector2.new(sheet.frame, sheet.frame)
 			f.facing = -1
 		end
@@ -481,8 +501,8 @@ local function setLook(v: View, look: SpriteBank.Look)
 	v.look = look
 	local body = v.sprites[1]
 	if body then
-		body.colour.ImageContent = look.body.content
-		body.paint.ImageContent = look.body.content
+		SpriteBank.bind(body.colour,look.body,look.frame)
+		SpriteBank.bind(body.paint,look.body,look.frame)
 		body.y0c, body.y0p = look.body.colour, look.body.paint
 		body.facing = -1
 	end
@@ -557,8 +577,7 @@ local function addSoot(v: View)
 		l.Name = "Soot"
 		l.BackgroundTransparency = 1
 		l.Size = UDim2.fromScale(1, 1)
-		l.ImageContent = sheet.content
-		l.ImageRectSize = Vector2.new(sheet.frame, sheet.frame)
+		SpriteBank.bind(l,sheet,sheet.frame)
 		l.ResampleMode = Enum.ResamplerMode.Pixelated
 		l.ZIndex = 3
 		l.Parent = gui
@@ -594,7 +613,14 @@ local function place(v: View, pos: Vector3, yaw: number, dt: number)
 		v.turretAt = tAt
 		local hullH = yaw % (2 * math.pi)
 		local turretH = (tAt :: number) % (2 * math.pi)
-		local tpos = turretAt(look, pos, yaw)
+		local dx,dy,slide=VehicleRecoil.pose(v.vehicle,v.kind,look.size,(v.base or look).size,os.clock())
+		local visualPos=if dx~=0 or dy~=0 then pos+Vector3.new(dx*S,0,dy*S)else pos
+		local tpos = turretAt(look, visualPos, yaw)
+		if slide~=0 then tpos-=Vector3.new(math.cos(turretH)*slide*S,0,math.sin(turretH)*slide*S)end
+		if v.muzzle and vehicleMuzzleConfig then
+			VehicleMuzzle.place(v.muzzle,pos.X/S,pos.Z/S,tpos.X/S,tpos.Z/S,turretH)
+			VehicleMuzzle.step(v.muzzle,v.vehicle,vehicleMuzzleConfig,v.kind,VehicleRecoil.time(v.vehicle,os.clock()),FogOverlay.hidden,emitRifleParticle,rifleBudget)
+		end
 		local soot = sootOf(v)
 		if soot > 0 and not v.sooted then
 			addSoot(v)
@@ -616,7 +642,7 @@ local function place(v: View, pos: Vector3, yaw: number, dt: number)
 				sl.ImageTransparency = 1 - soot
 			end
 			local residual = Facing.residual(h, d, 16)
-			sp.quad.CFrame = CFrame.new((if sp.turret then tpos else pos) + Vector3.new(0, SPRITE_Y + sp.rise, 0)) * CFrame.Angles(0, -(residual + GUI_YAW), 0)
+			sp.quad.CFrame = CFrame.new((if sp.turret then tpos else visualPos) + Vector3.new(0, SPRITE_Y + sp.rise, 0)) * CFrame.Angles(0, -(residual + GUI_YAW), 0)
 		end
 		v.facing = 0
 		local halo = v.halo
@@ -624,7 +650,7 @@ local function place(v: View, pos: Vector3, yaw: number, dt: number)
 			halo.CFrame = CFrame.new(pos + Vector3.new(0, SPRITE_Y - 0.04, 0)) * CFrame.Angles(0, -GUI_YAW, 0)
 		end
 		if #v.fx > 0 then
-			placeFx(v, look, pos, yaw, turretH)
+			placeFx(v, look, visualPos, yaw, turretH,slide)
 		end
 	end
 end
@@ -641,6 +667,7 @@ local function setFigure(ms: ManSprite, pose: string, heading: number, x: number
 		ms.colour.ImageRectOffset = SpriteBank.offset(ms.fig, p.colour, d)
 		ms.paint.ImageRectOffset = SpriteBank.offset(ms.fig, p.paint, d)
 	end
+	if pose=="prone"then local back=SquadReaction.PRONE_BACK*SquadMen.MAN_CELLS;x-=math.cos(h)*back;y-=math.sin(h)*back end
 	ms.quad.CFrame = CFrame.new(World.toWorld(x, y, height)) * CFrame.Angles(0, -(Facing.residual(h, d, 16) + GUI_YAW), 0)
 	ManEffects.place(ms.effects, pose, h, d, x, y, height, SquadMen.MAN_CELLS, SquadMen.FRAME_CELLS, SUN.X, SUN.Y, SHADOW_FADE)
 end
@@ -651,11 +678,15 @@ local function placeMen(v: View, pos: Vector3, dt: number)
 	if v.kind == "mortar" then
 		phase = if v.statusCode == 3 then "setting" elseif v.statusCode == 2 then "packing" else "set"
 	end
+	local wall=os.clock()
+	local left,observedPhase,progress,age=CrewMotion.sample(v.crew,wall,v.sinceShot,mortarSec.setting,mortarSec.packing)
+	if v.kind=="mortar" and observedPhase then phase=observedPhase end
 	local inp: SquadMen.Input = {
 		x = pos.X / S, y = pos.Z / S, vx = vel.X, vy = vel.Z,
 		hpFrac = v.hpFrac, firing = bit32.btest(v.flags, 1), aimX = v.aimX, aimY = v.aimY,
 		road = bit32.btest(v.flags, 2), contact = bit32.btest(v.flags, 4), cover = v.inTrench,
-		mortar = phase, phaseSec = if phase then mortarSec[phase] else nil, sinceShot = v.sinceShot + v.t * SNAPSHOT_SEC,
+		mortar = phase, phaseSec = if phase then mortarSec[phase] else nil, sinceShot = if v.crew and v.crew.packet then age else v.sinceShot + v.t * SNAPSHOT_SEC,
+		shotLeft=left,phaseProgress=progress,warTime=reactions.time(wall),
 	}
 	local sq = v.squad
 	if not sq then
@@ -674,6 +705,10 @@ local function placeMen(v: View, pos: Vector3, dt: number)
 		end
 		setFigure(ms, m.pose, m.heading, m.x, m.y, pos.Y - World.GROUND_Y + SPRITE_Y)
 	end
+	if v.rifle and rifleConfig then
+		if v.statusCode==4 or FogOverlay.hidden(pos.X/S,pos.Z/S) then RifleFire.cancel(v.rifle)
+		else RifleFire.step(v.rifle,rifleConfig,(sq :: SquadMen.Squad).men,SquadMen.MAN_CELLS,wall,FogOverlay.hidden,emitRifleParticle,rifleBudget) end
+	end
 	local tube, at = v.tube, (sq :: SquadMen.Squad).tube
 	if tube then
 		tube.gui.Enabled = at ~= nil
@@ -684,8 +719,16 @@ local function placeMen(v: View, pos: Vector3, dt: number)
 end
 
 -- seconds a mortar takes to set up and to pack (rules mortar.setupSec, mortar.packSec)
-function UnitRenderer.configure(cfg: { mortarSetupSec: number, mortarPackSec: number })
+function UnitRenderer.configure(cfg: { mortarSetupSec: number, mortarPackSec: number,mapWidth:number?,mapHeight:number? })
 	mortarSec.setting, mortarSec.packing = cfg.mortarSetupSec, cfg.mortarPackSec
+	reactionWidth,reactionHeight=cfg.mapWidth or math.huge,cfg.mapHeight or math.huge
+	local data=Shared:FindFirstChild("GameData")
+	local source=data and data:FindFirstChild("RifleFx")
+	rifleConfig=nil
+	if source then local ok,config=pcall(require,source);if ok then rifleConfig=config end end
+	local vehicleSource=data and data:FindFirstChild("VehicleMuzzleFx")
+	vehicleMuzzleConfig=nil
+	if vehicleSource then local ok,config=pcall(require,vehicleSource);if ok then vehicleMuzzleConfig=config end end
 end
 
 local function lerpAngle(a: number, b: number, t: number): number
@@ -779,7 +822,7 @@ local function leaveWreck(kind: string, x: number, y: number, hull: number, turr
 		end
 	end
 	w.model.Name = "Wreck"
-	local colourSheet: SpriteBank.FxSheet = { content = look.body.content, frame = look.frame, columns = look.columns, strips = {} }
+	local colourSheet: SpriteBank.FxSheet = SpriteBank.share({ content = look.body.content, frame = look.frame, columns = look.columns, strips = {} },look.body)
 	colourSheet.strips[look.body.base] = look.body.colour
 	if look.turret then
 		colourSheet.strips[look.turret.base] = look.turret.colour
@@ -871,8 +914,7 @@ local function placeWreck(w: Wreck, now: number): boolean
 		f.image.Visible = true
 		if f.kind ~= "colour" and sheet ~= f.sheet then
 			f.sheet = sheet
-			f.image.ImageContent = sheet.content
-			f.image.ImageRectSize = Vector2.new(sheet.frame, sheet.frame)
+			SpriteBank.bind(f.image,sheet,sheet.frame)
 			f.gui.CanvasSize = Vector2.new(sheet.frame, sheet.frame)
 			f.facing = -1
 		end
@@ -1124,16 +1166,20 @@ local function activeImageContent(): any
 end
 
 function UnitRenderer.start()
+	DeathRenderer.clearTag(rifleBudget);rifleBudget=RifleFire.newBudget()
+	reactions=SquadReaction.new(SquadMen.hash);reactionTick=0
 	folder = Instance.new("Folder")
 	folder.Name = "WarFrontUnits"
 	folder.Parent = workspace
 	ImageMemory.setGuard(activeImageContent)
 	SpriteBank.preload()
 	RunService.RenderStepped:Connect(function(dt)
+		SpriteBank.step()
 		local light = DaylightController.get()
 		SUN = Vector2.new(light.shadow[1], light.shadow[2])
 		SHADOW_FADE = light.shadowAlpha
 		DeathRenderer.step(dt)
+		RifleFire.begin(rifleBudget,os.clock())
 		for _, v in views do
 			v.t = math.min(1, v.t + dt / SNAPSHOT_SEC)
 			local pos = v.from:Lerp(v.to, v.t)
@@ -1169,7 +1215,7 @@ local STATUS = { [1] = "RECON", [2] = "PACKING", [3] = "SETTING UP", [4] = "INSI
 
 -- units: { {id, kind, side, x, y, heading, hp, maxHp, status}, ... }
 -- deaths: vehicles destroyed since the last snapshot, { id, kind, x, y, hull, turret } (wrecks)
-function UnitRenderer.apply(tick: number, units: { any }, deaths: { any }?)
+function UnitRenderer.apply(tick: number, units: { any }, deaths: { any }?,war:any?)
 	if tick <= lastTick then
 		return -- stale or duplicate snapshot
 	end
@@ -1220,6 +1266,20 @@ function UnitRenderer.apply(tick: number, units: { any }, deaths: { any }?)
 		v.status.Text = table.concat(bits, " ")
 		v.hpFrac, v.flags, v.aimX, v.aimY, v.inTrench = frac, u[12] or 0, u[13] or 0, u[14] or 0, u[9] == 13
 		v.statusCode, v.sinceShot = u[9] or 0, u[15] or 9
+		if v.kind=="at" or v.kind=="mortar" then
+			v.crew=v.crew or {};CrewMotion.receive(v.crew,u[19],os.clock())
+		end
+		if VehicleRecoil.supports(kind)then
+			v.vehicle=v.vehicle or VehicleRecoil.new();VehicleRecoil.receive(v.vehicle,u[20],war,os.clock())
+			if kind=="tank"or kind=="ifv"then
+				v.muzzle=v.muzzle or VehicleMuzzle.new()
+				VehicleMuzzle.receive(v.muzzle,v.vehicle,if bit32.btest(v.flags,1)then v.aimX else nil,v.aimY)
+			end
+		end
+		if RifleFire.supports(kind)then
+			v.rifle=v.rifle or RifleFire.new(id)
+			RifleFire.receive(v.rifle,u[15],v.flags,v.statusCode,v.aimX,v.aimY,war,os.clock())
+		end
 		v.turretWant = u[16] or heading
 		v.stageWant = u[17] or 0
 		-- an oil truck driving out or carrying nothing shows its empty look (the game's truck_empty)
@@ -1240,6 +1300,19 @@ function UnitRenderer.apply(tick: number, units: { any }, deaths: { any }?)
 		end
 	end
 end
+
+-- Called after this snapshot's fog update. Transient blasts cannot reveal a hidden impact.
+function UnitRenderer.react(tick:number,rows:any,war:any)
+	if type(tick)~="number"or not(tick>reactionTick and tick<math.huge and tick%1==0)then return end;reactionTick=tick
+	local wall=os.clock();reactions.sync(war,wall)
+	if type(rows)~="table"or #rows==0 then return end
+	local events=BlastEvents.read(rows,reactionWidth,reactionHeight);local seen={}
+	for _,row in events do if not FogOverlay.hidden(row[2],row[3])then table.insert(seen,row)end end
+	if #seen==0 then return end
+	local squads={};for _,v in views do if v.squad and v.statusCode~=4 and not FogOverlay.hidden(v.to.X/S,v.to.Z/S)then table.insert(squads,v.squad)end end
+	reactions.apply(squads,seen,wall)
+end
+function UnitRenderer.reactionStats():any return reactions.stats()end
 
 function UnitRenderer.each(): { [number]: View }
 	return views

@@ -74,19 +74,22 @@ function Preview.update(part:any,kind:string,army:string,side:number,hint:any,pi
 	local full=not cfg.preview or pixels/3>=cfg.preview.from+cfg.preview.fadePx
 	h.body.Visible=false;h.paint.Visible=false;h.shadow.Visible=false;h.scan.Visible=false;h.badgeBack.Visible=false;h.badgeInk.Visible=false
 	for _,band in h.bands do band.Visible=false end
-	if not meta or not sheet then return true end
-	if h.image~=sheet.image then h.image=sheet.image;h.content=Content.fromObject(sheet.image) end
+	if not meta then return true end
 	if not full then
+		local badgeSheet=resource.badgeSheet or sheet;if not badgeSheet then return true end
+		if h.badgeImage~=badgeSheet.image then h.badgeImage=badgeSheet.image;h.badgeContent=if h.image==badgeSheet.image then h.coreContent else Content.fromObject(badgeSheet.image) end;h.content=h.badgeContent
 		if meta.badge and cfg.coverage then
 			local definition=(rules and rules[`structures.{kind}.kind`]) or (if kind=="hq" then "hq" else "facility")
 			local size=CoverageMotion.token(cfg.coverage,definition or "facility",pixels/3,if rules then rules["production.spacing"] or 0 else 0)
 			local share=size/pixels;local offset=(1-share)/2
 			-- Tokens stay centred on the ground footprint, above the hover/refusal drawing.
-			bind(h,h.badgeBack,sheet,meta.badge.back,meta.badge.frame,1,Color3.new(1,1,1),offset,offset,share)
-			bind(h,h.badgeInk,sheet,meta.badge.ink,meta.badge.frame,1,ink(pose.ink),offset,offset,share)
+			bind(h,h.badgeBack,badgeSheet,meta.badge.back,meta.badge.frame,1,Color3.new(1,1,1),offset,offset,share)
+			bind(h,h.badgeInk,badgeSheet,meta.badge.ink,meta.badge.frame,1,ink(pose.ink),offset,offset,share)
 		end
 		return true
 	end
+	if not sheet then return true end
+	if h.image~=sheet.image then h.image=sheet.image;h.coreContent=if h.badgeImage==sheet.image then h.badgeContent else Content.fromObject(sheet.image) end;h.content=h.coreContent
 	local tone=ink(pose.ink);local tint=resource.tint;local team=Color3.new(tint[1],tint[2],tint[3])
 	-- APPROX: native multiplicative tint/layer alpha replaces the source's precomposited source-atop copy.
 	bind(h,h.body,sheet,meta.base,meta.frame,pose.alpha,Color3.new(1,1,1):Lerp(tone,cfg.hover.tint))

@@ -123,7 +123,9 @@ function DeathRenderer.step(dt: number)
 		local s = slot(used)
 		local cr = FRAMES[p.tex] or FRAMES.disc
 		s.gui.Enabled = true
-		s.image.ImageRectOffset = Vector2.new(cr[1] * frame, cr[2] * frame)
+		-- Original px is the solid 4x4 crop inside the atlas corner, not a whole disc tile.
+		s.image.ImageRectOffset = if p.tex=="px" then Vector2.new(1,1) else Vector2.new(cr[1]*frame,cr[2]*frame)
+		s.image.ImageRectSize = if p.tex=="px" then Vector2.new(4,4) else Vector2.new(frame,frame)
 		s.image.ImageTransparency = 1 - math.clamp(p.alpha, 0, 1)
 		s.image.ImageColor3 = Color3.fromRGB(bit32.extract(p.tint, 16, 8), bit32.extract(p.tint, 8, 8), bit32.extract(p.tint, 0, 8))
 		s.part.Size = Vector3.new(size, 0.01, size * p.len) -- Top GUI x runs along local -Z

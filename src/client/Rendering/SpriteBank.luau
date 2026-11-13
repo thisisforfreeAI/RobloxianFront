@@ -30,11 +30,15 @@ local MapCodec = require(Shared.Maps.MapCodec)
 local PixelCodec = require(Shared.Assets.PixelCodec)
 
 local SpriteBank = {}
+local Lod=require(Shared.Presentation.SpriteLod)
+local TownLods=require(Shared.Presentation.TownLods)
+local World=require(Shared.Config.World)
 
-export type Layer = { content: Content, colour: number, paint: number, base: string }
-export type FxSheet = { content: Content, frame: number, columns: number, strips: { [string]: number } }
+export type Layer = { page:any?,content: Content, colour: number, paint: number, base: string }
+export type FxSheet = { page:any?,content: Content, frame: number, columns: number, strips: { [string]: number } }
 export type Look = {
-	frame: number, -- pixels per frame side
+	page:any?,
+	frame: number, -- logical source pixels per frame side; resident images can be smaller
 	columns: number,
 	cells: number, -- drawn width of one frame, in map cells
 	body: Layer,
@@ -76,46 +80,65 @@ local warned: { [string]: boolean } = {}
 local pages: { [string]: any } = {} -- module name -> { content, meta } or false when unavailable
 local looks: { [string]: Look | false } = {}
 
+local function cellPixels():number
+	local camera=workspace.CurrentCamera;if not camera then return math.huge end
+	local pos,dir=camera.CFrame.Position,camera.CFrame.LookVector
+	local distance=if dir.Y<-.001 then math.max(1,(World.GROUND_Y-pos.Y)/dir.Y) else math.max(1,pos.Y-World.GROUND_Y)
+	return World.STUDS_PER_CELL*camera.ViewportSize.Y/(2*distance*math.tan(math.rad(camera.FieldOfView)/2))
+end
+local function cells(name:string,meta:any):number
+	if meta.cells then return meta.cells end
+	if string.match(name,"^OrigMen") then return .42*1.3/.333 end
+	for _,k in KINDS do if string.sub(name,1,#k.module)==k.module then return k.cells*UNIT_SCALE/k.artW end end
+	return 2.6
+end
+local function variant(p:any,stride:number,checkpoint:any?):any
+	if stride==1 then return p.meta end
+	local folder=script.Parent.Parent:FindFirstChild("DevAssets")
+	local module=folder and folder:FindFirstChild(p.name.."_Mip"..stride)
+	if not module then return nil end
+	p.hash=p.hash or TownLods.signature(p.meta.rle,checkpoint)
+	local data=require(module)
+	return if Lod.valid(p.meta,data,stride,p.hash) then data else nil
+end
+local function warning(name:string,why:any)
+	if not warned[name] then warned[name]=true;warn(`[SpriteBank] {name} unavailable; existing fallback stays:`,why) end
+end
+local manager=Lod.new({now=os.clock,vector=Vector2.new,content=Content.fromObject,
+	create=function(w,h,kind)return ImageMemory.create(Vector2.new(w,h),kind)end,
+	cancel=function(image)ImageMemory.cancelUploads(image)end,release=ImageMemory.release,warn=warning,
+	prepare=function(p,stride,checkpoint)
+		local data=variant(p,stride,checkpoint);if not data then return nil end
+		return {width=data.width,height=data.height,pixels=PixelCodec.decode(MapCodec.base64Decode(data.rle,checkpoint),data.width,data.height,checkpoint)}
+	end,
+	upload=function(image,data,done)return ImageMemory.upload(image,Vector2.zero,Vector2.new(data.width,data.height),data.pixels,{priority=2,key="sprite-lod",done=done})end})
+function SpriteBank.bind(label:any,record:any,frame:number?)manager.bind(label,record,frame)end
+function SpriteBank.share(record:any,source:any):any return if source.page then manager.track(record,source.page) else record end
+function SpriteBank.step()manager.step(cellPixels())end
+function SpriteBank.stats():any return manager.stats()end
 local function page(name: string): any
-	local got = pages[name]
-	if got ~= nil then
-		if got then got.at = os.clock() end
-		return got
-	end
-	pages[name] = false
-	local folder = script.Parent.Parent:FindFirstChild("DevAssets")
-	local mod = folder and folder:FindFirstChild(name)
-	if not mod or not mod:IsA("ModuleScript") then
-		return false
-	end
-	local allocated: EditableImage? = nil
-	local ok, result = pcall(function()
-		local meta = require(mod) :: any
-		local size = Vector2.new(meta.width, meta.height)
-		-- Battle-only wreck/soot pages are optional detail. They must not evict the visible map
-		-- merely because the first damaged unit of another type asks for its large wreck sheet.
+	local got=pages[name]
+	if got~=nil then if got then got.at=os.clock() end;return got end
+	pages[name]=false
+	local folder=script.Parent.Parent:FindFirstChild("DevAssets");local module=folder and folder:FindFirstChild(name)
+	if not module or not module:IsA("ModuleScript") then return false end
+	local allocated:EditableImage?=nil
+	local ok,result=pcall(function()
+		local meta=require(module)
 		local optional=string.find(name,"Wreck",1,true) or string.match(name,"RimHalf$") or string.match(name,"Rim$") or string.match(name,"Shade$")
-		local kind=if optional then "detail" else "core"
-		local image = ImageMemory.create(size,kind)
-		if not image then return nil end -- Expected admission refusal: preserve the existing fallback quietly.
-		allocated = image
-		-- Admission precedes the expensive decode; refused optional pages should cost no full pixel buffer.
-		local pixels = PixelCodec.decode(MapCodec.base64Decode(meta.rle), meta.width, meta.height)
-		image:WritePixelsBuffer(Vector2.zero, size, pixels)
-		return { image = image, content = Content.fromObject(image), meta = meta, at = os.clock(),kind=kind }
+		local p:any={name=name,meta=meta,cells=cells(name,meta),kind=if optional then "detail" else "core",at=os.clock(),missing={}}
+		local stride=Lod.stride(meta.frame,p.cells*cellPixels());local data=variant(p,stride)
+		if not data then p.missing[stride]=true;stride=if stride==4 then 2 else 1;data=variant(p,stride) end
+		if not data then p.missing[stride]=true;stride=1;data=meta end
+		local size=Vector2.new(data.width,data.height);local image=ImageMemory.create(size,p.kind)
+		if not image then return nil end
+		allocated=image
+		image:WritePixelsBuffer(Vector2.zero,size,PixelCodec.decode(MapCodec.base64Decode(data.rle),data.width,data.height))
+		p.image,p.content,p.stride=image,Content.fromObject(image),stride;manager.register(p);return p
 	end)
-	if not ok then
-		ImageMemory.release(allocated)
-		pages[name]=false -- Release listeners may have cleared the failed entry while freeing this image.
-		if not warned[name] then
-			warned[name] = true
-			warn(`[SpriteBank] {name} unavailable; existing fallback stays:`, result)
-		end
-		return false
-	end
+	if not ok then ImageMemory.release(allocated);pages[name]=false;warning(name,result);return false end
 	if not result then return false end
-	pages[name] = result
-	return result
+	pages[name]=result;return result
 end
 
 local function touchCached(value: any)
@@ -149,7 +172,7 @@ function SpriteBank.look(kind: string): Look?
 		if c == nil or q == nil then
 			return nil
 		end
-		return { content = p.content, colour = c, paint = q, base = base }
+		return manager.track({ content = p.content, colour = c, paint = q, base = base },p)
 	end
 	local body = layer(k.body)
 	if not body then
@@ -160,9 +183,9 @@ function SpriteBank.look(kind: string): Look?
 		if not f then
 			return nil
 		end
-		return { content = f.content, frame = f.meta.frame, columns = f.meta.columns, strips = f.meta.strips }
+		return manager.track({ content = f.content, frame = f.meta.frame, columns = f.meta.columns, strips = f.meta.strips },f)
 	end
-	local rim = sheet("RimHalf") -- Compact outline at every zoom; body/paint retain native resolution.
+	local rim = sheet("RimHalf") -- Source compact outline family; resident image quality follows zoom.
 	local look: Look = {
 		frame = p.meta.frame,
 		columns = p.meta.columns,
@@ -177,11 +200,12 @@ function SpriteBank.look(kind: string): Look?
 		pivot = k.pivot,
 		radarTurns = k.radarTurns,
 	}
+	manager.track(look,p)
 	looks[kind] = look
 	return look
 end
 
-export type Figure = { content: Content, frame: number, columns: number, poses: { [string]: { colour: number, paint: number } } }
+export type Figure = { page:any?,content: Content, frame: number, columns: number, poses: { [string]: { colour: number, paint: number } } }
 local figures: { [string]: Figure | false } = {}
 
 -- one soldier figure: per pose, the y of its colour and paint strips
@@ -206,6 +230,7 @@ function SpriteBank.figure(name: string): Figure?
 		end
 	end
 	local fig: Figure = { content = p.content, frame = p.meta.frame, columns = p.meta.columns, poses = poses }
+	manager.track(fig,p)
 	figures[name] = fig
 	return fig
 end
@@ -237,8 +262,9 @@ function SpriteBank.preload()
 end
 
 -- top-left pixel of facing d in the strip that starts at y0
-function SpriteBank.offset(look: { frame: number, columns: number }, y0: number, d: number): Vector2
-	return Vector2.new((d % look.columns) * look.frame, y0 + (d // look.columns) * look.frame)
+function SpriteBank.offset(look: { frame: number, columns: number,page:any? }, y0: number, d: number): Vector2
+	local stride=if look.page then look.page.stride else 1
+	return Vector2.new((d % look.columns) * look.frame/stride, (y0 + (d // look.columns) * look.frame)/stride)
 end
 
 local wrecks: { [string]: Look | false } = {}
@@ -265,7 +291,7 @@ function SpriteBank.wreck(kind: string): Look?
 		if c == nil then
 			return nil
 		end
-		return { content = p.content, colour = c, paint = -1, base = base :: string }
+		return manager.track({ content = p.content, colour = c, paint = -1, base = base :: string },p)
 	end
 	local body = layer(k.wreck)
 	if not body then
@@ -276,9 +302,9 @@ function SpriteBank.wreck(kind: string): Look?
 		if not f then
 			return nil
 		end
-		return { content = f.content, frame = f.meta.frame, columns = f.meta.columns, strips = f.meta.strips }
+		return manager.track({ content = f.content, frame = f.meta.frame, columns = f.meta.columns, strips = f.meta.strips },f)
 	end
-	local rim = sheet("RimHalf") -- Compact outline at every zoom; body/paint retain native resolution.
+	local rim = sheet("RimHalf") -- Source compact outline family; resident image quality follows zoom.
 	local look: Look = {
 		frame = p.meta.frame,
 		columns = p.meta.columns,
@@ -290,11 +316,12 @@ function SpriteBank.wreck(kind: string): Look?
 		tall = k.tall * WRECK_TALL,
 		fx = if rim then { rim = rim, rimHalf = rim, shade = sheet("Shade") } else nil,
 	}
+	manager.track(look,p)
 	wrecks[kind] = look
 	return look
 end
 
-export type Soot = { content: Content, frame: number, columns: number, body: number, turret: number? }
+export type Soot = { page:any?,content: Content, frame: number, columns: number, body: number, turret: number? }
 local soots: { [string]: Soot | false } = {}
 
 -- the blackening the game lays over a damaged vehicle: the paint rows of its <kind>_wreck look (cg in
@@ -323,6 +350,7 @@ function SpriteBank.soot(kind: string): Soot?
 		content = p.content, frame = p.meta.frame, columns = p.meta.columns, body = body,
 		turret = if k.wreckTurret then p.meta.strips[k.wreckTurret .. "_paint"] else nil,
 	}
+	manager.track(s,p)
 	soots[kind] = s
 	return s
 end
@@ -361,19 +389,20 @@ function SpriteBank.state(kind: string, n: number): Look?
 		if not f then
 			return nil
 		end
-		return { content = f.content, frame = f.meta.frame, columns = f.meta.columns, strips = f.meta.strips }
+		return manager.track({ content = f.content, frame = f.meta.frame, columns = f.meta.columns, strips = f.meta.strips },f)
 	end
-	local rim = sheet("RimHalf") -- Compact outline at every zoom; body/paint retain native resolution.
+	local rim = sheet("RimHalf") -- Source compact outline family; resident image quality follows zoom.
 	local look: Look = {
 		frame = p.meta.frame,
 		columns = p.meta.columns,
 		cells = p.meta.cells or k.cells * UNIT_SCALE / k.artW,
-		body = { content = p.content, colour = c, paint = q, base = name },
+		body = manager.track({ content = p.content, colour = c, paint = q, base = name },p),
 		size = p.meta.size or k.cells * UNIT_SCALE,
 		artH = p.meta.artH or k.artH / k.artW,
 		tall = k.tall,
 		fx = if rim then { rim = rim, rimHalf = rim, shade = sheet("Shade") } else nil,
 	}
+	manager.track(look,p)
 	states[id] = look
 	return look
 end
@@ -392,6 +421,7 @@ ImageMemory.register(20, function(needed: number, protected: any,detailOnly:bool
 	table.sort(candidates, function(a, b) return a.page.at < b.page.at end)
 	for _, candidate in candidates do
 		pages[candidate.name] = nil
+		manager.drop(candidate.page)
 		ImageMemory.release(candidate.page.image)
 		clearLookCaches()
 		local used = ImageMemory.stats()

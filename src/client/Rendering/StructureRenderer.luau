@@ -11,9 +11,10 @@ local Art=require(script.Parent.StructureArt)
 local Daylight=require(script.Parent.DaylightController)
 local Labels=require(ReplicatedStorage.Shared.Presentation.StructureLabels)
 local SiteMotion=require(ReplicatedStorage.Shared.Presentation.SiteMotion)
+local Tokens=require(script.Parent.StructureTokens)
 local StructureRenderer = {}
 
-export type View = { id: number, kind: string, side: number, x: number, y: number, anchor: Part, ring: Part?, block: Part?, bar: Frame, barBack: Frame, text: TextLabel, seen: number, built: number, hp: number?, maxHp: number?, art: any, army: string, stale: boolean, gui: BillboardGui, labelRoot: Frame, status: string, production: any, weapon: any, artillery: any, site: any }
+export type View = { id: number, kind: string, side: number, x: number, y: number, anchor: Part, ring: Part?, block: Part?, bar: Frame, barBack: Frame, text: TextLabel, seen: number, built: number, hp: number?, maxHp: number?, art: any, army: string, stale: boolean, gui: BillboardGui, labelRoot: Frame, status: string, production: any, weapon: any, artillery: any, site: any, markerFlags: number }
 
 local NAMES = { hq = "HQ", barracks = "Barracks", factory = "War Factory", bunker = "Bunker", atgun = "AT Gun", radar = "Radar", sam = "SAM Site", artybase = "Artillery Base", nightops = "Night Ops Tower" }
 local DEFENCE = { bunker = true, atgun = true, radar = true, sam = true, nightops = true }
@@ -27,6 +28,9 @@ local folder: Folder
 local lastTick = 0
 local focus: number?=nil
 local connection: RBXScriptConnection?=nil
+local renderConnection: RBXScriptConnection?=nil
+local rules:any={}
+local viewer=0
 
 local function part(size: Vector3, cf: CFrame, color: Color3, transparency: number): Part
 	local p = Instance.new("Part")
@@ -82,7 +86,7 @@ local function create(id: number, kind: string, x: number, y: number): View
 	bar.BorderSizePixel = 0
 	bar.Parent = barBack
 	gui.Parent = anchor
-	return { id = id, kind = kind, side = 0, x = x, y = y, anchor = anchor, ring = ring, block = block, bar = bar, barBack = barBack, text = text, seen = 0, built = 1, art=nil, army="coalition", stale=false, gui=gui, labelRoot=root, status="" }
+	return { id = id, kind = kind, side = 0, x = x, y = y, anchor = anchor, ring = ring, block = block, bar = bar, barBack = barBack, text = text, seen = 0, built = 1, art=nil, army="coalition", stale=false, gui=gui, labelRoot=root, status="", markerFlags=0 }
 end
 
 local function present()
@@ -105,15 +109,19 @@ local function present()
 		local point=projected[id];v.gui.Enabled=false
 		if not point then continue end
 		if v.block then
-			if not v.art then v.art=Art.attach(v.block,v.kind,v.army) end
+			local lod=(v :: any).lod
+			if not v.art and (not lod or lod.detailMix>0) then v.art=Art.attach(v.block,v.kind,v.army) end
+			if lod then v.block.Transparency=1 end
 			if v.art then
 				v.block.Transparency=1
 				local importance=if focus==id then 1000 elseif hover==id then 900 else 1/(1+(Vector2.new(point.X,point.Y)-size/2).Magnitude/100)
-				Art.update(v.art,v.side,v.stale,v.built,light,id,v.hp,v.maxHp,importance,v.production,v.weapon,v.artillery,v.site,v.block.Size.X/S*pixels)
+				if not lod or lod.detailMix>0 then Art.update(v.art,v.side,v.stale,v.built,light,id,v.hp,v.maxHp,importance,v.production,v.weapon,v.artillery,v.site,v.block.Size.X/S*pixels,v.markerFlags,point) end
+				Art.setMix(v.art,if lod then lod.mix else 1)
 			end
 		end
 		local detail=Labels.detail(v,pixels,focus==id,hover==id)
 		if v.kind=="rig" then detail.visible=v.status~="" and (pixels>=4 or focus==id or hover==id);detail.priority=if focus==id then 100 else 30 end
+		if (v :: any).lod and focus~=id and hover~=id then continue end
 		if not detail.visible then continue end
 		v.barBack.Visible=if v.kind=="rig" then v.barBack.Visible else detail.bar
 		v.text.Text=if v.kind=="rig" or v.stale or v.built<1 or detail.numbers then v.status else NAMES[v.kind] or v.kind
@@ -127,18 +135,38 @@ local function present()
 		v.gui.Enabled=true
 	end
 end
+local function tokens()
+	Tokens.begin();local camera=workspace.CurrentCamera
+	if not camera then Tokens.finish(views);return end
+	local size=camera.ViewportSize
+	local pixels=S*size.Y/(2*math.max(1,camera.CFrame.Position.Y-World.GROUND_Y)*math.tan(math.rad(camera.FieldOfView/2)))
+	for _,v in views do
+		if not v.block then continue end
+		(v :: any).cells=v.block.Size.X/S
+		local point=camera:WorldToViewportPoint(v.anchor.Position)
+		local lod=Tokens.draw(v,point,pixels,rules,viewer,size.X,size.Y);(v :: any).lod=lod
+		if lod then v.block.Transparency=1 end
+		Art.setMix(v.art,if lod then lod.mix else 1)
+	end
+	Tokens.finish(views)
+end
+function StructureRenderer.configure(matchRules:any,side:number) rules=matchRules or {};viewer=side end
 function StructureRenderer.start()
 	if connection then connection:Disconnect();connection=nil end
+	if renderConnection then renderConnection:Disconnect();renderConnection=nil end
+	Tokens.reset()
 	if folder then folder:Destroy() end
 	Art.reset();table.clear(views);lastTick=0;focus=nil
 	folder = Instance.new("Folder");folder.Name = "WarFrontStructures";folder.Parent = workspace
 	local elapsed=0
 	connection=RunService.Heartbeat:Connect(function(dt) Art.step();elapsed+=dt;if elapsed<.1 then return end;elapsed=0;present() end)
-	folder.Destroying:Connect(function() if connection then connection:Disconnect();connection=nil end;Art.reset() end)
+	renderConnection=RunService.RenderStepped:Connect(tokens)
+	folder.Destroying:Connect(function() if connection then connection:Disconnect();connection=nil end;if renderConnection then renderConnection:Disconnect();renderConnection=nil end;Tokens.reset();Art.reset() end)
 end
 function StructureRenderer.setFocus(id:number?) focus=id end
 
 -- structures: { id, kind, side, x, y, hp, maxHp, capSide, capProgress, store, built, stale, army }
+-- Optional field 17: own damaged-facility marker (1) or visible demolition (2).
 -- stale = 1: an enemy building remembered from an earlier sighting (fog): drawn faded, health unknown.
 function StructureRenderer.apply(tick: number, structures: { any })
 	if tick <= lastTick then
@@ -162,6 +190,7 @@ function StructureRenderer.apply(tick: number, structures: { any })
 		local army=if st[13]=="republic" then "republic" else "coalition"
 		if v.army~=army and v.art then v.art.gui:Destroy();v.art=nil end
 		v.army=army;v.stale=stale==1;v.production=st[14];v.weapon=st[15];v.artillery=st[16]
+		v.markerFlags=if v.stale or type(st[17])~="number" then 0 else bit32.band(st[17],3)
 		v.site=SiteMotion.observe(v.site,v.built,not v.stale,os.clock(),initial)
 		if v.art and v.stale then Art.update(v.art,side,true,v.built,Daylight.get(),id,hp,maxHp,nil,nil) end
 		if v.block then
@@ -169,7 +198,7 @@ function StructureRenderer.apply(tick: number, structures: { any })
 			local color = SIDE_COLOR[side] or Color3.new(0.7, 0.7, 0.7)
 			local b = built or 1
 			block.Color = if b < 1 then color:Lerp(Color3.new(1, 1, 1), 0.55) else color:Lerp(Color3.new(0, 0, 0), 0.15)
-			block.Transparency = if v.art then 1 elseif b < 1 or stale == 1 then 0.35 else 0
+			block.Transparency = if v.art or (v :: any).lod then 1 elseif b < 1 or stale == 1 then 0.35 else 0
 			if stale == 1 then
 				v.status = `{NAMES[kind]} (last seen)`
 				v.bar.Size = UDim2.fromScale(0, 1)

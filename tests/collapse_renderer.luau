@@ -8,8 +8,8 @@ return function(test:any,eq:any)
 		Events.push(queue,{type="destroyed",cat="structure",id=1,kind="factory",x=2,y=2},20,16)
 		Events.push(queue,{type="destroyed",cat="structure",id=2,kind="hq",x=8,y=2},20,16)
 		local env=setmetatable({sideOf={[one]=1,[two]=2,[spectator]=0},viewFor=function() return {},{},{1,2,3} end,tick=10,readyView=ready,
-			viewers={[1]={visibleAt=function(x) return x<5 end},[2]={visibleAt=function(x) return x>5 end}},sim={fogOn=function() return true end},
-			deaths={},collapses=queue,sentVision={},CollapseEvents=Events,Net={sendSnapshot=function(player,_tick,_units,_structures,_vision,_all,_deaths,rows) sent[player]=rows or false end}},{__index=getfenv()})
+			viewers={[1]={visibleAt=function(x) return x<5 end},[2]={visibleAt=function(x) return x>5 end}},sim={time=0,fogOn=function() return true end},
+			deaths={},collapses=queue,blasts={},BlastEvents={visible=function()return{}end},sentVision={},CollapseEvents=Events,Net={sendSnapshot=function(player,_tick,_units,_structures,_vision,_all,_deaths,rows) sent[player]=rows or false end}},{__index=getfenv()})
 		local snapshot=luau.load(string.sub(code,a,b-1).."\nreturn snapshot",{environment=env})()
 		snapshot();eq(#sent[one],1);eq(sent[one][1][1],1);eq(sent[two],nil);eq(#sent[spectator],2);eq(#queue,0)
 		ready[two]=true;snapshot();eq(sent[one],false);eq(sent[two],false);eq(sent[spectator],false)

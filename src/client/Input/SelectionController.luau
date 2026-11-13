@@ -49,6 +49,7 @@ local selected: { [number]: boolean } = {}
 
 local function groundPoint(screen: Vector2): Vector3?
 	local camera = workspace.CurrentCamera
+	if not camera then return nil end
 	local ray = camera:ViewportPointToRay(screen.X, screen.Y)
 	local params = RaycastParams.new()
 	local map = workspace:FindFirstChild("WarFrontMap")
@@ -94,6 +95,16 @@ local function structureUnder(mouse: Vector2, accept: (StructureRenderer.View) -
 		if accept(v) then
 			local p, on = workspace.CurrentCamera:WorldToViewportPoint(World.toWorld(v.x, v.y, 1))
 			local d = (Vector2.new(p.X, p.Y) - mouse).Magnitude
+			if on and v.kind=="artybase" and v.block then
+				-- Keep the existing minimum pick tolerance; close artillery roofs also accept their footprint.
+				local rx,ry=v.block.Size.X/World.STUDS_PER_CELL/2,v.block.Size.Z/World.STUDS_PER_CELL/2
+				local minX,minY,maxX,maxY=math.huge,math.huge,-math.huge,-math.huge
+				for _,offset in {{-rx,-ry},{rx,-ry},{rx,ry},{-rx,ry}} do
+					local corner=workspace.CurrentCamera:WorldToViewportPoint(World.toWorld(v.x+offset[1],v.y+offset[2],1))
+					minX=math.min(minX,corner.X);minY=math.min(minY,corner.Y);maxX=math.max(maxX,corner.X);maxY=math.max(maxY,corner.Y)
+				end
+				if mouse.X>=minX and mouse.X<=maxX and mouse.Y>=minY and mouse.Y<=maxY then d=math.min(d,39.999) end
+			end
 			if on and d < bestDist then
 				best, bestDist = v, d
 			end
@@ -106,7 +117,7 @@ end
 -- opts.onProducer(id, kind): a building was picked as the producer (nil = back to the HQ).
 -- opts.note(text): a short notice; opts.lookAt(x, y): centre the camera on a cell.
 local GROUP_KEYS = { [Enum.KeyCode.One] = 1, [Enum.KeyCode.Two] = 2, [Enum.KeyCode.Three] = 3, [Enum.KeyCode.Four] = 4, [Enum.KeyCode.Five] = 5 }
-function SelectionController.start(mySide: number, sendIntent: (any) -> (), opts: { busy: () -> boolean, onProducer: (number?, string?) -> (), digLine: ({ number }) -> (), cycleTrench: () -> (), note: (string) -> (), lookAt: (number, number) -> (), openRig: (number?) -> () })
+function SelectionController.start(mySide: number, sendIntent: (any) -> (), opts: { busy: () -> boolean, onProducer: (number?, string?) -> (), digLine: ({ number }) -> (), cycleTrench: () -> (), note: (string) -> (), lookAt: (number, number) -> (), openRig: (number?) -> (),onStructure: ((number?,string?) -> ())?,targeting: (() -> boolean)?,target: ((number,number) -> ())?,cancelTarget: (() -> ())? })
 	local gui = Instance.new("ScreenGui")
 	gui.Name = "WarFrontSelection"
 	gui.IgnoreGuiInset = true
@@ -174,6 +185,7 @@ function SelectionController.start(mySide: number, sendIntent: (any) -> (), opts
 				end
 			end
 			if best then
+				if opts.onStructure then opts.onStructure(nil,nil) end
 				-- like the game's selectAt: a second click on the same unit within 350 ms (the game's
 				-- doubleMs) picks every unit of its kind on screen (Ctrl: every unit on screen); Shift +
 				-- click adds it, and when its kind is already selected adds all of that kind on screen
@@ -197,6 +209,7 @@ function SelectionController.start(mySide: number, sendIntent: (any) -> (), opts
 				end)
 				picked = if own then own.id else nil
 				StructureRenderer.setFocus(picked)
+				if opts.onStructure then opts.onStructure(picked,if own then own.kind else nil) end
 				-- one of your rigs: open its card (the game's RigCard); a click anywhere else closes it
 				opts.openRig(if own and own.kind == "rig" then own.id else nil)
 				local st = structureUnder(b, function(v)
@@ -214,6 +227,7 @@ function SelectionController.start(mySide: number, sendIntent: (any) -> (), opts
 				end
 			end
 		else
+			if opts.onStructure then opts.onStructure(nil,nil) end
 			local minV, maxV = a:Min(b), a:Max(b)
 			for id, v in UnitRenderer.each() do
 				if v.side == mySide and v.kind ~= "truck" then
@@ -263,6 +277,7 @@ function SelectionController.start(mySide: number, sendIntent: (any) -> (), opts
 		else
 			local ids, st, double = ControlGroups.recall(groups, n, os.clock() * 1000, unitOk, structureOk)
 			if #ids > 0 then
+				if opts.onStructure then opts.onStructure(nil,nil) end
 				table.clear(selected)
 				local sx, sy = 0, 0
 				for _, id in ids do
@@ -281,6 +296,7 @@ function SelectionController.start(mySide: number, sendIntent: (any) -> (), opts
 				refresh()
 				picked = st
 				StructureRenderer.setFocus(picked)
+				if opts.onStructure then opts.onStructure(st,v.kind) end
 				if PRODUCERS[v.kind] then
 					producerId = st
 					opts.onProducer(st, v.kind)
@@ -298,6 +314,16 @@ function SelectionController.start(mySide: number, sendIntent: (any) -> (), opts
 		end
 		local isMouse = input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.MouseButton2
 		if isMouse and opts.busy() then
+			return
+		end
+		if opts.targeting and opts.targeting() then
+			dragStart=nil;box.Visible=false
+			if input.UserInputType==Enum.UserInputType.MouseButton1 then
+				local hit=groundPoint(UserInputService:GetMouseLocation())
+				if hit and opts.target then local x,y=World.toCell(hit);opts.target(x,y) end
+			elseif input.UserInputType==Enum.UserInputType.MouseButton2 or input.KeyCode==Enum.KeyCode.Escape then
+				if opts.cancelTarget then opts.cancelTarget() end
+			end
 			return
 		end
 		if input.UserInputType == Enum.UserInputType.MouseButton1 then
@@ -572,6 +598,7 @@ function SelectionController.start(mySide: number, sendIntent: (any) -> (), opts
 			-- \ : the selected units fall back to the nearest HQ, faster and holding fire (PROVISIONAL key)
 			send(sendIntent, "retreat")
 		elseif input.KeyCode == Enum.KeyCode.Escape then
+			if opts.onStructure then opts.onStructure(nil,nil) end
 			table.clear(selected)
 			refresh()
 			picked, producerId = nil, nil
@@ -595,8 +622,8 @@ function SelectionController.start(mySide: number, sendIntent: (any) -> (), opts
 	UserInputService.InputEnded:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton1 and dragStart then
 			local shift = UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) or UserInputService:IsKeyDown(Enum.KeyCode.RightShift)
-			finishSelect(dragStart, UserInputService:GetMouseLocation(), shift)
-			dragStart = nil
+			local start=dragStart;dragStart=nil
+			if not opts.busy() and not (opts.targeting and opts.targeting()) then finishSelect(start, UserInputService:GetMouseLocation(), shift) end
 			box.Visible = false
 		end
 	end)

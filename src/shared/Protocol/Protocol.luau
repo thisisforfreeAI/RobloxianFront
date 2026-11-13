@@ -33,7 +33,7 @@ export type RoadRepairIntent = { kind: "roadRepair", unitIds: { number }, x: num
 export type SabotageIntent = { kind: "sabotage", unitIds: { number }, x: number, y: number } -- engineers plant a charge on a road
 export type UpgradeRigIntent = { kind: "upgradeRig", rigId: number, upgrade: string } -- "pump" or "tank" (the game's upgradeRig)
 export type TruckIntent = { kind: "truck", rigId: number, release: boolean?, reroute: boolean? } -- send an idle truck to a rig, or buy one (release: take one off it; reroute: its trucks take the next route on offer)
-export type PowerIntent = { kind: "power", power: string, x: number, y: number } -- paratroopers, bomb truck, an airfield drop, the recon drone, or an artillery base barrage / flares at a point
+export type PowerIntent = { kind: "power", power: string, x: number, y: number, structureId: number?, requestId: number? } -- paratroopers, bomb truck, an airfield drop, the recon drone, or an artillery base barrage / flares at a point
 export type BarrageIntent = { kind: "barrage", unitIds: { number }, x: number, y: number } -- rocket artillery fires on a point
 export type DetonateIntent = { kind: "detonate", unitIds: { number } } -- blow up selected bomb trucks
 export type BoardIntent = { kind: "board", unitIds: { number }, carrierId: number } -- riders get into an IFV
@@ -125,7 +125,12 @@ function Protocol.parse(raw: any, mapWidth: number, mapHeight: number): (Intent?
 		if raw.x < 0 or raw.y < 0 or raw.x >= mapWidth or raw.y >= mapHeight then
 			return nil, "target outside the map"
 		end
-		return { kind = "power", power = raw.power, x = raw.x, y = raw.y } :: any, nil
+		if raw.structureId~=nil or raw.requestId~=nil then
+			if raw.power~="barrage" and raw.power~="flare" then return nil,"base selection only applies to artillery" end
+			if not finite(raw.structureId) or raw.structureId<1 or raw.structureId%1~=0 or raw.structureId>2147483647 then return nil,"invalid artillery base" end
+			if raw.requestId~=nil and (not finite(raw.requestId) or raw.requestId<1 or raw.requestId%1~=0 or raw.requestId>2147483647) then return nil,"invalid artillery request" end
+		end
+		return { kind = "power", power = raw.power, x = raw.x, y = raw.y,structureId=raw.structureId,requestId=raw.requestId } :: any, nil
 	end
 	if raw.kind == "nightOps" then
 		if type(raw.on) ~= "boolean" then

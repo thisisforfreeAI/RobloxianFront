@@ -106,6 +106,8 @@ def pack(name, frame, strips, cols=8, scale=1):
     os.makedirs(OUT, exist_ok=True)
     with open(os.path.join(OUT, name + ".luau"), "w", newline="\n") as f:
         f.write("\n".join(lines))
+    from pack_sprite_lods import generate
+    generate(os.path.join(OUT, name + ".luau"), OUT)
     return w, h, len(rle)
 
 

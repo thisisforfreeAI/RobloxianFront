@@ -11,6 +11,10 @@ local Factory=require(script.Parent.FactoryRenderer)
 local Gun=require(script.Parent.GunRenderer)
 local Artillery=require(script.Parent.ArtilleryRenderer)
 local Site=require(script.Parent.SiteRenderer)
+local Tokens=require(Shared.Presentation.StructureTokens)
+local Fade=require(script.Parent.StructureFade)
+local Shadows=require(script.Parent.StructureShadows)
+local fades:{[any]:boolean}={}
 local Art={}
 local assets=script.Parent.Parent:FindFirstChild("DevAssets")
 local module=assets and assets:FindFirstChild("OrigStructures")
@@ -35,8 +39,8 @@ local function sheet(army:string):any
 	local old=sheets[army]
 	if old and old.image then return if old.ready then old else nil end
 	if old and os.clock()<old.retry then return nil end
-	local optional=string.sub(army,1,1)=="$"
-	local meta=if army=="$weapons" then data.weapons elseif army=="$artillery" then data.artillery elseif string.sub(army,1,5)=="$sam:" then data.launchers and data.launchers[string.sub(army,6)] else data.armies[army];if not meta then return nil end
+	local optional=string.sub(army,1,1)=="$" and army~="$badges"
+	local meta=if army=="$badges" then data.badges elseif army=="$weapons" then data.weapons elseif army=="$artillery" then data.artillery elseif string.sub(army,1,5)=="$sam:" then data.launchers and data.launchers[string.sub(army,6)] else data.armies[army];if not meta then return nil end
 	local state={retry=os.clock()+5,ready=false};sheets[army]=state
 	local image=Memory.create(Vector2.new(meta.width,meta.height),if optional then "detail" else "core");if not image then return nil end
 	state.image=image;state.meta=meta
@@ -61,13 +65,14 @@ local function sheet(army:string):any
 end
 Memory.register(10,function()
 	for name,state in sheets do
-		if string.sub(name,1,1)~="$" or not state.image then continue end
+		if name=="$badges" or string.sub(name,1,1)~="$" or not state.image then continue end
 		local image=state.image;Artillery.forgetSheet(image);Gun.forgetSheet(image)
 		sheets[name]={retry=os.clock()+5,ready=false}
 		Memory.release(image)
 	end
 end)
 function Art.step()	
+	for fade in fades do Fade.restore(fade);fade.writing=true end
 	Factory.step();Artillery.step();Gun.step();Site.step()
 	-- APPROX soft 2 ms bootstrap slice shared by both factions; no whole-atlas decode in a render tick.
 	deadline=os.clock()+.002
@@ -79,7 +84,8 @@ function Art.step()
 		if not ok or coroutine.status(job.thread)=="dead" then table.remove(jobs,1) end
 		if os.clock()>=deadline then break end
 	end
-	Effects.step(deadline)
+	Effects.step(deadline);Shadows.step(deadline)
+	for fade in fades do fade.writing=false;Fade.apply(fade,fade.mix) end
 end
 local function rectLabel(gui:SurfaceGui,s:any,key:any,frame:number,cells:number,x:number?,y:number?):ImageLabel?
 	local rect=key and s.meta.rects[tostring(key)];if not rect then return nil end
@@ -100,13 +106,25 @@ function Art.preview(kind:string,army:string,side:number):any
 	if not data then return nil end
 	local core=sheet(army)
 	local meta=data.armies[army] and data.armies[army].looks[kind]
-	return {sheet=core,meta=meta,style=data.site,tint=palette and palette[side] or {1,1,1}}
+	return {sheet=core,badgeSheet=if data.badges then sheet("$badges") else core,meta=meta,style=data.site,tint=palette and palette[side] or {1,1,1}}
+end
+function Art.token(kind:string,army:string,side:number):any
+	if not data or not data.badges then return nil end
+	return {sheet=sheet("$badges"),meta=data.badges.looks[kind],status=data.badges.status,style=data.site,tint=palette and palette[side] or {1,1,1}}
+end
+function Art.setMix(art:any,mix:number)
+	if art and art.fade then Fade.set(art.fade,mix);if mix<=0 then Shadows.hide(art.projectedShadow) end end
 end
 function Art.attach(part:Part,kind:string,army:string):any
 	local s=sheet(army);if not s then return nil end
 	local meta=s.meta.looks[kind];if not meta then return nil end
 	local gui=Instance.new("SurfaceGui");gui.Face=Enum.NormalId.Top;gui.SizingMode=Enum.SurfaceGuiSizingMode.FixedSize
 	gui.CanvasSize=Vector2.new(meta.frame,meta.frame);gui.LightInfluence=0;gui.MaxDistance=0;gui.ClipsDescendants=false
+	-- This sibling is created before shadow labels, so ground symbols stay behind their projections.
+	local groundRoot:Frame?=nil
+	if data.site and data.site.ground and data.badges then
+		groundRoot=Instance.new("Frame");groundRoot.Name="BuildingGroundSymbols";groundRoot.BackgroundTransparency=1;groundRoot.BorderSizePixel=0;groundRoot.Size=UDim2.fromScale(1,1);groundRoot.ClipsDescendants=false;groundRoot.ZIndex=0;groundRoot.Parent=gui
+	end
 	-- Only raised-object masks cast shadows. Older local atlases omit this layer until regenerated.
 	-- APPROX: combined source height masks, rather than the full height-band extrusion.
 	local caster=meta.shadow
@@ -128,9 +146,42 @@ function Art.attach(part:Part,kind:string,army:string):any
 	end
 	gui.Parent=part
 	local origin=if meta.artillery then {part.Position.X/World.STUDS_PER_CELL,part.Position.Z/World.STUDS_PER_CELL,part.Size.X/World.STUDS_PER_CELL} else nil
-	return {gui=gui,sheet=s,meta=meta,body=body,paint=paint,night=night,shadow=shadow,dish=dish,army=army,effects=Effects.attach(gui,meta,{body,paint}),factory=Factory.attach(gui,meta,s),gun=Gun.attach(gui,meta,s),artillery=Artillery.attach(gui,meta,s,origin),site=Site.attach(gui,meta,s,data.site,if part.Size then math.floor(part.Size.X/World.STUDS_PER_CELL/Art.scale(kind)+.5) else meta.cells)}
+	local site=Site.attach(gui,meta,s,data.site,if part.Size then math.floor(part.Size.X/World.STUDS_PER_CELL/Art.scale(kind)+.5) else meta.cells)
+	local fade=Fade.new(gui);fades[fade]=true;gui.Destroying:Connect(function() fades[fade]=nil end)
+	local effects=Effects.attach(gui,meta,{body,paint},function(mode)
+		Fade.restore(fade)
+		Site.covered(site,mode=="construction")
+		-- Reclaim can run between presentation ticks. Keep the completed body hidden behind the fallback.
+		if site and site.state and site.state.built<1 and not site.stale then
+			if body then body.Visible=false end;if paint then paint.Visible=false end
+		end
+		if not fade.writing then Fade.apply(fade,fade.mix) end
+	end)
+	return {gui=gui,kind=kind,groundRoot=groundRoot,fade=fade,projectedShadow=Shadows.attach(gui,meta,shadow,data.shadowProjection,fade),sheet=s,meta=meta,body=body,paint=paint,night=night,shadow=shadow,dish=dish,army=army,effects=effects,factory=Factory.attach(gui,meta,s),gun=Gun.attach(gui,meta,s),artillery=Artillery.attach(gui,meta,s,origin),site=site}
 end
-function Art.update(art:any,side:number,stale:boolean,built:number,light:any,id:number,hp:number?,maxHp:number?,importance:number?,production:any?,weapon:any?,artillery:any?,site:any?,screenSide:number?)
+local function ground(art:any,side:number,stale:boolean,light:any,screenSide:number?,flags:number?,origin:any?)
+	local cfg=data.site and data.site.ground
+	local pose=if screenSide and cfg then Tokens.ground(data.site,screenSide,screenSide/(art.meta.cells*Art.scale(art.kind)),light.night,stale,flags,origin) else nil
+	local meta=data.badges and data.badges.looks[art.kind];local core=if pose and meta and meta.ghost then sheet("$badges") else nil
+	if not pose or not core or not art.groundRoot then if art.ground then art.ground.shade.Visible=false;art.ground.ink.Visible=false end;return end
+	local h=art.ground
+	if not h then
+		h={};for _,key in {"shade","ink"} do local label=Instance.new("ImageLabel");label.BackgroundTransparency=1;label.ZIndex=1;label.Parent=art.groundRoot;h[key]=label end;art.ground=h
+	end
+	if h.image~=core.image then h.image=core.image;h.content=Content.fromObject(core.image) end
+	local r=core.meta.rects[tostring(meta.ghost)];if not r then h.shade.Visible=false;h.ink.Visible=false;return end
+	local rgb=palette and palette[side];local tone=if rgb then Color3.new(rgb[1],rgb[2],rgb[3]) else Color3.fromRGB(cfg.inkRgb[1],cfg.inkRgb[2],cfg.inkRgb[3])
+	for key,label in {shade=h.shade,ink=h.ink} do
+		local shift=if key=="shade" then pose.shade else 0;local share=pose.size/(screenSide :: number)
+		label.Visible=true;label.ImageContent=h.content;label.ImageRectOffset=Vector2.new(r[1],r[2]);label.ImageRectSize=Vector2.new(r[3],r[4])
+		label.Position=UDim2.fromScale(.5+(pose.x+shift)/(screenSide :: number)+r[5]/meta.frame*share,.5+(pose.y+shift)/(screenSide :: number)+r[6]/meta.frame*share)
+		label.Size=UDim2.fromScale(r[3]/meta.frame*share,r[4]/meta.frame*share)
+		label.ImageColor3=if key=="shade" then Color3.fromRGB(cfg.shadeRgb[1],cfg.shadeRgb[2],cfg.shadeRgb[3]) else tone
+		label.ImageTransparency=1-pose.alpha*(if key=="shade" then cfg.shadeAlpha else 1)
+	end
+end
+function Art.update(art:any,side:number,stale:boolean,built:number,light:any,id:number,hp:number?,maxHp:number?,importance:number?,production:any?,weapon:any?,artillery:any?,site:any?,screenSide:number?,markerFlags:number?,screenOrigin:any?)
+	Fade.restore(art.fade);art.fade.writing=true
 	local rgb=palette and palette[side] or {1,1,1}
 	local tint=Color3.new(rgb[1],rgb[2],rgb[3]);local base=Color3.new(1,1,1)
 	if stale then base=Color3.fromRGB(112,112,112);tint=base end
@@ -141,7 +192,7 @@ function Art.update(art:any,side:number,stale:boolean,built:number,light:any,id:
 	Factory.sync(art.factory,built,stale,production,id,base,tint,alpha)
 	Gun.sync(art.gun,built,stale,weapon,id,base,tint,alpha,light,if art.gun and not stale and built>=1 then sheet(art.meta.gun.bank or "$weapons") else nil)
 	Artillery.sync(art.artillery,built,stale,artillery,id,base,tint,alpha,light,if art.artillery and not stale and built>=1 then sheet("$artillery") else nil)
-	Site.sync(art.site,site,stale,screenSide)
+	Site.sync(art.site,site,stale,screenSide,{id=id,base=base,tint=tint,score=importance})
 	if art.body then art.body.ImageColor3=base;art.body.ImageTransparency=alpha;art.body.Visible=not constructing end
 	if art.paint then art.paint.ImageColor3=tint;art.paint.ImageTransparency=alpha;art.paint.Visible=not constructing end
 	if art.night then art.night.ImageTransparency=if stale or built<1 then 1 else 1-light.night*data.nightAlpha end
@@ -153,6 +204,7 @@ function Art.update(art:any,side:number,stale:boolean,built:number,light:any,id:
 		art.shadow.ImageTransparency=1-(if stale then .15 else .35)*light.shadowAlpha*(1-alpha)
 		if built<1 then art.shadow.ImageTransparency=1 end
 	end
+	Shadows.sync(art.projectedShadow,built,stale,light,importance,art.fade.mix,screenSide)
 	local dish=art.dish
 	if dish then
 		local cfg=art.meta.dish
@@ -175,9 +227,12 @@ function Art.update(art:any,side:number,stale:boolean,built:number,light:any,id:
 		if dish.base then dish.base.ImageColor3=base;dish.base.ImageTransparency=if built<1 then 1 else alpha end
 		if dish.paint then dish.paint.ImageColor3=tint;dish.paint.ImageTransparency=if built<1 then 1 else alpha end
 	end
+	ground(art,side,stale,light,screenSide,markerFlags,screenOrigin)
+	art.fade.writing=false;Fade.apply(art.fade,art.fade.mix)
 end
 function Art.reset()
-	Factory.reset();Artillery.reset();Gun.reset();Site.reset()
+	Factory.reset();Artillery.reset();Gun.reset();Site.reset();Shadows.reset()
+	for fade in fades do Fade.restore(fade) end;table.clear(fades)
 	for _,s in sheets do Memory.release(s.image) end;table.clear(sheets);table.clear(jobs)
 	Effects.configure(data)
 end

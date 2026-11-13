@@ -5,7 +5,7 @@ return function(test:any,eq:any)
 	local function fixture()
 		local h:any={player={},ready={},seats={},sent={},built=0,version=1,resets=0}
 		h.seats[h.player]=1
-		local env=setmetatable({sideOf=h.seats,readyView=h.ready,tick=1,sim={fogOn=function() return false end},viewers={},sentVision={},deaths={},collapses={},CollapseEvents={visible=function() return {} end},
+		local env=setmetatable({sideOf=h.seats,readyView=h.ready,tick=1,sim={time=0,fogOn=function() return false end},viewers={},sentVision={},deaths={},collapses={},blasts={},BlastEvents={visible=function()return{}end},CollapseEvents={visible=function() return {} end},
 			viewFor=function() h.built+=1;return {{h.version}},{},{1,2,3} end,
 			Net={sendSnapshot=function(player,tick,units,_,vision) table.insert(h.sent,{player=player,version=units[1][1],vision=vision,tick=tick}) end},MatchService={resetView=function() h.resets+=1 end}},{__index=getfenv()})
 		local a=assert(source:find("local function snapshot()",1,true));local b=assert(source:find("-- Own territory",a,true))

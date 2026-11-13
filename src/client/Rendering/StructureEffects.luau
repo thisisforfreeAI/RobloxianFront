@@ -18,13 +18,17 @@ local serial,epoch,retry,cursor=0,0,0,1
 local deadline=0
 local running:any=nil
 local function hide(handle:any)
+	local changed=handle.readyMode~=nil
 	if handle.label then handle.label.Visible=false end
 	for _,item in handle.static or {} do item.Visible=true end
 	handle.readyMode=nil
+	if changed and handle.onDisplay then handle.onDisplay(nil) end
 end
 local function show(handle:any,mode:string)
+	local changed=handle.readyMode~=mode
 	for _,item in handle.static or {} do item.Visible=mode~="construction" end
 	handle.readyMode=mode;handle.label.Visible=true
+	if changed and handle.onDisplay then handle.onDisplay(mode) end
 end
 function Effects.release(handle:any)
 	if not handle then return end
@@ -41,8 +45,8 @@ function Effects.configure(data:any)
 	Effects.reset()
 	config=if data and data.construction and data.damage then data else nil
 end
-function Effects.attach(gui:SurfaceGui,meta:any,static:{any}?):any
-	local handle={gui=gui,meta=meta,stage=0,static=static or {}}
+function Effects.attach(gui:SurfaceGui,meta:any,static:{any}?,onDisplay:any?):any
+	local handle={gui=gui,meta=meta,stage=0,static=static or {},onDisplay=onDisplay}
 	gui.Destroying:Connect(function() Effects.release(handle) end)
 	return handle
 end

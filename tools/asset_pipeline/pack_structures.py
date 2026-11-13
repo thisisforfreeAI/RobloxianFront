@@ -19,6 +19,14 @@ def caster_mask(sheet,meta,bands):
     image=Image.new('RGBA',size,(255,255,255,0));image.putalpha(alpha)
     return image
 
+def shadow_source(sheet,meta,bands):
+    """Only the original height masks enter projected shadows, never body/paint/ground art."""
+    if 'reach' not in meta:return None
+    f=meta['frame'];x=meta['x'];y=meta['y']
+    if len(meta['reach'])!=len(bands):raise ValueError('Shadow band/reach mismatch')
+    raw=b''.join(sheet.crop((x+(i+2)*f,y,x+(i+3)*f,y+f)).getchannel('A').tobytes() for i in range(len(bands)))
+    return {'frame':f,'bands':bands,'reach':meta['reach'],'size':len(raw),'deflate':packed(raw)}
+
 def lua(value):
     if isinstance(value,dict):return '{'+','.join('['+json.dumps(str(k))+']='+lua(v) for k,v in value.items())+'}'
     if isinstance(value,(list,tuple)):return '{'+','.join(map(lua,value))+'}'
@@ -107,11 +115,38 @@ def weapon_parts(data,sheet,names=None,width=512):
     print('Shared weapon parts',len(tiles),'tiles',result['width'],result['height'],'RGBA bytes',result['width']*result['height']*4)
     return result
 
+def pack_badges(data):
+    if not data:return None
+    tiles=[];dedup={};icons={}
+    for name,source in data['images'].items():
+        icon={'frame':source['frame']}
+        for layer in ('back','ink','fill','face','ghost'):
+            if layer not in source:continue
+            key=(source['frame'],source[layer])
+            if key not in dedup:
+                image=Image.open(io.BytesIO(base64.b64decode(source[layer]))).convert('RGBA')
+                if image.size!=(source['frame'],source['frame']):raise ValueError('Bad building token dimensions')
+                box=image.getbbox()
+                if not box:raise ValueError('Empty building token layer')
+                tiles.append((image.crop(box),box));dedup[key]=len(tiles)
+            icon[layer]=dedup[key]
+        icons[name]=icon
+    status={}
+    for name,source in data.get('status',{}).items():
+        image=Image.open(io.BytesIO(base64.b64decode(source['image']))).convert('RGBA')
+        if image.size!=(source['frame'],source['frame']):raise ValueError('Bad status icon dimensions')
+        box=image.getbbox()
+        if not box:raise ValueError('Empty status icon')
+        tiles.append((image.crop(box),box));status[name]={'frame':source['frame'],'tile':len(tiles)}
+    result=pack_tiles(tiles,512,compact=True);result['looks']={kind:icons[data['mapping'][kind]] for kind in KINDS};result['status']=status
+    print('Shared building tokens',len(tiles),'tiles',result['width'],result['height'],'RGBA bytes',result['width']*result['height']*4)
+    return result
+
 def pack(data,sheet,normal=None):
-    atlas=data['atlas'];output={}
+    atlas=data['atlas'];output={};tokens=pack_badges(data.get('badges'))
     def latest(name,group):return name+'@2' if name+'@2' in group else name
     for army in ('coalition','republic'):
-        tiles=[];looks={};badges={};badge_tiles={}
+        tiles=[];looks={}
         def tile(image,trim=True):
             box=image.getbbox() if trim else (0,0,image.width,image.height)
             if not box:return None
@@ -161,7 +196,7 @@ def pack(data,sheet,normal=None):
                 mask=Image.new('RGBA',alpha.size,(255,255,255,0));mask.putalpha(alpha)
                 look['siteMask']={'tile':tile(mask),'frame':mask.width}
             shadow=caster_mask(sheet,m,atlas['bands'])
-            look['shadow']={'tile':tile(shadow),'frame':shadow.width}
+            look['shadow']={'tile':tile(shadow),'frame':shadow.width,'source':shadow_source(sheet,m,atlas['bands'])}
             look['defence']=kind in ('bunker','atgun','radar','sam','nightops')
             if normal is not None:look['effects']=effect_source(sheet,normal,m,data['construction'])
             if moving:
@@ -202,19 +237,7 @@ def pack(data,sheet,normal=None):
                     db,dp,_=part(partname,heading);frames.append({'base':tile(db),'paint':tile(dp)})
                 look['dish']={'frames':frames,'frame':meta['frame'],'cells':meta['cells'],'x':(point['x']-.5)*cells,'y':(point['y']-.5)*cells,'speed':cfg['turnsPerSec']}
             looks[kind]=look
-            if data.get('badges'):
-                icon=data['badges']['mapping'][kind]
-                if icon not in badges:
-                    source=data['badges']['images'][icon]
-                    badges[icon]={'frame':source['frame']}
-                    for layer in ('back','ink'):
-                        key=(source['frame'],source[layer])
-                        if key not in badge_tiles:
-                            image=Image.open(io.BytesIO(base64.b64decode(source[layer]))).convert('RGBA')
-                            if image.size!=(source['frame'],source['frame']):raise ValueError('Bad building token dimensions')
-                            badge_tiles[key]=tile(image)
-                        badges[icon][layer]=badge_tiles[key]
-                look['badge']=badges[icon]
+            if tokens:look['badge']=tokens['looks'][kind]
         output[army]=pack_tiles(tiles,compact=True)
         output[army]['looks']=looks
         print(army,len(tiles),'tiles',output[army]['width'],output[army]['height'],'RGBA bytes',output[army]['width']*output[army]['height']*4)
@@ -222,7 +245,7 @@ def pack(data,sheet,normal=None):
     if data.get('gunMotion',{}).get('sam'):
         launchers={army:weapon_parts(data,sheet,[('rep_' if army=='republic' else '')+data['gun']['sam']['part']+str(stage) for stage in range(3)]) for army in ('coalition','republic')}
     artillery=weapon_parts(data,sheet,[name for names in data['artillery']['parts'].values() for name in names],1024) if data['artillery'].get('motion') else None
-    return {'armies':output,'nightAlpha':data['nightAlpha'],'construction':data.get('construction'),'damage':data.get('damage'),'weapons':weapon_parts(data,sheet) if data.get('gunMotion') else None,'launchers':launchers,'artillery':artillery,'site':data.get('site')}
+    return {'shadowProjection':data.get('shadow'),'badges':tokens,'armies':output,'nightAlpha':data['nightAlpha'],'construction':data.get('construction'),'damage':data.get('damage'),'weapons':weapon_parts(data,sheet) if data.get('gunMotion') else None,'launchers':launchers,'artillery':artillery,'site':data.get('site')}
 
 if __name__=='__main__':
     data=json.loads(pathlib.Path(sys.argv[1]).read_text());sheet=Image.open(sys.argv[2]).convert('RGBA')

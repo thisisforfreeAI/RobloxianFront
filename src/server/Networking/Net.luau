@@ -37,8 +37,8 @@ end
 -- (nil = unchanged); seeAll: true when there is no fog for this player; deaths: vehicles destroyed
 -- since the last snapshot where this player could see them, { id, kind, x, y, hull, turret } (wrecks).
 -- collapses: optional bounded visible structure losses { id, kind, x, y }; transient, never replayed.
-function Net.sendSnapshot(player: Player, tick: number, units: { any }, structures: { any }, vision: { number }?, seeAll: boolean, deaths: { any }?, collapses: { any }?)
-	snapshot:FireClient(player, tick, units, structures, vision, seeAll, deaths, collapses)
+function Net.sendSnapshot(player: Player, tick: number, units: { any }, structures: { any }, vision: { number }?, seeAll: boolean, deaths: { any }?, collapses: { any }?,blasts:{any}?,war:{number}?)
+	snapshot:FireClient(player, tick, units, structures, vision, seeAll, deaths, collapses,blasts,war)
 end
 
 function Net.sendState(player: Player, payload: { [string]: any })

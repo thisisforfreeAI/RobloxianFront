@@ -88,6 +88,13 @@ return function(test:any,eq:any)
 		h.preview.update(h.part,"hq","coalition",1,{ok=true},9,{["production.spacing"]=4})
 		eq(h:badge("BadgeInk").Size,rb.UDim2.fromScale(42/9,42/9))
 	end)
+	test("modern placement badges use their shared bank while body art is pending and switch back correctly",function()
+		local h=fixture();h:badges();local bank={image={},meta=h.sheet.meta};h.resource.badgeSheet=bank;h.resource.sheet=nil
+		h:draw(6);eq(h:badge("BadgeInk").Visible,true);eq(h:badge("BadgeInk").ImageContent,bank.image)
+		h.resource.sheet=h.sheet;h:draw(12);eq(h:badge("BadgeInk").Visible,false)
+		for _,o in h.instances do if o.ClassName=="ImageLabel" and o.Visible then eq(o.ImageContent,h.sheet.image) end end
+		h:draw(6);eq(h:badge("BadgeInk").ImageContent,bank.image);eq(h.contents,2)
+	end)
 	test("cursor cancellation, ghost replacement and teardown hide or destroy all native preview owners",function()
 		local h=fixture();h:draw();local gui=h:gui();h.preview.hide();eq(gui.Enabled,false)
 		h:draw();h.part={};h:draw();eq(gui.dead,true);h.preview.destroy();eq(h:gui(),nil)

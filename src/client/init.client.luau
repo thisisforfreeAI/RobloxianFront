@@ -21,6 +21,7 @@ local BuildController = require(script.Input.BuildController)
 local DropController = require(script.Input.DropController)
 local Hud = require(script.UI.Hud)
 local RigCard = require(script.UI.RigCard)
+local ArtilleryPanel=require(script.UI.ArtilleryPanel)
 local AdminPanel = require(script.UI.AdminPanel)
 local LobbyBrowser = require(script.UI.LobbyBrowser)
 local ImageMemory = require(script.Rendering.ImageMemory)
@@ -79,7 +80,8 @@ do
 		intent:FireServer(payload)
 	end
 	local rigRules = Rules.new(require(Shared:WaitForChild("GameData").RulesMatch) :: any)
-	BuildController.start(map.width, send,{map=map,rules=rigRules.data,structures=StructureRenderer.each,side=info.side,blocked=LobbyBrowser.isOpen})
+	StructureRenderer.configure(rigRules.data,info.side)
+	BuildController.start(map.width, send,{map=map,rules=rigRules.data,structures=StructureRenderer.each,side=info.side,blocked=function() return LobbyBrowser.isOpen() or ArtilleryPanel.targeting() end})
 	DropController.start(send)
 	-- N switches your night operations towers on or off (the game's nvOff); with bomb trucks
 	-- selected N blows them up instead
@@ -97,7 +99,7 @@ do
 		end,
 		build = BuildController.begin,
 	})
-	UnitRenderer.configure({ mortarSetupSec = rigRules:number("mortar.setupSec"), mortarPackSec = rigRules:number("mortar.packSec") })
+	UnitRenderer.configure({ mortarSetupSec = rigRules:number("mortar.setupSec"), mortarPackSec = rigRules:number("mortar.packSec"),mapWidth=map.width,mapHeight=map.height })
 	local rigCard = RigCard.start(send, {
 		truck = rigRules:number("trucks.kinds.light.cost"), pump = rigRules:number("rigs.upgrades.pump.cost"),
 		tank = rigRules:number("rigs.upgrades.tank.cost"), pumpMult = rigRules:number("rigs.upgrades.pump.mult"),
@@ -107,10 +109,13 @@ do
 	ImageMemory.onAccessFailure(function()
 		Hud.note("Artwork is unavailable. The experience creator needs to update this game.")
 	end)
-	LobbyBrowser.start({onOpen=BuildController.cancel})
+	ArtilleryPanel.start({side=info.side,rules=rigRules.data,views=StructureRenderer.each,send=send,
+		blocked=function() return LobbyBrowser.isOpen() or BuildController.busy() end,cancelPlacement=BuildController.cancel})
+	LobbyBrowser.start({onOpen=function() BuildController.cancel();ArtilleryPanel.cancel() end})
 	Atmosphere.start()
 	stateEvent.OnClientEvent:Connect(function(state)
 		BuildController.update(state)
+		ArtilleryPanel.update(state)
 		Hud.update(state, info.side)
 		AdminPanel.update(state)
 		if state.civilianTime then
@@ -189,6 +194,7 @@ do
 	SelectionController.start(info.side, send, {
 		busy = function() return LobbyBrowser.isOpen() or BuildController.busy() end,
 		onProducer = Hud.selectProducer,
+		onStructure=ArtilleryPanel.select,targeting=ArtilleryPanel.targeting,target=ArtilleryPanel.target,cancelTarget=ArtilleryPanel.cancel,
 		digLine = BuildController.beginTrench,
 		cycleTrench = function()
 			Hud.note(TRENCH_NAMES[BuildController.cycleTrenchKind()])
@@ -211,14 +217,15 @@ do
 		task.spawn(board.start, Vector2.new(cx + 30, cy), "ScoutCar", false) -- REQ-0001 pilot, east of the arrows
 	end
 
-	snapshot.OnClientEvent:Connect(function(tick, units, structures, vision, seeAll, deaths, collapses)
-		UnitRenderer.apply(tick, units, deaths)
+	snapshot.OnClientEvent:Connect(function(tick, units, structures, vision, seeAll, deaths, collapses,blasts,war)
+		UnitRenderer.apply(tick, units, deaths,war)
 		CivilianRenderer.snapshot(units)
 		StructureRenderer.apply(tick, structures or {})
 		if vision then
 			FogOverlay.apply(vision, seeAll == true)
 		end
 		CollapseRenderer.apply(tick,collapses) -- use this snapshot's updated fog for transient births
+		if blasts~=nil or war~=nil then UnitRenderer.react(tick,blasts,war)end
 	end)
 	-- Both listeners are attached before the server begins fire deltas/resends cached visual state.
 	intent:FireServer({kind="viewReady"}) -- Control handshake also runs while a modal blocks orders.

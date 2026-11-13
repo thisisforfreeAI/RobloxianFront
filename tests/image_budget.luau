@@ -106,8 +106,9 @@ return function(test: any, eq: any)
 		local memory={create=function(size,kind) return b:create(size.X,size.Y,kind) end,release=function(image) b:release(image) end,
 			register=function(priority,fn) return b:register(priority,fn) end,onRelease=function(fn) b:onRelease(fn) end,stats=function() return b.used end}
 		local modules={memory=memory,codec={base64Decode=function() return buffer.create(0) end},pixels={decode=function(_data,w,h) return buffer.create(w*h*4) end}}
-		local shared={Maps={MapCodec="codec"},Assets={PixelCodec="pixels"}}
-		local env=setmetatable({game={GetService=function() return {WaitForChild=function() return shared end} end},
+		modules.lod=require("../src/shared/Presentation/SpriteLod");modules.hash=require("../src/shared/Presentation/TownLods");modules.world={}
+		local shared={Maps={MapCodec="codec"},Assets={PixelCodec="pixels"},Presentation={SpriteLod="lod",TownLods="hash"},Config={World="world"}}
+		local env=setmetatable({workspace={},game={GetService=function() return {WaitForChild=function() return shared end} end},
 			script={Parent={ImageMemory="memory",Parent={FindFirstChild=function() return {FindFirstChild=function(_,name) return assets[name] end} end}}},
 			require=function(key) return if type(key)=="table" then key.meta else modules[key] end,
 			Content={fromObject=function(image) return image end},Vector2={new=function(x,y) return {X=x,Y=y} end},os={clock=function() return now end},warn=function() end},{__index=getfenv()})
@@ -162,8 +163,9 @@ return function(test: any, eq: any)
 			register=function(priority,fn) return b:register(priority,fn) end,onRelease=function(fn) b:onRelease(fn) end,stats=function() return b.used end}
 		local decodes=0
 		local modules={memory=memory,codec={base64Decode=function() return buffer.create(0) end},pixels={decode=function(_data,w,h) decodes+=1;return buffer.create(w*h*4) end}}
-		local shared={Maps={MapCodec="codec"},Assets={PixelCodec="pixels"}}
-		local env=setmetatable({game={GetService=function() return {WaitForChild=function() return shared end} end},
+		modules.lod=require("../src/shared/Presentation/SpriteLod");modules.hash=require("../src/shared/Presentation/TownLods");modules.world={}
+		local shared={Maps={MapCodec="codec"},Assets={PixelCodec="pixels"},Presentation={SpriteLod="lod",TownLods="hash"},Config={World="world"}}
+		local env=setmetatable({workspace={},game={GetService=function() return {WaitForChild=function() return shared end} end},
 			script={Parent={ImageMemory="memory",Parent={FindFirstChild=function() return {FindFirstChild=function(_,name) return assets[name] end} end}}},
 			require=function(key) return if type(key)=="table" then key.meta else modules[key] end,
 			Content={fromObject=function(image) return image end},Vector2={new=function(x,y) return {X=x,Y=y} end},warn=function() end},{__index=getfenv()})
@@ -237,7 +239,7 @@ return function(test: any, eq: any)
 		eq(state.attempts,2);eq(b.nativeRefusals,1);eq(b.refusals.detail,2);eq(b.refusals.terrain,1);eq(b.refusals.core,1)
 		eq(b.lastRefusal.kind,"core");eq(b.lastRefusal.width,1);eq(b.lastRefusal.used,80)
 	end)
-	test("actual vehicle cache keeps full-resolution body art but shares one optional compact rim",function()
+	test("actual vehicle cache retains source body compatibility and shares one optional compact rim",function()
 		local fs=require("@lune/fs");local luau=require("@lune/luau");local create,state=factory(1000)
 		local b=Budget.new(function(w,h) local image=create(w,h);if image then image.WritePixelsBuffer=function() end end;return image end,{ceiling=1000,detailLimit=200,reserve=0,terrainReserve=40})
 		local terrain=b:create(2,10,"terrain");local requested={}
@@ -249,8 +251,9 @@ return function(test: any, eq: any)
 		local memory={create=function(size,kind) return b:create(size.X,size.Y,kind) end,release=function(image) b:release(image) end,
 			register=function(priority,fn) return b:register(priority,fn) end,onRelease=function(fn) b:onRelease(fn) end,stats=function() return b.used end}
 		local modules={memory=memory,codec={base64Decode=function() return buffer.create(0) end},pixels={decode=function(_,w,h) return buffer.create(w*h*4) end}}
-		local shared={Maps={MapCodec="codec"},Assets={PixelCodec="pixels"}}
-		local env=setmetatable({game={GetService=function() return {WaitForChild=function() return shared end} end},
+		modules.lod=require("../src/shared/Presentation/SpriteLod");modules.hash=require("../src/shared/Presentation/TownLods");modules.world={}
+		local shared={Maps={MapCodec="codec"},Assets={PixelCodec="pixels"},Presentation={SpriteLod="lod",TownLods="hash"},Config={World="world"}}
+		local env=setmetatable({workspace={},game={GetService=function() return {WaitForChild=function() return shared end} end},
 			script={Parent={ImageMemory="memory",Parent={FindFirstChild=function() return {FindFirstChild=function(_,name) return assets[name] end} end}}},
 			require=function(key) if type(key)=="table" then requested[key.name]=true;return key.meta end;return modules[key] end,
 			Vector2={new=function(x,y) return {X=x,Y=y} end},Content={fromObject=function(image) return image end},warn=function() error("unexpected warning") end},{__index=getfenv()})
@@ -268,7 +271,7 @@ return function(test: any, eq: any)
 		local shared={Presentation={MenShadows="shadows"},Maps={MapCodec="codec"},Assets={PixelCodec="pixels",Facing="facing"},Config={World="world"}}
 		function shared:FindFirstChild() return {FindFirstChild=function() return settings end} end
 		local modules={memory=memory,shadows={},codec={base64Decode=function() return buffer.create(0) end},pixels={decode=function() decodes+=1;if bad then error("invalid local pixels") end;return buffer.create(4) end},facing={},world={}}
-		local env=setmetatable({game={GetService=function() return {WaitForChild=function() return shared end} end},
+		local env=setmetatable({workspace={},game={GetService=function() return {WaitForChild=function() return shared end} end},
 			script={Parent={ImageMemory="memory",Parent={FindFirstChild=function() return {FindFirstChild=function() return art end} end}}},
 			require=function(key) if key==settings then return {} elseif key==art then return {width=1,height=1,rle=""} end;return modules[key] end,
 			Vector2={new=function(x,y) return {X=x,Y=y} end,zero={X=0,Y=0}},Content={fromObject=function(image) return image end},warn=function() warnings+=1 end},{__index=getfenv()})

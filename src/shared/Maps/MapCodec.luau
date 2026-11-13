@@ -43,7 +43,7 @@ for i = 1, #ALPHABET do
 	LOOKUP[string.byte(ALPHABET, i)] = i - 1
 end
 
-function MapCodec.base64Decode(s: string): buffer
+function MapCodec.base64Decode(s: string, checkpoint: ((number) -> ())?): buffer
 	local clean = string.gsub(s, "[^%w%+/=]", "")
 	local len = #clean
 	local pad = 0
@@ -56,6 +56,7 @@ function MapCodec.base64Decode(s: string): buffer
 	local out = buffer.create(outLen)
 	local o = 0
 	for i = 1, len, 4 do
+		if checkpoint and (i-1)%4096==0 then checkpoint(i-1) end
 		local a = LOOKUP[string.byte(clean, i)] or 0
 		local b = LOOKUP[string.byte(clean, i + 1)] or 0
 		local c = LOOKUP[string.byte(clean, i + 2)] or 0

@@ -6,6 +6,7 @@ return function(test:any,eq:any)
 	local ScorchPixels=require("../src/shared/Presentation/GroundScorchPixels")
 	local Lods=require("../src/shared/Presentation/TownLods")
 	local function make(twoChunks:any?):any
+		local testThread=coroutine.running()
 		local h:any={now=0,phase=.3,images={},instances={},warnings=0,bareLights=0,releases=0}
 		local function signal():any
 			local s:any={items={}};function s:Connect(fn) local c:any={fn=fn};function c:Disconnect() self.dead=true end;table.insert(self.items,c);return c end
@@ -83,10 +84,14 @@ return function(test:any,eq:any)
 			end
 			h.compositions=(h.compositions or 0)+1;return Raster.paint(...)
 		end}
-		local imagePixels={half=function(...) if select(4,...) then h.cooperativeDownsamples=(h.cooperativeDownsamples or 0)+1 else h.syncDownsamples=(h.syncDownsamples or 0)+1 end;return ImagePixels.half(...) end}
-		local modules:any={world={STUDS_PER_CELL=4,GROUND_Y=0,TOP_GUI_YAW=0},memory=memory,codec={base64Decode=function(key) return key end},inflate={raw=function(key,_bytes,checkpoint)
+		local imagePixels={half=function(...) if h.watchWork and coroutine.running()==testThread then error("resizing ran on the presentation thread") end;if select(4,...) then h.cooperativeDownsamples=(h.cooperativeDownsamples or 0)+1 else h.syncDownsamples=(h.syncDownsamples or 0)+1 end;return ImagePixels.half(...) end}
+		local modules:any={world={STUDS_PER_CELL=4,GROUND_Y=0,TOP_GUI_YAW=0},memory=memory,codec={base64Decode=function(key,checkpoint)
+			if h.watchWork and coroutine.running()==testThread then error("base64 ran on the presentation thread") end
+			if checkpoint then for i=1,8 do h.now+=(h.cpuStep or 0);checkpoint(i*4096) end end
+			return key end},inflate={raw=function(key,_bytes,checkpoint)
+			if h.watchWork and coroutine.running()==testThread then error("inflate ran on the presentation thread") end
 			if checkpoint and key=="original" and h.failOriginalWarm then error("synthetic restoration source failure") end
-			if checkpoint and h.yieldWarm then for _=1,3 do coroutine.yield() end end
+			if checkpoint and h.yieldWarm and coroutine.running()~=testThread then for _=1,3 do coroutine.yield() end end
 			if key=="original" then h.fullDecodes=(h.fullDecodes or 0)+1 end
 			if key=="bare" then h.bareDecodes=(h.bareDecodes or 0)+1 end
 			local source=chunks[key];local fresh=buffer.create(buffer.len(source));buffer.copy(fresh,0,source);return fresh
@@ -252,7 +257,7 @@ return function(test:any,eq:any)
 	end)
 	test("stale optional LOD modules fall back to the current full source without a warning loop",function()
 		local h=make(true);h.useMips=true;h.staleMips=true;h.headroom=600;assert(h.renderer.build("test",{}));local before=h.fullDecodes
-		h.step();h.step();eq(h.renderer.stats().ready,2);assert(h.fullDecodes>before);assert(h.renderer.stats().mipMisses>0)
+		for _=1,6 do h.step() end;eq(h.renderer.stats().ready,2);assert(h.fullDecodes>before);assert(h.renderer.stats().mipMisses>0)
 		local misses=h.renderer.stats().mipMisses;h.step();eq(h.renderer.stats().mipMisses,misses);eq(h.warnings,0);h.destroy()
 	end)
 	test("camera motion keeps fast town previews while full upgrades wait for settled coverage",function()
@@ -272,8 +277,8 @@ return function(test:any,eq:any)
 		local calls=h.recoveryCalls;h.destroy();h.step();eq(h.recoveryCalls,calls)
 	end)
 	test("cooperative full upgrades retain the preview during yields and cancel on map teardown",function()
-		local h=make(true);h.useMips=true;h.yieldWarm=true;assert(h.renderer.build("test",{}))
-		h.step();h.step();h.step();eq(h.renderer.stats().ready,2);eq(h.renderer.stats().warming,true)
+		local h=make(true);h.useMips=true;assert(h.renderer.build("test",{}))
+		h.step();h.step();h.yieldWarm=true;h.step();eq(h.renderer.stats().ready,2);eq(h.renderer.stats().warming,true)
 		local images=#h.images;h.step();eq(h.renderer.stats().ready,2);eq(#h.images,images)
 		h.destroy();for _=1,6 do h.step() end;eq(h.renderer.stats(),nil);eq(#h.images,images);eq(h.warnings,0)
 	end)
@@ -297,10 +302,12 @@ return function(test:any,eq:any)
 			else eq(h.renderer.stats(),nil) end
 		end
 	end)
-	test("a yielded damage source does not block unrelated cold town coverage",function()
+	test("cold town coverage shares the bounded worker with damage and keeps overview coverage until ready",function()
 		local h=make(3);assert(h.renderer.build("test",{}));h.step();eq(#h.images,2)
 		h.yieldWarm=true;h.renderer.setForestFates({{1,{kind="burnt"}}});h.step()
-		eq(h.renderer.stats().warmKind,"bare");eq(#h.images,3)
+		eq(h.renderer.stats().warmKind,"bare");eq(#h.images,2)
+		assert(h.images[1].last,"the core overview must remain during pending work")
+		for _=1,18 do h.step() end;assert(#h.images>=3)
 		local found=false;for _,o in h.instances do if o.Name=="City_test_0_0_2" and not o.dead then found=true end end
 		assert(found,"unrelated static chunk should load while the damage base yields");h.destroy();eq(h.warnings,0)
 	end)
@@ -429,4 +436,33 @@ return function(test:any,eq:any)
 		local h,part,label,old=pendingSwap();h.failNextWrite=true;h.uploads.step()
 		eq(part.dead,nil);eq(label.ImageContent,old);eq(old.dead,nil);h.destroy()
 	end)
+	test("cold source fallback, daylight refresh and zoom resizing never decode on the presentation thread",function()
+		local h=make(3);h.headroom=600;assert(h.renderer.build("test",{}));h.watchWork=true
+		for _=1,12 do h.step() end;eq(h.renderer.stats().ready,3);eq(h.warnings,0)
+		h.phase=0;for _=1,12 do h.step() end;eq(h.warnings,0)
+		h.headroom=250;for _=1,12 do h.step() end;eq(h.renderer.stats().ready,3);eq(h.warnings,0)
+		h.destroy()
+	end)
+	test("cold optional LOD hash/base64/inflate preparation yields in short slices without native partial images",function()
+		local h=make();h.useMips=true;h.headroom=200;assert(h.renderer.build("test",{}));h.watchWork=true;h.cpuStep=.0008
+		local before=h.fullDecodes;h.step();eq(h.renderer.stats().ready,0);eq(#h.images,1);eq(h.renderer.stats().warmKind,"lod")
+		for _=1,16 do h.step();if h.renderer.stats().ready==1 then break end end
+		eq(h.renderer.stats().ready,1);eq(h.fullDecodes,before);eq(h.warnings,0)
+		assert(h.renderer.stats().maxSliceMs<=3.3,"mocked per-checkpoint work should remain bounded")
+		h.destroy()
+	end)
+	test("stale LOD fallback is cooperative and a pending cold chunk never publishes after teardown",function()
+		local h=make();h.useMips=true;h.staleMips=true;assert(h.renderer.build("test",{}));h.watchWork=true;h.yieldWarm=true
+		h.step();h.step();eq(h.renderer.stats().ready,0);assert(h.renderer.stats().warming)
+		local before=h.fullDecodes;h.destroy();for _=1,12 do h.step() end
+		eq(h.fullDecodes,before);eq(#h.images,1);eq(h.warnings,0);eq(h.renderer.stats(),nil)
+	end)
+
+	test("preview-only memory downshifts finish without stranding the retiring image",function()
+		local h=make(3);h.useMips=true;h.headroom=700;assert(h.renderer.build("test",{}));h.watchWork=true
+		for _=1,8 do h.pan(.4);h.step() end;eq(h.renderer.stats().ready,3)
+		h.headroom=160;for _=1,16 do h.step() end
+		eq(h.renderer.stats().stride,4);eq(h.renderer.stats().ready,3);eq(h.warnings,0);h.destroy()
+	end)
+
 end
