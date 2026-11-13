@@ -100,9 +100,17 @@ function ImageMemory.pressureStats():any
 	for _,record in budget.records do local key=record.owner or record.kind;local item=owners[key]or{bytes=0,count=0};owners[key]=item;item.bytes+=record.bytes;item.count+=1 end
 	return {quality=ImageMemory.quality(),owners=owners,suppressed=budget.suppressed,epoch=budget.epoch,used=budget.used,detail=budget.detail,terrain=budget.terrain,terrainReserve=budget.terrainReserve,detailLimit=budget.detailLimit,ceiling=math.min(budget.ceiling,budget.knownCeiling or math.huge),recoveryPasses=recoveryPasses,recoveryReleased=recoveryReleased,
 		accessDisabled=accessFailure~=nil,
+		terrainSwap=budget.terrainSwap~=nil,terrainSwapBytes=if budget.terrainSwap then budget.terrainSwap.bytes else 0,
 		refusals=table.clone(budget.refusals),nativeRefusals=budget.nativeRefusals,lastRefusal=if budget.lastRefusal then table.clone(budget.lastRefusal) else nil}
 end
 function ImageMemory.terrainLimit():number return budget.detailLimit end
+function ImageMemory.canReplaceTerrain(size:Vector2,previous:any):boolean
+	return not accessFailure and budget:canReplaceTerrain(size.X,size.Y,previous)
+end
+function ImageMemory.replaceTerrain(size:Vector2,previous:any):EditableImage?
+	if accessFailure then return nil end
+	return budget:replaceTerrain(size.X,size.Y,previous)
+end
 function ImageMemory.recoverTerrain(required:number,replacing:number?):number
 	if accessFailure then return 0 end
 	local available=budget:detailHeadroom(replacing,"terrain")

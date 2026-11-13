@@ -60,7 +60,7 @@ return function(test:any,eq:any)
  end)
  test('actual client snapshot assignment clears missing crew state rather than retaining a stale reload',function()
   local source=fs.readFile('src/client/Rendering/UnitRenderer.luau');local a=assert(source:find('v.statusCode, v.sinceShot =',1,true));local b=assert(source:find('v.turretWant =',a,true));local v={kind='mortar',crew={}};local row={[9]=0,[15]=2,[19]={.4,3,1,10,0}}
-  local env=setmetatable({v=v,u=row,CrewMotion=M,VehicleRecoil=require("../src/shared/Presentation/VehicleRecoil"),kind="mortar",RifleFire=require("../src/shared/Presentation/RifleFire"),os={clock=function()return 20 end}},{__index=getfenv()});local apply=luau.load(source:sub(a,b-1),{environment=env});apply();eq(v.crew.packet[1],.4);row[19]=nil;apply();eq(v.crew.packet,nil)
+  local env=setmetatable({v=v,u=row,CrewMotion=M,CrewMuzzle=require("../src/shared/Presentation/CrewMuzzle"),VehicleRecoil=require("../src/shared/Presentation/VehicleRecoil"),kind="mortar",RifleFire=require("../src/shared/Presentation/RifleFire"),os={clock=function()return 20 end}},{__index=getfenv()});local apply=luau.load(source:sub(a,b-1),{environment=env});apply();eq(v.crew.packet[1],.4);row[19]=nil;apply();eq(v.crew.packet,nil)
  end)
 end
 

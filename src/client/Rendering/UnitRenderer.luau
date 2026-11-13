@@ -41,10 +41,12 @@ local DeathRenderer = require(script.Parent.DeathRenderer)
 
 local RifleFire=require(Shared.Presentation.RifleFire)
 local VehicleMuzzle=require(Shared.Presentation.VehicleMuzzle)
+local CrewMuzzle=require(Shared.Presentation.CrewMuzzle)
+local crewMuzzleConfig:any=nil
 local vehicleMuzzleConfig:any=nil
 local rifleConfig:any=nil
 local rifleBudget=RifleFire.newBudget()
--- Infantry and vehicle muzzle effects share one attempt budget and the existing particle pool.
+-- Infantry, crew and vehicle muzzles share one attempt budget and the existing particle pool.
 local function emitRifleParticle(p:any):boolean
 	if rifleBudget.particles<=0 then return false end
 	rifleBudget.particles-=1
@@ -99,6 +101,7 @@ export type View = {
 	vehicle: any?,
 	rifle: any?,
 	muzzle: any?,
+	crewMuzzle: any?,
 	tube: ManSprite?,
 	empty: boolean,
 	turretWant: number, -- the sim's turret angle (latest snapshot)
@@ -716,6 +719,10 @@ local function placeMen(v: View, pos: Vector3, dt: number)
 			setFigure(tube, at.pose, at.heading, at.x, at.y, pos.Y - World.GROUND_Y + SPRITE_Y - 0.02)
 		end
 	end
+	if v.crewMuzzle and crewMuzzleConfig then
+		if v.statusCode==4 or FogOverlay.hidden(pos.X/S,pos.Z/S)then CrewMuzzle.cancel(v.crewMuzzle)
+		else CrewMuzzle.step(v.crewMuzzle,crewMuzzleConfig,v.kind,sq,pos.X/S,pos.Z/S,SquadMen.MAN_CELLS,wall,FogOverlay.hidden,emitRifleParticle,rifleBudget)end
+	end
 end
 
 -- seconds a mortar takes to set up and to pack (rules mortar.setupSec, mortar.packSec)
@@ -729,6 +736,9 @@ function UnitRenderer.configure(cfg: { mortarSetupSec: number, mortarPackSec: nu
 	local vehicleSource=data and data:FindFirstChild("VehicleMuzzleFx")
 	vehicleMuzzleConfig=nil
 	if vehicleSource then local ok,config=pcall(require,vehicleSource);if ok then vehicleMuzzleConfig=config end end
+	local crewSource=data and data:FindFirstChild("CrewMuzzleFx")
+	crewMuzzleConfig=nil
+	if crewSource then local ok,config=pcall(require,crewSource);if ok then crewMuzzleConfig=config end end
 end
 
 local function lerpAngle(a: number, b: number, t: number): number
@@ -1298,6 +1308,8 @@ function UnitRenderer.apply(tick: number, units: { any }, deaths: { any }?,war:a
 		v.statusCode, v.sinceShot = u[9] or 0, u[15] or 9
 		if v.kind=="at" or v.kind=="mortar" then
 			v.crew=v.crew or {};CrewMotion.receive(v.crew,u[19],os.clock())
+			v.crewMuzzle=v.crewMuzzle or CrewMuzzle.new(v.id)
+			CrewMuzzle.receive(v.crewMuzzle,u[15],v.flags,v.statusCode,v.aimX,v.aimY,war,os.clock(),v.crew.army)
 		end
 		if VehicleRecoil.supports(kind)then
 			v.vehicle=v.vehicle or VehicleRecoil.new();VehicleRecoil.receive(v.vehicle,u[20],war,os.clock())

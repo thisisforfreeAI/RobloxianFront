@@ -29,6 +29,8 @@ function ImageBudget.new(factory: (number, number) -> any, options: any?)
 		local record = self.records[image]
 		if not record then return end
 		self.records[image] = nil
+		local swap=self.terrainSwap
+		if swap and (swap.previous==image or swap.image==image) then self.terrainSwap=nil end
 		image:Destroy() -- EditableImage.Destroy immediately returns its native image storage.
 		self.used -= record.bytes
 		if record.kind == "detail" or record.kind == "terrain" then self.detail -= record.bytes end
@@ -93,6 +95,33 @@ function ImageBudget.new(factory: (number, number) -> any, options: any?)
 			self:reclaim(math.min(need,remaining),20,20)
 		end
 		return self:detailHeadroom(credit,"terrain")
+	end
+	-- A terrain upgrade can fit after its old image is released but fail the temporary overlap.
+	-- Allow ONE tracked replacement to borrow core reserve, while the full native peak still fits.
+	-- Both images stay counted; releasing either ends the credit. No timers or extra native probes.
+	function self:canReplaceTerrain(w:number,h:number,previous:any):boolean
+		local old=self.records[previous]
+		if not old or old.kind~="terrain" or self.terrainSwap or self.blockedEpoch==self.epoch then return false end
+		if w<=0 or h<=0 or w>1024 or h>1024 or w%1~=0 or h%1~=0 then return false end
+		local bytes=w*h*4;local ceiling=math.min(self.ceiling,self.knownCeiling or math.huge)
+		return self.detail+bytes-old.bytes<=self.detailLimit
+			and self.used+bytes-old.bytes+self.reserve<=ceiling
+			and self.used+bytes<=ceiling
+	end
+	function self:replaceTerrain(w:number,h:number,previous:any):any
+		if not self:canReplaceTerrain(w,h,previous) then return nil end
+		local ok,image=pcall(factory,w,h)
+		if not ok or not image then
+			self.nativeRefusals+=1;self.blockedEpoch=self.epoch
+			self.knownCeiling=math.min(self.knownCeiling or math.huge,self.used)
+			self.refusals.terrain+=1;self.lastRefusal={kind="terrain",width=w,height=h,used=self.used,detail=self.detail}
+			return nil
+		end
+		local bytes=w*h*4;local old=self.records[previous]
+		self.records[image]={bytes=bytes,kind="terrain",owner=old.owner,width=w,height=h}
+		self.used+=bytes;self.detail+=bytes;self.terrain+=bytes
+		self.terrainSwap={previous=previous,image=image,bytes=bytes}
+		return image
 	end
 	function self:create(w: number, h: number, kind: string?,owner:string?): any
 		kind = kind or "core"

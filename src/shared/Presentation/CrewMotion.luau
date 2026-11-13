@@ -2,7 +2,7 @@
 -- Cosmetic crew action samples. Simulation reload/setup/packing rules stay authoritative.
 local Motion={}
 local PHASE={[0]='travel',[1]='setting',[2]='packing',[3]='set'}
-function Motion.snapshot(e:any,time:number,running:boolean,setup:number,pack:number):any
+function Motion.snapshot(e:any,time:number,running:boolean,setup:number,pack:number,army:string?):any
  if not e.alive or e.kind~='at' and e.kind~='mortar' then return nil end
  local phase,progress=0,0
  if e.kind=='mortar' then
@@ -10,15 +10,16 @@ function Motion.snapshot(e:any,time:number,running:boolean,setup:number,pack:num
   elseif e.path then phase=0
   else progress=math.clamp((e.still or 0)/math.max(1e-6,setup),0,1);phase=if progress>=1 then 3 else 1 end
  end
- return {math.max(0,e.shotTimer or 0),phase,progress,time,if running then 1 else 0}
+ return {math.max(0,e.shotTimer or 0),phase,progress,time,if running then 1 else 0,if e.kind=='at' then army else nil}
 end
 function Motion.receive(state:any,packet:any,clock:number)
  if type(packet)~='table' or type(packet[1])~='number' or PHASE[packet[2]]==nil or type(packet[3])~='number' or type(packet[4])~='number' then
-  state.packet=nil;state.war=nil;state.running=nil;return
+  state.packet=nil;state.war=nil;state.running=nil;state.army='coalition';return
  end
  local running=packet[5]==1
  if state.war~=packet[4] or state.running~=running then state.war=packet[4];state.running=running;state.received=clock end
  state.packet=packet
+ state.army=if packet[6]=='republic' then 'republic' else 'coalition'
 end
 function Motion.sample(state:any,clock:number,since:number,setup:number,pack:number):(number?,string?,number?,number)
  local p=state and state.packet;if not p then return nil,nil,nil,since end

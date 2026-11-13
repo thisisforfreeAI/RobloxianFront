@@ -56,9 +56,18 @@ return function(test:any,eq:any)
 			if h.badBare and string.find(name,"_Bare",1,true) then return nil end;if string.find(name,"_BareLight",1,true) then h.bareLights+=1 end;return assetsMap[name]
 		end}
 		local dataMap={Forest_test=module(metadata),pixels=module({deflate="sprites"})};local data={FindFirstChild=function(_,name) return dataMap[name] end}
-		local memory={};function memory.create(size,kind) if h.refuse and kind~="core" then return nil end
+		local memory={};local function nativeImage(size,kind)
 			local image:any={size=size,kind=kind};function image:WritePixelsBuffer(position,extent,px) assert(not self.dead);if h.failNextWrite then h.failNextWrite=false;error("synthetic replacement failure") end;self.last=buffer.tostring(px);self.writes=(self.writes or 0)+1 end
+			function image:Destroy() assert(not self.dead);self.dead=true;h.releases+=1 end
 			table.insert(h.images,image);return image
+		end
+		function h.enableBudget(options)
+			h.budget=require("../src/shared/Presentation/ImageBudget").new(function(w,height)return nativeImage(vec(w,height),nil)end,options)
+		end
+		function memory.create(size,kind)
+			if h.refuse and kind~="core" then return nil end
+			if h.budget then local image=h.budget:create(size.X,size.Y,kind);if image then image.kind=kind end;return image end
+			return nativeImage(size,kind)
 		end
 		h.uploads=require("../src/shared/Presentation/ImageUploads").new(function(image,x,y,w,h,px) image:WritePixelsBuffer(vec(x,y),vec(w,h),px) end,function() return h.now end)
 		function memory.upload(image,pos,size,px,options)
@@ -67,19 +76,24 @@ return function(test:any,eq:any)
 			image:WritePixelsBuffer(pos,size,px);if options and options.done then options.done(true) end;return true
 		end
 		function memory.cancelUploads(image) h.uploads.cancel(image) end
-		function memory.release(image) if image then h.uploads.cancel(image);assert(not image.dead);image.dead=true;h.releases+=1 end end
+		function memory.release(image) if image then h.uploads.cancel(image);if h.budget then h.budget:release(image) else image:Destroy() end end end
 		function memory.register(priority,fn) h.reclaim=fn;h.reclaimPriority=priority;return function() h.unregistered=true end end
-		function memory.stats() return 0 end;function memory.canDetail() return true end
-		function memory.detailHeadroom() return h.headroom or math.huge end
-		function memory.terrainLimit() return 2000 end
+		function memory.stats() return if h.budget then h.budget.used else 0 end;function memory.canDetail(size) return if h.budget then h.budget:prepareDetail(size.X*size.Y*4,"terrain")else true end
+		function memory.detailHeadroom(held) return if h.budget then h.budget:detailHeadroom(held,"terrain")else h.headroom or math.huge end
+		function memory.terrainLimit() return if h.budget then h.budget.detailLimit else 2000 end
+		function memory.canReplaceTerrain(size,previous)return h.budget and h.budget:canReplaceTerrain(size.X,size.Y,previous)or false end
+		function memory.replaceTerrain(size,previous)
+			local image=h.budget and h.budget:replaceTerrain(size.X,size.Y,previous);if image then image.kind="terrain"end;return image
+		end
 		function memory.recoverTerrain(required,held)
+			if h.budget then return h.budget:recoverTerrain(required,held)end
 			if h.recoveryEnabled then h.recoveryCalls=(h.recoveryCalls or 0)+1;h.recoveryRequired=required;h.headroom=2000 end
 			return h.headroom or math.huge
 		end
 		local shared:any={Config={World="world"},Maps={MapCodec="codec"},Utilities={Inflate="inflate"},Simulation={ForestMap="forest"},Presentation={ImagePixels="pixels",TownDetail="detail",TownPatch="patch",TownLods="lods",ForestRaster="raster",GroundScorchPixels="scorch"},FindFirstChild=function() return data end}
 		local raster={overview=function(...) if select(6,...) then h.cooperativeOverviews=(h.cooperativeOverviews or 0)+1 end;return Raster.overview(...) end,paint=function(...)
 			if select(8,...) then
-				if h.failPaint then error("synthetic private raster failure") end
+				if h.failPaint or h.failPaintChunk==select(3,...) then error("synthetic private raster failure") end
 				if h.yieldPaint then for _=1,3 do coroutine.yield() end end
 			end
 			h.compositions=(h.compositions or 0)+1;return Raster.paint(...)
@@ -106,6 +120,7 @@ return function(test:any,eq:any)
 		h.renderer=luau.load(fs.readFile("src/client/Rendering/TownRenderer.luau"),{environment=env})()
 		function h.far() env.workspace.CurrentCamera.CFrame.Position.Y=5000 end
 		function h.pan(x) env.workspace.CurrentCamera.CFrame.Position.X=x*4 end
+		h.camera=env.workspace.CurrentCamera
 		function h.step(dt:any?) local elapsed=dt or .2;h.now+=elapsed;h.heartbeat:fire(elapsed) end
 		function h.destroy() for _,o in h.instances do if o.Name=="Towns" then o:Destroy();break end end end
 		return h
@@ -418,8 +433,9 @@ return function(test:any,eq:any)
 		local count,decoded=#h.images,h.fullDecodes;h.destroy();for _=1,12 do h.step() end
 		eq(h.renderer.stats(),nil);eq(#h.images,count);eq(h.fullDecodes,decoded);eq(h.warnings,0)
 	end)
-	local function pendingSwap()
-		local h=make();h.useMips=true;h.async=true;assert(h.renderer.build("test",{}));h.step();h.uploads.step();h.uploads.step()
+	local function pendingSwap(bounded:boolean?)
+		local h=make();if bounded then h.enableBudget({ceiling=10000,detailLimit=14*14*4,reserve=0})end
+		h.useMips=true;h.async=true;assert(h.renderer.build("test",{}));h.step();h.uploads.step();h.uploads.step()
 		local part,label
 		for _,o in h.instances do if o.Name=="City_test_0_0" and not o.dead then part=o end end
 		for _,o in h.instances do if o.ClassName=="ImageLabel" and o.Parent and o.Parent.Parent==part then label=o end end
@@ -435,6 +451,18 @@ return function(test:any,eq:any)
 	test("failed town replacement rolls back to its existing preview",function()
 		local h,part,label,old=pendingSwap();h.failNextWrite=true;h.uploads.step()
 		eq(part.dead,nil);eq(label.ImageContent,old);eq(old.dead,nil);h.destroy()
+	end)
+	test("a budget-credit town replacement retains the old drawing through upload failure then recovers",function()
+		local h,part,label,old=pendingSwap(true);assert(h.budget.terrainSwap);assert(h.budget.detail>h.budget.detailLimit)
+		eq(label.ImageContent,old);eq(h.renderer.stats(true).chunks[1].state,"replacement")
+		h.failNextWrite=true;h.uploads.step();eq(label.ImageContent,old);eq(old.dead,nil);eq(part.dead,nil);eq(h.budget.terrainSwap,nil)
+		for _=1,12 do h.step();if h.budget.terrainSwap then break end end
+		assert(h.budget.terrainSwap);h.uploads.step();eq(old.dead,true);eq(part.dead,nil);eq(h.budget.detail,h.budget.detailLimit)
+		eq(h.renderer.stats().atTarget,1);eq(h.renderer.stats().chunks,nil);h.destroy();eq(h.budget.used,0)
+	end)
+	test("teardown during a budget-credit terrain upload cancels the replacement and both counted images",function()
+		local h,part,label,old=pendingSwap(true);assert(h.budget.terrainSwap);h.destroy();h.uploads.step()
+		eq(part.dead,true);eq(old.dead,true);eq(h.budget.terrainSwap,nil);eq(h.budget.used,0);eq(h.uploads.count,0)
 	end)
 	test("cold source fallback, daylight refresh and zoom resizing never decode on the presentation thread",function()
 		local h=make(3);h.headroom=600;assert(h.renderer.build("test",{}));h.watchWork=true
@@ -463,6 +491,38 @@ return function(test:any,eq:any)
 		for _=1,8 do h.pan(.4);h.step() end;eq(h.renderer.stats().ready,3)
 		h.headroom=160;for _=1,16 do h.step() end
 		eq(h.renderer.stats().stride,4);eq(h.renderer.stats().ready,3);eq(h.warnings,0);h.destroy()
+	end)
+
+	test("one failed damaged chunk cannot permanently prevent healthy visible previews from sharpening",function()
+		local h=make(true);h.useMips=true;assert(h.renderer.build("test",{}));h.failPaintChunk=0
+		h.renderer.setForestFates({{1,{kind="burnt"}}})
+		for _=1,30 do h.step()end
+		local sharp=false;for _,im in h.images do if im.kind=="terrain"and not im.dead and im.size.X==14 then sharp=true end end
+		assert(sharp,"a failed neighbour must not hold every healthy preview at half resolution")
+		h.destroy();eq(h.warnings,1)
+	end)
+	test("aggregate town quality budgets the temporary old/new overlap and recovers full detail in a smaller view",function()
+		local h=make(3);h.useMips=true;h.enableBudget({ceiling=10000,detailLimit=3*14*14*4,reserve=0});assert(h.renderer.build("test",{}))
+		for i=1,6 do h.pan(.5+i*.1);h.step()end
+		for _=1,30 do h.step();h.uploads.step()end
+		eq(h.renderer.stats().ready,3);eq(h.renderer.stats().stride,1)
+		for _,im in h.images do if im.kind=="terrain"and not im.dead then eq(im.size.X,14,"the last replacement must complete without exceeding native capacity")end end
+		h.camera.CFrame.Position.Y=1;h.pan(.4)
+		for _=1,30 do h.step();h.uploads.step()end
+		eq(h.renderer.stats().ready,1);eq(h.renderer.stats().stride,1)
+		for _,o in h.instances do if o.ClassName=="ImageLabel"and o.Parent and o.Parent.Parent and o.Parent.Parent.Name~="TownOverview"and not o.dead then eq(o.Parent.CanvasSize.X,14)end end
+		eq(h.budget.nativeRefusals,0);h.destroy();eq(h.budget.used,0);eq(h.warnings,0)
+	end)
+	test("a completed upgrade after a pressure downshift cannot hold the worker and strand a newly visible damaged chunk",function()
+		local h=make(true);h.useMips=true;h.camera.CFrame.Position.Y=1;h.pan(1.5);assert(h.renderer.build("test",{}));h.step()
+		h.yieldWarm=true
+		for _=1,30 do h.step();if h.renderer.stats().warmKind=="restore" then break end end
+		eq(h.renderer.stats().warmKind,"restore");h.headroom=200
+		for _=1,12 do h.step()end
+		h.headroom=400;h.pan(.99);h.renderer.setForestFates({{1,{kind="burnt"}}})
+		for _=1,40 do h.step()end
+		eq(h.renderer.stats().selected,2);eq(h.renderer.stats().ready,2,"completed work for the shown neighbour must not block missing damage coverage")
+		eq(h.renderer.sample(.5,.5)[2],0);h.destroy();eq(h.warnings,0)
 	end)
 
 end

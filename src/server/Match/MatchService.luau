@@ -688,7 +688,7 @@ local function viewFor(side: number): ({ any }, { any }, { number }?)
 				local flags, aimX, aimY, since = unitLook(e)
 				local row = { e.id, e.kind, e.side, e.x, e.y, e.heading, e.hp, e.maxHp, unitStatus(e), e.rank or 0, if e.cargo then #e.cargo else 0, flags, aimX, aimY, since, e.turret or e.heading, unitStage(e),
 					if e.hitAt then math.clamp(sim.time-e.hitAt,0,9) else 9,
-					CrewMotion.snapshot(e,sim.time,not sim.winner and (not sim.drop or sim.drop.phase=="done"),rules.data["mortar.setupSec"],rules.data["mortar.packSec"]) } -- field 18: civilian combat age; optional 19: crew actions
+					CrewMotion.snapshot(e,sim.time,not sim.winner and (not sim.drop or sim.drop.phase=="done"),rules.data["mortar.setupSec"],rules.data["mortar.packSec"],if e.kind=="at"and sim.armyOf then sim.armyOf(e.side)else nil) } -- field 18: civilian combat age; optional 19: crew actions/public AT army
 				local recoil,observed=VehicleRecoil.snapshot(e,previousVehicle[e.id],sim)
 				if recoil then row[19]=row[19]or false;row[20]=recoil;nextVehicle[e.id]=observed end
 				table.insert(units,row)

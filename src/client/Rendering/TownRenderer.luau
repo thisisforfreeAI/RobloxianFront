@@ -44,7 +44,7 @@ local coverSampler: any = nil
 local groundApply: any = nil
 local appearanceRevision=0
 local diagnostics:any=nil
-function TownRenderer.stats():any return if diagnostics then diagnostics() else nil end
+function TownRenderer.stats(detailed:boolean?):any return if diagnostics then diagnostics(detailed) else nil end
 function TownRenderer.revision():number return appearanceRevision end
 function TownRenderer.getForestMap():any return forestMap end
 function TownRenderer.setForestFates(rows:{any},reset:boolean?) if forestApply then forestApply(rows,reset) end end
@@ -91,8 +91,10 @@ local function imagePart(name: string, cx: number, cy: number, cw: number, ch: n
 	return part, label
 end
 
-local function newImage(size: Vector2, kind: string?): any
-	return ImageMemory.create(size, kind or "terrain")
+local function newImage(size: Vector2, kind: string?,previous:any?): any
+	local image=ImageMemory.create(size, kind or "terrain")
+	if not image and previous and ImageMemory.replaceTerrain then image=ImageMemory.replaceTerrain(size,previous) end
+	return image
 end
 
 type Chunk = { cx: number, cy: number, cw: number, ch: number, name: string, mod: ModuleScript, part: Part?, image: any, packed: buffer?, px: buffer?, w: number, h: number, iw: number, ih: number, distance: number, used: number, frame: number, patch: buffer?, missed: number? }
@@ -582,13 +584,20 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 		return preparedPaint~=nil and preparedPaint.chunk==c and preparedPaint.frame==frame
 	end
 	local clock = 0
-	local function stats()
+	local function stats(detailed:boolean?)
 		local shown,pending,ready,sourceBytes,previewBytes,prefetchBytes,nativeBytes,preparedBytes=0,0,0,0,0,0,pooledBytes,0
+		local atTarget=0;local rows=if detailed then {}else nil
 		for _,c in chunks do
+			local old=(c :: any).retiring
+			local drawn=if old then old.part else c.part
+			local iw,ih=if old then old.iw else c.iw,if old then old.ih else c.ih
 			if c.part then shown+=1 elseif c.image then pending+=1 end
 			if c.part and wantedChunks[c] then ready+=1 end
+			if drawn and wantedChunks[c] and targetStride>0 and iw>=math.ceil(c.cw*TILE_PX/targetStride) then atTarget+=1 end
+			if rows and wantedChunks[c] then table.insert(rows,{name=c.name,shown=drawn~=nil,width=iw,height=ih,dirty=(c :: any).forestDirty==true,frame=c.frame,
+				state=if old then "replacement"elseif (c :: any).uploading then "upload"elseif warming and warming.chunk==c then "preparing"elseif drawn then "shown"else "queued"})end
 			if c.image then nativeBytes+=c.iw*c.ih*4 end
-			local old=(c :: any).retiring;if old then nativeBytes+=old.iw*old.ih*4;if old.preview then previewBytes+=buffer.len(old.preview) end end
+			if old then nativeBytes+=old.iw*old.ih*4;if old.preview then previewBytes+=buffer.len(old.preview) end end
 			if c.px then sourceBytes+=buffer.len(c.px) end
 			if (c :: any).warmPixels then sourceBytes+=buffer.len((c :: any).warmPixels.pixels) end
 			if (c :: any).preview then previewBytes+=buffer.len((c :: any).preview) end
@@ -597,7 +606,7 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 			if (c :: any).preparedOverview then preparedBytes+=buffer.len((c :: any).preparedOverview.pixels) end
 		end
 		if preparedPaint then sourceBytes+=buffer.len(preparedPaint.pixels);preparedBytes+=buffer.len(preparedPaint.small);if preparedPaint.mip then preparedBytes+=buffer.len(preparedPaint.mip.pixels) end end
-		return {visible=visibleCount,selected=wantedCount,ready=ready,shown=shown,pending=pending,stride=targetStride,nativeBytes=nativeBytes,sourceBytes=sourceBytes,previewBytes=previewBytes,prefetchBytes=prefetchBytes,mipHits=mipHits,mipMisses=mipMisses,warming=warming~=nil,warmKind=if warming then warming.phase or warming.kind else nil,warmProduced=if warming then warming.produced else 0,paintReady=preparedPaint~=nil,preparedBytes=preparedBytes,lastSliceMs=lastSlice*1000,maxSliceMs=maxSlice*1000}
+		return {visible=visibleCount,selected=wantedCount,ready=ready,atTarget=atTarget,shown=shown,pending=pending,stride=targetStride,nativeBytes=nativeBytes,sourceBytes=sourceBytes,previewBytes=previewBytes,prefetchBytes=prefetchBytes,mipHits=mipHits,mipMisses=mipMisses,warming=warming~=nil,warmKind=if warming then warming.phase or warming.kind else nil,warmChunk=if warming then warming.chunk.name else nil,warmProduced=if warming then warming.produced else 0,paintReady=preparedPaint~=nil,paintChunk=if preparedPaint then preparedPaint.chunk.name else nil,chunks=rows,preparedBytes=preparedBytes,lastSliceMs=lastSlice*1000,maxSliceMs=maxSlice*1000}
 	end
 	diagnostics=stats
 	local function sizeKey(w: number, h: number): string
@@ -679,14 +688,14 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 			end
 		end})
 	end
-	local function takeImage(w: number, h: number): any
+	local function takeImage(w: number, h: number,previous:any?): any
 		local list = pool[sizeKey(w, h)]
 		if list and #list > 0 then
 			pooled -= 1
 			pooledBytes -= w*h*4
 			return table.remove(list)
 		end
-		local image = newImage(Vector2.new(w, h))
+		local image = newImage(Vector2.new(w, h),nil,previous)
 		if not image and pooled > 0 then
 			-- spare images of another size: give them back and ask again
 			for _, l in pool do
@@ -697,7 +706,7 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 			end
 			pooled = 0
 			pooledBytes = 0
-			image = newImage(Vector2.new(w, h))
+			image = newImage(Vector2.new(w, h),nil,previous)
 		end
 		return image
 	end
@@ -731,12 +740,13 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 		-- full source and reversible patch alive until it becomes a shown chunk.
 		local source, oldPatch, oldFrame = c.px, c.patch, c.frame
 		local iw, ih = math.ceil(c.w / stride), math.ceil(c.h / stride)
-		local image = takeImage(iw, ih)
+		local old=(c :: any).retiring
+		local image = takeImage(iw, ih,if old then old.image else nil)
 		while not image and stride < 4 do
 			if ready then ready=pixelsAt(c,stride*2) end
 			stride *= 2
 			iw, ih = math.ceil(c.w / stride), math.ceil(c.h / stride)
-			image = takeImage(iw, ih)
+			image = takeImage(iw, ih,if old then old.image else nil)
 		end
 		if not image then rollback(c);return false end
 		c.px, c.patch, c.frame = source, oldPatch, oldFrame
@@ -935,11 +945,11 @@ function TownRenderer.build(mapId: string, parent: Instance): boolean
 				if targetW < c.iw then
 					if not prepareMip(c,stride) then continue end
 					transition=pixelsAt(c,stride)
-					if ImageMemory.canDetail(Vector2.new(targetW,targetH)) then retire(c)
+					if ImageMemory.canDetail(Vector2.new(targetW,targetH)) or ImageMemory.canReplaceTerrain and ImageMemory.canReplaceTerrain(Vector2.new(targetW,targetH),c.image) then retire(c)
 					elseif c.part and not (c :: any).overviewShown then coverOverview(c,false);continue
 					else unload(c);drainPool() end
 				elseif targetW>c.iw and allReady and now-steadySince>=.35 and now-lastUpgrade>=.35
-					and ImageMemory.canDetail(Vector2.new(targetW,targetH)) then
+					and (ImageMemory.canDetail(Vector2.new(targetW,targetH)) or ImageMemory.canReplaceTerrain and ImageMemory.canReplaceTerrain(Vector2.new(targetW,targetH),c.image)) then
 					if not c.px then
 						if not preparePaint(c,frame) then continue end
 						local ok,px,w,h,painted,patch=pcall(decode,c,frame)
