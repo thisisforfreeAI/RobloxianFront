@@ -70,7 +70,7 @@ return function(test:any,eq:any)
  end)
  test('actual client reaction receiver drops hidden sources, duplicate snapshots and hidden squads',function()
   local src=fs.readFile('src/client/Rendering/UnitRenderer.luau');local a=assert(src:find('function UnitRenderer.react(',1,true));local b=assert(src:find('function UnitRenderer.reactionStats(',a,true));local sq=squad(1,5,5);local reaction=R.new(SM.hash);local hidden=true
-  local env=setmetatable({UnitRenderer={},reactions=reaction,reactionTick=0,reactionWidth=100,reactionHeight=100,BlastEvents=E,S=4,FogOverlay={hidden=function()return hidden end},views={[1]={squad=sq,to=rb.Vector3.new(20,0,20)}},os={clock=function()return 0 end}},{__index=getfenv()})
+  local env=setmetatable({UnitRenderer={},DeathRenderer={impacts=function()end},reactions=reaction,reactionTick=0,reactionWidth=100,reactionHeight=100,BlastEvents=E,S=4,FogOverlay={hidden=function()return hidden end},views={[1]={squad=sq,to=rb.Vector3.new(20,0,20)}},os={clock=function()return 0 end}},{__index=getfenv()})
   luau.load(src:sub(a,b-1),{environment=env})();env.UnitRenderer.react(1,{{1,5,5,4,10}},{10,0});eq(sq.men[1].flatUntil,0);hidden=false;env.UnitRenderer.react(2,{{2,5,5,4,10}},{10,0});assert(sq.men[1].flatUntil>10);local untilTime=sq.men[1].flatUntil
   env.UnitRenderer.react(2,{{3,5,5,4,11}},{11,0});eq(sq.men[1].flatUntil,untilTime)
   sq.men[1].flatUntil=0;env.views[1].statusCode=4;env.UnitRenderer.react(3,{{4,5,5,4,12}},{12,0});eq(sq.men[1].flatUntil,0)

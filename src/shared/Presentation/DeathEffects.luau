@@ -6,12 +6,15 @@
 -- APPROX: 0.05s physics slices and continuous transforms replace the original particle stepping;
 -- terrain-neutral dust, no extra thrown ground clods or smoke trails on hot blast fragments yet.
 local DeathEffects = {}
+local Tracer=if script then require(script.Parent.TracerFlight)else require('./TracerFlight')
+local Ballistic=if script then require(script.Parent.BallisticFlight)else require('./BallisticFlight')
 local ORDER = { "blast", "cook", "toss", "brew", "quiet" }
 local CLASSES = { tank = "tank", ifv = "ifv", artillery = "gun", rocket = "launcher" }
+local function unhidden():boolean return false end
 
 function DeathEffects.new(config: any, random: (() -> number)?)
 	local rng = random or math.random
-	local self: any = { time = 0, particles = {}, emitters = {}, later = {}, long = {}, config = config, maxParticles = 512 }
+	local self: any = { time = 0, particles = {}, emitters = {}, later = {}, long = {}, config = config, maxParticles = 512,tracerCount=0,ballisticCount=0,flightBudget={remaining=0} }
 	local D, V, C, N, M = config.death, config.death.variants, config.colors, config.sparks, config.motion
 	local function range(a: number, b: number): number return a + rng() * (b - a) end
 	local function pick(r: { number }): number return range(r[1], r[2]) end
@@ -64,6 +67,24 @@ function DeathEffects.new(config: any, random: (() -> number)?)
 	-- All world fire and death particles consume the same bounded pool and atlas.
 	function self:request(kind:string,p:any,tag:any?):boolean
 		if #self.particles>=self.maxParticles then return false end
+		if kind=="ballistic"then
+			if self.ballisticCount>=Ballistic.MAX then return false end
+			local flight=Ballistic.plan(p);if not flight or #self.particles+Ballistic.slots(flight)>self.maxParticles then return false end
+			flight.tag=tag
+			for _,role in {"body","shadow","flame"}do
+				if role=="flame"and flight.profile.trail<=0 then continue end
+				local part=Ballistic.particle(flight,role,p.now);self:spawn(part);part.worldTag=tag;part.x0=flight.x;part.y0=flight.y;Ballistic.apply(part,p.now)
+			end
+			self.ballisticCount+=1;return true
+		end
+		if kind=="tracer"then
+			if #self.particles>self.maxParticles-2 or self.tracerCount>=Tracer.MAX then return false end
+			local flight=Tracer.plan(p);if not flight then return false end
+			for _,head in {true,false}do
+				local part=Tracer.particle(flight,head,p.now);self:spawn(part);part.worldTag=tag;part.x0=flight.x;part.y0=flight.y;Tracer.apply(part,p.now)
+			end
+			self.tracerCount+=1;return true
+		end
 		local before=#self.particles
 		if kind=="spawn" then self:spawn(table.clone(p))
 		elseif kind=="puff" then
@@ -78,8 +99,16 @@ function DeathEffects.new(config: any, random: (() -> number)?)
 	end
 	function self:clearTag(tag:any)
 		if tag==nil then return end
-		local keep={};for _,p in self.particles do if p.worldTag~=tag then table.insert(keep,p) end end;self.particles=keep
+		local keep={};for _,p in self.particles do if p.worldTag~=tag then table.insert(keep,p)elseif p.tracerHead then self.tracerCount-=1 elseif p.ballisticBody then self.ballisticCount-=1 end end;self.particles=keep
 	end
+	function self:clearTracers()
+		local keep={};for _,p in self.particles do if not p.tracer then table.insert(keep,p)end end;self.particles=keep;self.tracerCount=0
+	end
+	function self:clearFlights()
+		local keep={};for _,p in self.particles do if not p.tracer and not p.ballistic then table.insert(keep,p)end end
+		self.particles=keep;self.tracerCount=0;self.ballisticCount=0
+	end
+	local function flightParticle(part:any,tag:any):boolean return self:request("spawn",part,tag)end
 	function self:blast(x: number, y: number, spec: any)
 		local B, F, n = config.blast, config.look.flash, spec.blast
 		self:spawn({ tex = "disc", x = x, y = y, h = 0.1, size = n * F.share, life = F.sec, color = C.fire, a0 = 0.6, a1 = 0 })
@@ -228,7 +257,7 @@ function DeathEffects.new(config: any, random: (() -> number)?)
 		end
 		return toss
 	end
-	function self:step(dt: number)
+	function self:step(dt: number,tracerTime:number?,hidden:((number,number)->boolean)?,shadowShare:number?)
 		-- Advance in bounded slices so a slow frame cannot skip the cook finale or delayed ignition.
 		while dt > 1e-6 do
 			local delta = math.min(dt, 0.05); dt -= delta; self.time += delta
@@ -242,6 +271,14 @@ function DeathEffects.new(config: any, random: (() -> number)?)
 			end
 			local keep = {}
 			for _, p in self.particles do
+				if p.ballistic then
+					if Ballistic.apply(p,tracerTime or p.ballistic.at+p.age+delta,shadowShare)then table.insert(keep,p)elseif p.ballisticBody then self.ballisticCount-=1 end
+					continue
+				end
+				if p.tracer then
+					if Tracer.apply(p,tracerTime or p.tracer.at+p.age+delta)then table.insert(keep,p)elseif p.tracerHead then self.tracerCount-=1 end
+					continue
+				end
 				p.age += delta
 				if p.age >= p.life then continue end
 				p.x += p.vx * delta; p.y += p.vy * delta; p.h = math.max(0, p.h + p.vh * delta)
@@ -257,6 +294,12 @@ function DeathEffects.new(config: any, random: (() -> number)?)
 				table.insert(keep, p)
 			end
 			self.particles = keep
+		end
+		-- One bounded trail pass after physics: new puffs are not aged through the whole old frame.
+		self.flightBudget.remaining=Ballistic.TRAIL_ATTEMPTS
+		local count=#self.particles
+		for i=1,count do local p=self.particles[i]
+			if p.ballisticBody then Ballistic.trails(p.ballistic,tracerTime or p.ballistic.at+p.age,hidden or unhidden,flightParticle,self.flightBudget,rng)end
 		end
 	end
 	return self

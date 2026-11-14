@@ -52,6 +52,10 @@ local function emitRifleParticle(p:any):boolean
 	rifleBudget.particles-=1
 	return DeathRenderer.request("spawn",p,rifleBudget)
 end
+local function emitVehicleTracer(event:any)
+	if event.kind=="tank"or event.kind=="ifv"then DeathRenderer.vehicleTracer(event,rifleBudget,rifleBudget)
+	else DeathRenderer.ballistic(event,rifleBudget,rifleBudget)end
+end
 
 local UnitRenderer = {}
 
@@ -623,7 +627,7 @@ local function place(v: View, pos: Vector3, yaw: number, dt: number)
 		if v.muzzle and vehicleMuzzleConfig then
 			local muzzleHeading=if v.kind=="artillery"or v.kind=="rocket"then hullH else turretH
 			VehicleMuzzle.place(v.muzzle,pos.X/S,pos.Z/S,tpos.X/S,tpos.Z/S,muzzleHeading,visualPos.X/S,visualPos.Z/S)
-			VehicleMuzzle.step(v.muzzle,v.vehicle,vehicleMuzzleConfig,v.kind,VehicleRecoil.time(v.vehicle,os.clock()),FogOverlay.hidden,emitRifleParticle,rifleBudget,nil,FogOverlay.water)
+			VehicleMuzzle.step(v.muzzle,v.vehicle,vehicleMuzzleConfig,v.kind,VehicleRecoil.time(v.vehicle,os.clock()),FogOverlay.hidden,emitRifleParticle,rifleBudget,nil,FogOverlay.water,emitVehicleTracer)
 		end
 		local soot = sootOf(v)
 		if soot > 0 and not v.sooted then
@@ -722,7 +726,7 @@ local function placeMen(v: View, pos: Vector3, dt: number)
 	end
 	if v.crewMuzzle and crewMuzzleConfig then
 		if v.statusCode==4 or FogOverlay.hidden(pos.X/S,pos.Z/S)then CrewMuzzle.cancel(v.crewMuzzle)
-		else CrewMuzzle.step(v.crewMuzzle,crewMuzzleConfig,v.kind,sq,pos.X/S,pos.Z/S,SquadMen.MAN_CELLS,wall,FogOverlay.hidden,emitRifleParticle,rifleBudget)end
+		else CrewMuzzle.step(v.crewMuzzle,crewMuzzleConfig,v.kind,sq,pos.X/S,pos.Z/S,SquadMen.MAN_CELLS,wall,FogOverlay.hidden,emitRifleParticle,rifleBudget,nil,emitVehicleTracer)end
 	end
 end
 
@@ -1204,6 +1208,7 @@ local function activeImageContent(): any
 end
 
 function UnitRenderer.start()
+	DeathRenderer.resetImpacts()
 	DeathRenderer.clearTag(rifleBudget);rifleBudget=RifleFire.newBudget()
 	reactions=SquadReaction.new(SquadMen.hash);reactionTick=0
 	folder = Instance.new("Folder")
@@ -1215,7 +1220,7 @@ function UnitRenderer.start()
 		local light = DaylightController.get()
 		SUN = Vector2.new(light.shadow[1], light.shadow[2])
 		SHADOW_FADE = light.shadowAlpha
-		DeathRenderer.step(dt)
+		DeathRenderer.step(dt,SHADOW_FADE)
 		RifleFire.begin(rifleBudget,os.clock())
 		for _, v in views do
 			v.t = math.min(1, v.t + dt / SNAPSHOT_SEC)
@@ -1315,7 +1320,7 @@ function UnitRenderer.apply(tick: number, units: { any }, deaths: { any }?,war:a
 		if VehicleRecoil.supports(kind)then
 			v.vehicle=v.vehicle or VehicleRecoil.new();VehicleRecoil.receive(v.vehicle,u[20],war,os.clock())
 			if VehicleMuzzle.supports(kind)then
-				v.muzzle=v.muzzle or VehicleMuzzle.new()
+				v.muzzle=v.muzzle or VehicleMuzzle.new(v.id)
 				VehicleMuzzle.receive(v.muzzle,v.vehicle,if bit32.btest(v.flags,1)then v.aimX else nil,v.aimY)
 			end
 		end
@@ -1348,8 +1353,10 @@ end
 function UnitRenderer.react(tick:number,rows:any,war:any)
 	if type(tick)~="number"or not(tick>reactionTick and tick<math.huge and tick%1==0)then return end;reactionTick=tick
 	local wall=os.clock();reactions.sync(war,wall)
-	if type(rows)~="table"or #rows==0 then return end
-	local events=BlastEvents.read(rows,reactionWidth,reactionHeight);local seen={}
+	local events=BlastEvents.read(rows,reactionWidth,reactionHeight)
+	DeathRenderer.impacts(tick,events,war)
+	if #events==0 then return end
+	local seen={}
 	for _,row in events do if not FogOverlay.hidden(row[2],row[3])then table.insert(seen,row)end end
 	if #seen==0 then return end
 	local squads={};for _,v in views do if v.squad and v.statusCode~=4 and not FogOverlay.hidden(v.to.X/S,v.to.Z/S)then table.insert(squads,v.squad)end end

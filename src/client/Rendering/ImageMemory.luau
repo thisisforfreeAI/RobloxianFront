@@ -120,13 +120,14 @@ function ImageMemory.recoverTerrain(required:number,replacing:number?):number
 	recoveryReleased+=before-budget.used;return available
 end
 function ImageMemory.detailHeadroom(replacing:number?):number return if accessFailure then 0 else budget:detailHeadroom(replacing,"terrain") end
-function ImageMemory.canDetail(size: Vector2): boolean
+function ImageMemory.canDetail(size: Vector2,kind:string?): boolean
 	if accessFailure then return false end
 	local bytes = size.X * size.Y * 4
-	if budget:canDetail(bytes,"terrain") then return true end
+	local ownerKind=kind or "terrain" -- legacy terrain callers retain their reserved coverage policy
+	if budget:canDetail(bytes,ownerKind) then return true end
 	if os.clock() < trimAt then return false end
 	trimAt = os.clock() + 0.5
-	return budget:prepareDetail(bytes,"terrain")
+	return budget:prepareDetail(bytes,ownerKind)
 end
 
 return ImageMemory

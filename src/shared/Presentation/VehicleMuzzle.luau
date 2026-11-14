@@ -1,6 +1,6 @@
 --!strict
 -- Vehicle muzzle primitives from source effects. Existing observed recoil and shared particle pool.
--- Dynamic lights, shake, projectiles and tank/IFV ground dust/scorch remain separate work.
+-- Tank/IFV tracers are an optional accepted-pulse bridge; other projectiles/lights/dust are separate.
 local Heavy=if script then require(script.Parent.HeavyMuzzle)else require("./HeavyMuzzle")
 local Muzzle={}
 local TAU=math.pi*2
@@ -21,13 +21,13 @@ local function puff(cfg:any,x:number,y:number,h:number,size:number,life:number,v
 	return emit({tex=texture(rng),x=x,y=y,h=h,vx=vx,vy=vy,vh=cfg.motion.rise*rise*range(rng,.7,1.3),size=size,life=life,rot=rng()*TAU,grow=size*cfg.motion.grow/life,drag=1.2,wind=true,lean=0,ground=false,color=color,color1=mix(color,cfg.colors.smokeLight,.4),a0=1,a1=0,small=true,erode=true,swell=true})
 end
 function Muzzle.supports(kind:string):boolean return kind=="tank" or kind=="ifv" or kind=="artillery" or kind=="rocket" end
-function Muzzle.new():any return {sequence=nil,pose={}} end
-function Muzzle.cancel(s:any) s.pending=nil;s.events=nil;s.fired=false;s.distance=nil;s.linger=nil end
+function Muzzle.new(id:number?):any return {id=id,sequence=nil,pose={}} end
+function Muzzle.cancel(s:any) s.pending=nil;s.events=nil;s.fired=false;s.distance=nil;s.linger=nil;s.tx=nil;s.ty=nil;s.aim=nil;s.spread=nil end
 function Muzzle.receive(s:any,ride:any,tx:number?,ty:number?)
 	if not ride or ride.warAt==nil or ride.sequence==nil then Muzzle.cancel(s);s.sequence=nil;return end
 	if s.sequence~=nil and ride.sequence>s.sequence then
 		Muzzle.cancel(s)
-		if finite(ride.shotAt) then s.pending={at=ride.shotAt,army=ride.army or "coalition",weapon=ride.weapon,offsets=ride.offsets,tx=tx,ty=ty} end
+		if finite(ride.shotAt) then s.pending={at=ride.shotAt,army=ride.army or "coalition",weapon=ride.weapon,offsets=ride.offsets,spread=ride.spread,tx=tx,ty=ty} end
 	elseif s.sequence~=nil and ride.sequence<s.sequence then Muzzle.cancel(s) end
 	s.sequence=ride.sequence
 end
@@ -105,7 +105,7 @@ local function linger(s:any,cfg:any,now:number,tip:any,hidden:any,emit:any,budge
 		if not Heavy.gas(cfg,tip,emit,rng)then s.linger=nil;break end
 	end
 end
-function Muzzle.step(s:any,ride:any,cfg:any,kind:string,now:number,hidden:(number,number)->boolean,emit:(any)->boolean,budget:any,rng:(()->number)?,wet:((number,number)->boolean)?)
+function Muzzle.step(s:any,ride:any,cfg:any,kind:string,now:number,hidden:(number,number)->boolean,emit:(any)->boolean,budget:any,rng:(()->number)?,wet:((number,number)->boolean)?,trace:((any)->())?)
 	if not Muzzle.supports(kind) or not ride or ride.warAt==nil or not finite(now) then Muzzle.cancel(s);return end
 	if kind=="artillery"and (not cfg.artillery or ride.weapon=="tbm"and not cfg.tbm) or kind=="rocket"and not cfg.rocket then Muzzle.cancel(s);return end
 	local pose=s.pose
@@ -116,6 +116,7 @@ function Muzzle.step(s:any,ride:any,cfg:any,kind:string,now:number,hidden:(numbe
 		local pending=s.pending;s.pending=nil
 		if now<pending.at or now-pending.at>.25 or budget.prepares<=0 then Muzzle.cancel(s);return end
 		budget.prepares-=1;s.army=pending.army
+		s.tx=pending.tx;s.ty=pending.ty;s.aim=ride.aim or pose.heading;s.salvoAt=pending.at;s.spread=pending.spread
 		if finite(pending.tx) and finite(pending.ty) then s.distance=math.sqrt((pending.tx-pose.x)^2+(pending.ty-pose.y)^2) end
 		local events={}
 		if kind=="tank" then
@@ -153,6 +154,9 @@ function Muzzle.step(s:any,ride:any,cfg:any,kind:string,now:number,hidden:(numbe
 			elseif event.missile then accepted=Heavy.missile(cfg,root,pose.heading,emit,random)
 			else accepted=Heavy.howitzer(cfg,current,root,emit,random,wet);if accepted then s.linger={at=event.at,last=now,acc=0}end end
 			s.fired=s.fired or accepted
+			if accepted and trace and finite(s.tx)and finite(s.ty)then
+				trace({kind=kind,weapon=if event.missile then "tbm"else nil,id=s.id,round=event.round or 0,army=s.army,at=event.at,salvoAt=s.salvoAt,spread=s.spread,x=current.x,y=current.y,h=current.h,tx=s.tx,ty=s.ty,heading=s.aim})
+			end
 		end
 	end
 	for i=#events,remaining+1,-1 do events[i]=nil end

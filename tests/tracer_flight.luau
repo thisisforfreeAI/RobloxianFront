@@ -1,0 +1,63 @@
+--!strict
+return function(test:any,eq:any)
+ local F=require('../src/shared/Presentation/TracerFlight');local D=require('../src/shared/Presentation/DeathEffects');local fs=require('@lune/fs');local luau=require('@lune/luau')
+ local function near(a,b)assert(math.abs(a-b)<1e-8,`{a} ~= {b}`)end
+ local function packet()return {x=1,y=2,h=.5,tx=11,ty=2,targetH=0,at=10,now=10,speed=10,tail=2,width=.2,tip=3,heightFactor=.4,color=1,headColor=2}end
+ local function engine()return D.new({death={variants={}},colors={},sparks={},motion={gravity=8,windX=0,windY=0}})end
+ local cfg={tip=3,heightFactor=.4,tank={speed=10,tail=2,width=.2,color=1,headColor=2},ifv={speed=20,tail=1,width=.1,color=3,headColor=4,walk=.3,spread=.4},factions={republic={tank=5,ifv=6}}}
+ test('round head advances behind its tip and tail grows then shrinks to the target',function()
+  local f=assert(F.plan(packet()));local head=F.particle(f,true,10.5);local tail=F.particle(f,false,10.5);near(head.x,5.7);near(head.h,.25);near(tail.x,5);near(tail.h,.3);near(tail.len,10);eq(head.tint,2);eq(tail.tint,1)
+  F.apply(head,11.1);F.apply(tail,11.1);eq(head.alpha,0);near(tail.x,10.5);near(tail.len,5);eq(F.apply(tail,11.21),false)
+ end)
+ test('height projection changes rotation while zero-distance shots remain finite',function()
+  local p=packet();local f=assert(F.plan(p));local head=F.particle(f,true,10);near(head.rot,math.atan2(.2,10));p.tx=p.x;p.ty=p.y;f=assert(F.plan(p));head=F.particle(f,true,10);eq(head.x,p.x);assert(head.rot==head.rot)
+ end)
+ test('invalid unbounded future and already expired requests never allocate particles',function()
+  for _,change in {{'tx',0/0},{'speed',0},{'speed',501},{'width',0},{'tail',33},{'tip',100},{'tx',1000},{'at',11},{'now',20},{'headColor',math.huge}}do local p=packet();p[change[1]]=change[2];eq(F.plan(p),nil);local e=engine();eq(e:request('tracer',p),false);eq(#e.particles,0)end
+ end)
+ test('shared clock freezes on pause caps stalled prediction and signals invalid or rolled-back clocks',function()
+  local s=F.clock();eq(F.time(s,0),nil);eq(F.sync(s,1,{10,1},0),false);near(F.time(s,100),10.2);F.sync(s,2,{10.1,0},1);near(F.time(s,100),10.1)
+  F.sync(s,2,{11,1},2);near(F.time(s,100),10.1);eq(F.sync(s,3,{1,1},3),true);eq(F.sync(s,4,nil,4),true);eq(F.time(s,5),nil)
+ end)
+ test('faction profiles and IFV walking rounds retain source target spread arithmetic',function()
+  local e={kind='tank',x=1,y=2,h=.5,tx=11,ty=2,army='republic',at=10,round=0,heading=0};local p=assert(F.shot(cfg,e,10));eq(p.color,5);eq(p.headColor,2);eq(p.tx,11)
+  e.kind='ifv';e.round=2;local calls=0;p=assert(F.shot(cfg,e,10,function()calls+=1;return .5 end));eq(calls,2);near(p.tx,11+.6-.6+.5);near(p.ty,2-.6+.5);eq(p.color,6)
+  e.round=0;p=assert(F.shot(cfg,e,10,function()error('first round does not scatter')end));eq(p.tx,11);eq(p.ty,2);e.army='unknown';eq(F.shot(cfg,e,10).color,3)
+ end)
+ test('tracer pairs share the existing particle pool and are admitted atomically',function()
+  local e=engine();e.maxParticles=3;e:request('spawn',{x=0,y=0,size=1,life=5,color=0},'fire');assert(e:request('tracer',packet(),'tracers'));eq(#e.particles,3);eq(e.tracerCount,1);eq(e:request('tracer',packet()),false)
+  e:clearTag('tracers');eq(#e.particles,1);eq(e.tracerCount,0);e.maxParticles=2;eq(e:request('tracer',packet()),false);eq(#e.particles,1)
+ end)
+ test('dense tracer emission is capped at 64 pairs without timers or deferred callbacks',function()
+  local e=engine();local accepted=0;for _=1,3000 do if e:request('tracer',packet(),'a')then accepted+=1 end end;eq(accepted,64);eq(e.tracerCount,64);eq(#e.particles,128);eq(#e.later,0);eq(#e.emitters,0)
+  e:step(.05,11.21);eq(#e.particles,0);eq(e.tracerCount,0);assert(e:request('tracer',packet()));eq(e.tracerCount,1)
+ end)
+ test('ordinary particles keep aging while projectile positions freeze on the war clock',function()
+  local e=engine();e:request('spawn',{x=0,y=0,size=1,life=.1,color=0});assert(e:request('tracer',packet()));e:step(.5,10.3);eq(#e.particles,2);local x=e.particles[1].x;e:step(1,10.3);eq(e.particles[1].x,x);eq(e.tracerCount,1);e:clearTracers();eq(#e.particles,0);eq(e.tracerCount,0)
+ end)
+ test('late admission starts at the observed shot age and preserves its original source cell',function()
+  local p=packet();p.now=10.2;local e=engine();assert(e:request('tracer',p));near(e.particles[1].x,2.7);near(e.particles[1].age,.2);eq(e.particles[1].x0,1);eq(e.particles[2].x0,1)
+ end)
+ test('whole tracer visibility rejects hidden tail cells even when centre and origin stay visible',function()
+  local p=packet();p.tail=8;local f=assert(F.plan(p));local tail=F.particle(f,false,10.8);near(tail.x,5)
+  eq(F.visible(tail,function(x)return x>=7 and x<8 end),false);eq(F.visible(tail,function()return false end),true);eq(F.visible(tail,function(x)return x<2 end),false)
+ end)
+ test('fog traversal checks diagonal corner neighbours and zero-length heads terminate',function()
+  local p=packet();p.x=.5;p.y=.5;p.tx=8.5;p.ty=8.5;p.tail=8;local f=assert(F.plan(p));local tail=F.particle(f,false,10.5)
+  eq(F.visible(tail,function(x,y)return math.floor(x)==1 and math.floor(y)==0 end),false)
+  local head=F.particle(f,true,10);eq(F.visible(head,function()return false end),true);F.apply(head,11.19);eq(F.visible(head,function()return false end),false)
+ end)
+ test('actual vehicle schedule dispatches each accepted IFV round once with current muzzle and captured aim',function()
+  local M=require('../src/shared/Presentation/VehicleMuzzle');local R=require('../src/shared/Presentation/RifleFire');local V=require('../src/shared/Presentation/VehicleRecoil')
+  local c={gun={ifv=.5},gunHeight=.2,colors={fire=1,hot=2,ember=3,smoke=4,smokeLight=5,dustLight=6},motion={rise=2,grow=1.5},ifv={rounds=4,gap=.2,flash=1.5,follow=.8,flashLen=1.5,flashSec=.1,smoke=.4,cases={n=0,at=.4,out=.1,speed={1,2},rise={2,3},size=.1,len=2,life=1,color=1,shade=2},breath={delay=.3,puffs=0,size=.2,life=1,kick=.5}}}
+  local s=M.new();local ride=V.new();V.receive(ride,{0,false,0,{},'republic'},{10,1},0);M.receive(s,ride,20,5);V.receive(ride,{1,10,0,{},'republic'},{10,1},0);M.receive(s,ride,20,5);M.place(s,5,5,5,5,0)
+  local seen={};local budget=R.newBudget();for i=0,3 do R.begin(budget,i*.2);M.place(s,5+i,5,5+i,5,0);M.step(s,ride,c,'ifv',10+i*.2,function()return false end,function()return true end,budget,function()return .5 end,nil,function(e)table.insert(seen,e)end)end
+  eq(#seen,4);for i,e in seen do eq(e.round,i-1);near(e.x,5+i-1+.5);eq(e.tx,20);eq(e.army,'republic')end
+  R.begin(budget,1);M.step(s,ride,c,'ifv',11,function()return false end,function()return true end,budget,nil,nil,function()error('gas is not a new round')end);eq(s.tx,nil)
+ end)
+ test('actual renderer tracer bridge consumes two shared slots and skips absent settings or clocks',function()
+  local src=fs.readFile('src/client/Rendering/DeathRenderer.luau');local a=assert(src:find('function DeathRenderer.vehicleTracer(',1,true));local b=assert(src:find('function DeathRenderer.clearTag(',a,true));local requests=0
+  local env=setmetatable({DeathRenderer={request=function(kind,p,tag)eq(kind,'tracer');eq(tag,'a');eq(p.color,5);requests+=1;return true end},TracerFlight=F,tracerClock={war=10,running=false},tracerConfig=cfg,tracerChecked=true},{__index=getfenv()})
+  luau.load(src:sub(a,b-1),{environment=env})();local e={kind='tank',x=1,y=2,h=.5,tx=11,ty=2,army='republic',at=10,round=0,heading=0};local budget={particles=3};assert(env.DeathRenderer.vehicleTracer(e,budget,'a'));eq(budget.particles,1);eq(env.DeathRenderer.vehicleTracer(e,budget,'a'),false);eq(requests,1)
+ end)
+end

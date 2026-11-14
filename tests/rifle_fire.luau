@@ -77,7 +77,7 @@ return function(test:any,eq:any)
 	end)
 	test('actual shared particle renderer restores ordinary atlas crops after a brass pixel reuses a slot',function()
 		local src=fs.readFile('src/client/Rendering/DeathRenderer.luau');local a=assert(src:find('function DeathRenderer.step(',1,true));local z=assert(src:find('\nreturn DeathRenderer',a,true));local label={};local owner={gui={},image=label,part={}};local p={tex='px',x=5,y=5,x0=5,y0=5,h=0,drawSize=.1,len=1,alpha=1,tint=255,rot=0}
-		local env=setmetatable({DeathRenderer={},engine={particles={p},step=function()end},World={STUDS_PER_CELL=4,TOP_GUI_YAW=0,toWorld=function(x,y)return rb.Vector3.new(x,0,y)end},Fog={hidden=visible},workspace={},slots={owner},slot=function()return owner end,FRAMES={disc={1,0}},frame=24,Vector2=rb.Vector2,Vector3=rb.Vector3,CFrame=rb.CFrame,Color3=rb.Color3},{__index=getfenv()})
+		local env=setmetatable({DeathRenderer={},TracerFlight={time=function()return nil end},tracerClock={},engine={particles={p},step=function()end},World={STUDS_PER_CELL=4,TOP_GUI_YAW=0,toWorld=function(x,y)return rb.Vector3.new(x,0,y)end},Fog={hidden=visible},workspace={},slots={owner},slot=function()return owner end,FRAMES={disc={1,0}},frame=24,Vector2=rb.Vector2,Vector3=rb.Vector3,CFrame=rb.CFrame,Color3=rb.Color3},{__index=getfenv()})
 		luau.load(src:sub(a,z-1),{environment=env})();env.DeathRenderer.step(.01);eq(label.ImageRectOffset,rb.Vector2.new(1,1));eq(label.ImageRectSize,rb.Vector2.new(4,4));p.tex='disc';env.DeathRenderer.step(.01);eq(label.ImageRectOffset,rb.Vector2.new(24,0));eq(label.ImageRectSize,rb.Vector2.new(24,24))
 	end)
 end

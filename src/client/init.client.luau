@@ -36,6 +36,7 @@ local WaterRenderer = require(script.Rendering.WaterRenderer)
 local CivilianRenderer = require(script.Rendering.CivilianRenderer)
 local HouseFireRenderer = require(script.Rendering.HouseFireRenderer)
 local GroundScorchRenderer = require(script.Rendering.GroundScorchRenderer)
+local CraterRenderer=require(script.Rendering.CraterRenderer)
 local CollapseRenderer = require(script.Rendering.CollapseRenderer)
 local Rules = require(Shared.Config.Rules)
 local DevFlags = require(script.Dev.DevFlags)
@@ -64,6 +65,7 @@ do
 	CivilianRenderer.start(map,mapFolder)
 	HouseFireRenderer.start(map,mapFolder)
 	GroundScorchRenderer.start(map,mapFolder)
+	CraterRenderer.start(map,mapFolder)
 	CollapseRenderer.start(map,mapFolder)
 	TerritoryRenderer.start(map.width,map.height,map.data.id)
 	WeatherGround.start(map)
@@ -128,6 +130,7 @@ do
 			if state.groundScorch.reset then CollapseRenderer.reset() end
 			GroundScorchRenderer.apply(state.groundScorch)
 		end
+		if state.craters then CraterRenderer.apply(state.craters)end
 		HouseFireRenderer.setNightVision(Hud.nightVisionOn())
 		if state.refugees then CivilianRenderer.applyRefugees(state.refugees) end
 		if state.day or state.weather then

@@ -4418,6 +4418,15 @@ require("./crew_muzzles")(test, eq)
 
 require("./heavy_muzzles")(test, eq)
 
+require("./impact_effects")(test, eq)
+
+require("./craters")(test, eq)
+require("./crater_renderer")(test, eq)
+
+require("./tracer_flight")(test, eq)
+
+require("./ballistic_flight")(test, eq)
+
 print(`\n{passed} passed, {failed} failed`)
 if failed > 0 then
 	error("tests failed")

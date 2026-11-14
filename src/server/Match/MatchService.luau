@@ -39,6 +39,7 @@ local HouseWorld = require(Shared.Simulation.HouseWorld)
 local ForestMap = require(Shared.Simulation.ForestMap)
 local ForestWorld = require(Shared.Simulation.ForestWorld)
 local GroundScorchWorld = require(Shared.Simulation.GroundScorchWorld)
+local CraterWorld=require(Shared.Simulation.CraterWorld)
 local WorldFireImpacts = require(Shared.Simulation.WorldFireImpacts)
 local CollapseEvents = require(Shared.Protocol.CollapseEvents)
 local BlastEvents=require(Shared.Protocol.BlastEvents)
@@ -72,6 +73,7 @@ local tick = 0
 local sentFires: {[Player]:any} = {}
 local sentForest: {[Player]:any} = {}
 local sentScorch: {[Player]:any} = {}
+local sentCraters:{[Player]:any}={}
 local readyView: {[Player]:boolean} = {}
 
 local OPENING_DROP = true -- the game's opening drop: pick a landing spot, the truck sets up the HQ
@@ -1019,6 +1021,10 @@ local function privateState()
 			end)
 		end
 		-- Send current visible actors only. Hidden origins, complete routes and destinations stay server-side.
+		if sim.craters then
+			local fogged=side>0 and sim.fogOn();local sight=if fogged then viewers[side]else nil
+			payload.craters,sentCraters[player]=sim.craters.view(sentCraters[player],function(x,y)return not fogged or sight~=nil and sight.visibleAt(x,y)end)
+		end
 		payload.refugees={}
 		if sim.refugees then
 			local lookModule=GameData:FindFirstChild("RefugeeLook")
@@ -1357,6 +1363,7 @@ function MatchService.resetView(player:Player)
 	-- Only this player's visual caches; readiness grants no gameplay command or extra visibility.
 	sentFires[player],sentForest[player]=nil,nil
 	sentScorch[player]=nil
+	sentCraters[player]=nil
 	sentVision[player],sentCities[player]=nil,nil
 	sentTerritory[player],sentTerritoryView[player]=nil,nil
 	sentWear[player],wearSentAt[player]=nil,nil
@@ -1468,12 +1475,19 @@ function MatchService.start(mapModule: string)
 		end
 	end
 	local blastSizes={}
+	do
+		local source=GameData:FindFirstChild("CraterRules")
+		if source then local ok,result=pcall(function()return CraterWorld.forMap(require(source),map,sim)end)
+			if ok then sim.craters=result else warn("[Match] Optional craters unavailable:",result)end
+		end
+	end
 	local blastSource=GameData:FindFirstChild("FireRules")
 	if blastSource then local ok,data=pcall(require,blastSource);if ok and type(data)=="table"and type(data.weaponBlast)=="table"then blastSizes=data.weaponBlast end end
 	sim.presentBlast=function(x,y,weapon,size)
 		local visualSize=size or blastSizes[weapon]
-		if type(visualSize)=="number"and visualSize>=BlastEvents.MIN_SIZE then
-			blastSequence+=1;BlastEvents.push(blasts,blastSequence,x,y,visualSize,sim.time,map.width,map.height)
+		if type(visualSize)=="number"and (visualSize>=BlastEvents.MIN_SIZE or visualSize>0 and BlastEvents.supports(weapon)) then
+			if sim.craters then sim.craters.blast(x,y,visualSize,weapon)end
+			blastSequence+=1;BlastEvents.push(blasts,blastSequence,x,y,visualSize,sim.time,map.width,map.height,weapon)
 		end
 	end
 	do
@@ -1529,6 +1543,7 @@ function MatchService.start(mapModule: string)
 		sentFires[p] = nil
 		sentForest[p] = nil
 		sentScorch[p] = nil
+		sentCraters[p]=nil
 		readyView[p] = nil
 		updateBots()
 		if MatchService.lobby then task.defer(MatchService.lobby.heartbeat) end
@@ -1550,7 +1565,9 @@ function MatchService.start(mapModule: string)
 			if sim.houseFires then sim.houseFires.advance(sim.time) end
 			if sim.forestFires then sim.forestFires.advance(sim.time) end
 			if sim.groundScorch then sim.groundScorch.advance(sim.time) end
+			if sim.craters then sim.craters.advance(sim.time)end
 			for _, ev in sim.takeEvents() do
+				if sim.craters and ev.type=="roadRepaired" then sim.craters.repaired(ev.x,ev.y,rules:number("roads.cutRadius"))end
 				alertsFor(ev)
 				CollapseEvents.push(collapses,ev,map.width,map.height)
 				if sim.fireImpacts then sim.fireImpacts.event(ev) end

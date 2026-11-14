@@ -7,6 +7,13 @@ local World={}
 function World.new(config:any,map:any,context:any):any
 	local self:any={epoch=1,time=context.time(),lastTime=context.time(),acc=0}
 	local townAt=Scorch.towns(config.towns,map.width,map.height,context.towns or {})
+	-- Reuse this existing source settlement index for other cosmetic ground recovery.
+	function self.quietAt(x:number,y:number):boolean
+		local cx,cy=math.floor(x),math.floor(y)
+		if cx<0 or cy<0 or cx>=map.width or cy>=map.height then return false end
+		local town=townAt(cy*map.width+cx)
+		return town~=nil and context.time()-town.lastHitAt>=context.quietSec
+	end
 	self.model=Scorch.new(config,map.width,map.height,{townAt=townAt,quiet=function(town) return self.time-town.lastHitAt>=context.quietSec end})
 	function self.scar(x,y,radius,power,kind) self.model.scar(x,y,radius,power,kind) end
 	-- Called only after the common impact adapter's map/water guard; no combat damage is applied.

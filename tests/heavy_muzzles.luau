@@ -103,9 +103,9 @@ return function(test:any,eq:any)
 	test('actual visible artillery rows carry resolved TBM metadata while hidden entities are not sampled',function()
 		local src=fs.readFile('src/server/Match/MatchService.luau');local a=assert(src:find('local function viewFor(',1,true));local z=assert(src:find('-- vehicles destroyed',a,true));local units={}
 		for i,kind in {'artillery','rocket','artillery'}do units[i]={id=i,kind=kind,cat='unit',alive=true,side=2,x=5,y=5,heading=0,hp=100,maxHp=100}end
-		local sampled=0;local sim={list=units,time=10,armyOf=function()return 'republic'end,unitKey=function(e)eq(e.id,1);sampled+=1;return 'armyUnits.republic.artillery'end,rules={has=function(_,key)eq(key,'armyUnits.republic.artillery.missile.splash');return true end}}
+		local sampled=0;local sim={list=units,time=10,armyOf=function()return 'republic'end,unitKey=function(e)eq(e.id,1);sampled+=1;return 'armyUnits.republic.artillery'end,rules={number=function(_,key)eq(key,'artillery.rocketSpread');return 3.3 end,has=function(_,key)eq(key,'armyUnits.republic.artillery.missile.splash');return true end}}
 		local viewer={update=function()end,unitVisible=function(e)return e.id~=3 end,lastSeen={},runs=function()return{}end}
 		local env=setmetatable({sim=sim,viewers={[1]=viewer},factoryViews={},weaponViews={},artilleryViews={},CrewMotion={snapshot=function()return nil end},VehicleRecoil=V,rules={data={}},unitLook=function()return 1,20,5,9 end,unitStatus=function()return 0 end,unitStage=function()return 0 end},{__index=getfenv()})
-		local rows=luau.load(src:sub(a,z-1)..'\nreturn viewFor',{environment=env})()(1);eq(#rows,2);eq(rows[1][20][6],'tbm');eq(rows[2][20][6],nil);eq(sampled,1)
+		local rows=luau.load(src:sub(a,z-1)..'\nreturn viewFor',{environment=env})()(1);eq(#rows,2);eq(rows[1][20][6],'tbm');eq(rows[2][20][6],false);eq(rows[2][20][7],3.3);eq(sampled,1)
 	end)
 end

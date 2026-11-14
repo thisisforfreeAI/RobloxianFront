@@ -1,0 +1,96 @@
+--!strict
+return function(test:any,eq:any)
+ local M=require('../src/shared/Simulation/Craters');local W=require('../src/shared/Simulation/CraterWorld');local V=require('../src/shared/Presentation/CraterView');local P=require('../src/shared/Protocol/CraterPackets');local Pixels=require('../src/shared/Presentation/CraterPixels');local cfg=require('./fixtures/crater_config')
+ local fs=require('@lune/fs');local luau=require('@lune/luau')
+ local function no()return false end;local function yes()return true end
+ local function context(water)return {time=function()return 0 end,ground=function()return '#556644'end,water=water or no,paved=function()return '#555555'end}end
+ local function row(id,x,y,r,fill)return {id,x or 5,y or 6,r or 1,fill or 0,'#556644',''}end
+ local function packet(seq,rows,reset,epoch)return {epoch=epoch or 1,sequence=seq,rows=rows,reset=reset==true}end
+ local function near(a,b)assert(math.abs(a-b)<1e-8,`{a} ~= {b}`)end
+ test('craters admit only supported sufficiently large dry-ground hits',function()
+  local m=M.new(cfg,context(function(x)return x<0 end));eq(m.blast(1,1,4,'cannon'),nil);eq(m.blast(1,1,.1,'shell'),nil);eq(m.blast(-1,1,4,'shell'),nil);eq(#m.list,0)
+  local h=m.blast(5,6,2,'shell');near(h.r,.8);eq(h.paved,'#555555');eq(h.seed,1);eq(h.fill,0)
+ end)
+ test('nearby hits merge by area retain first materials and reset recovery',function()
+  local m=M.new(cfg,context());local h=m.blast(5,6,2,'shell');h.since=100;h.fixed=true;h.mend=.5;local other=m.blast(5.3,6,2,'shell');eq(h,other);eq(#m.list,1);near(h.r,math.sqrt(.64+.32));near(h.x,5.1);eq(h.since,0);eq(h.fixed,false);eq(h.mend,0)
+  for i=1,50 do m.blast(h.x,h.y,10,'big')end;eq(h.r,cfg.model.maxCells)
+ end)
+ test('large and near-water holes wet while small inland holes remain dry',function()
+  local m=M.new(cfg,context(function(x)return x>=8 end));local inland=m.blast(3,3,2,'shell');local shore=m.blast(7.5,3,2,'shell');local big=m.blast(3,15,6,'shell');eq(inland.wet,false);eq(shore.wet,true);eq(big.wet,true)
+  m.tick(1);near(shore.fill,.5);near(big.fill,.5);eq(inland.fill,0);m.tick(3);eq(shore.fill,1)
+ end)
+ test('capacity evicts dry smallest holes before wet holes',function()
+  local c=table.clone(cfg);c.model=table.clone(cfg.model);c.model.max=2;local m=M.new(c,context());local wet=m.blast(1,1,6,'shell');local dry=m.blast(10,1,1,'shell');local large=m.blast(20,1,2,'shell');eq(#m.list,2);eq(m.list[1],wet);eq(m.list[2],large);eq(dry.r,.4)
+ end)
+ test('quiet recovery drains a pool before shrinking and busy cells do not heal',function()
+  local m=M.new(cfg,context());local h=m.blast(5,6,6,'shell');m.tick(2,no);eq(h.fill,1);local r=h.r;m.tick(.5,yes);near(h.fill,.5);eq(h.r,r);m.tick(.5,yes);eq(h.fill,0);eq(h.r,r);m.tick(.5,yes);near(h.r,r-.1)
+  local before=h.r;m.tick(.5,no);eq(h.r,before);m.tick(0,yes);eq(h.r,before)
+ end)
+ test('fixed repairs heal faster and remove depleted holes without orphaned cache owners',function()
+  local m=M.new(cfg,context());local h=m.blast(5,6,1,'shell');m.fix(5,6,1,no);eq(h.fixed,nil);m.fix(5,6,1,yes);eq(h.fixed,true);m.tick(1,no);eq(#m.list,0);m.clear();eq(#m.list,0)
+ end)
+ test('world rejects off-map impacts and advances only on monotonic war time',function()
+  local w=W.new(cfg,20,20,context());eq(w.blast(-1,2,4,'shell'),nil);eq(w.blast(20,2,4,'shell'),nil);w.blast(5,5,6,'shell');w.advance(1);near(w.model.list[1].fill,.5);w.advance(1);near(w.model.list[1].fill,.5);assert(not pcall(w.advance,0));w.reset();eq(w.epoch,2);eq(#w.model.list,0)
+ end)
+ test('observer ids and texture seeds count visible discoveries without hidden event gaps',function()
+  local function view(hiddenCount)
+   local w=W.new(cfg,200,200,context());for i=1,hiddenCount do w.blast(100+i*3,100,2,'shell')end;w.blast(5,6,2,'shell');return w.view(nil,function(x)return x<20 end)
+  end
+  local a=view(0);local b=view(9);eq(#a.rows,1);eq(P.key(a.rows[1]),P.key(b.rows[1]));eq(a.rows[1][1],1)
+ end)
+ test('fog freezes known crater geometry and withholds hidden merges until visible again',function()
+  local w=W.new(cfg,50,50,context());local h=w.blast(5,6,2,'shell');local p,state=w.view(nil,yes);eq(#p.rows,1);local radius=p.rows[1][4];w.blast(5.3,6,2,'shell');p,state=w.view(state,no);eq(#p.rows,0);eq(state.known[h.seed].row[4],radius);p,state=w.view(state,yes);eq(#p.rows,1);assert(p.rows[1][4]>radius);eq(p.rows[1][1],1)
+ end)
+ test('hidden removal is learned on revisit and late join receives surviving visible holes',function()
+  local w=W.new(cfg,50,50,context());w.blast(5,6,2,'shell');local p,state=w.view(nil,yes);w.model.clear();p,state=w.view(state,no);eq(#p.rows,0);p,state=w.view(state,yes);eq(#p.rows,1);eq(#p.rows[1],2)
+  w.blast(10,12,4,'shell');local fresh=w.view(nil,yes);eq(fresh.reset,true);eq(#fresh.rows,1);eq(fresh.rows[1][2],10)
+ end)
+ test('directory paging and forgotten hidden observations keep server and client storage bounded',function()
+  local c=table.clone(cfg);c.model=table.clone(cfg.model);c.model.max=100;local w=W.new(c,1000,1000,context());for i=1,100 do w.blast(i*4,5,2,'shell')end
+  local p,state=w.view(nil,yes);eq(#p.rows,64);local v=V.new(1000,1000,c);assert(v.apply(p));eq(v.count,64);p,state=w.view(state,yes);eq(#p.rows,36);assert(v.apply(p));eq(v.count,100)
+  w.model.clear();for i=1,100 do w.blast(i*4,30,2,'shell')end
+  for i=1,4 do p,state=w.view(state,function(_,y)return y>20 end);assert(v.apply(p));assert(v.count<=100)end;local count=0;for _ in state.known do count+=1 end;eq(count,100);eq(v.count,100)
+ end)
+ test('crater packets validate atomically against stale epochs malformed colours bounds and counts',function()
+  local v=V.new(20,20,cfg);assert(v.apply(packet(1,{row(1)},true)));local serial=v.serial
+  for _,p in {packet(1,{row(2)},false),packet(2,{row(2,25)},false),packet(2,{row(2),row(2)},false),packet(2,{{2,5,6,1,9,'#556644',''}},false),packet(2,{{2,5,6,1,0,'bad',''}},false),packet(2,{row(2)},false,2)}do eq(v.apply(p),false);eq(v.serial,serial);eq(v.count,1)end
+  assert(v.apply(packet(2,{{1,0}},false)));eq(v.count,0);assert(v.apply(packet(1,{row(3)},true,2)));eq(v.count,1);eq(v.items[1],nil)
+ end)
+ test('bounded delta cursor reaches later craters while earlier craters change every packet',function()
+  local c=table.clone(cfg);c.model=table.clone(cfg.model);c.model.max=100;local w=W.new(c,1000,1000,context());for i=1,100 do w.blast(i*4,5,2,'shell')end
+  local p,state=w.view(nil,yes);eq(#p.rows,64)
+  for i=1,64 do w.model.list[i].x+=.1 end
+  p,state=w.view(state,yes);assert(p.rows[1][2]>64*4);local known=0;for _ in state.known do known+=1 end;eq(known,100)
+ end)
+ test('optional detail preflight preserves terrain reserve while old callers retain terrain semantics',function()
+  local src=fs.readFile('src/client/Rendering/ImageMemory.luau');local a=assert(src:find('function ImageMemory.canDetail(',1,true));local b=assert(src:find('\nreturn ImageMemory',a,true));local kinds={}
+  local env=setmetatable({ImageMemory={},trimAt=0,os={clock=function()return 10 end},budget={canDetail=function(_,_,kind)table.insert(kinds,kind);return kind=='terrain'end,prepareDetail=function(_,_,kind)table.insert(kinds,kind);return false end}},{__index=getfenv()})
+  luau.load(src:sub(a,b-1),{environment=env})();eq(env.ImageMemory.canDetail({X=2,Y=2}),true);eq(env.ImageMemory.canDetail({X=2,Y=2},'detail'),false);eq(kinds[1],'terrain');eq(kinds[2],'detail');eq(kinds[3],'detail')
+ end)
+ test('crater recovery reuses the existing settlement index and follows live quiet time',function()
+  local G=require('../src/shared/Simulation/GroundScorchWorld');local time=0;local town={x=5.5,y=5.5,radius=2,lastHitAt=0};local g=G.new({towns={townReach=1,townPad=0}},{width=12,height=12},{time=function()return time end,towns={town},quietSec=5})
+  eq(g.quietAt(5.5,5.5),false);time=5;eq(g.quietAt(5.5,5.5),true);eq(g.quietAt(10.5,10.5),false);eq(g.quietAt(-1,0),false);town.lastHitAt=4;eq(g.quietAt(5.5,5.5),false)
+ end)
+ test('completed road repair accelerates only eligible crater recovery without changing combat state',function()
+  local c=context();c.quiet=no;c.nearRoad=function(x)return x<7 end;local w=W.new(cfg,50,50,c);local a=w.blast(5,6,2,'shell');local b=w.blast(10,6,2,'shell')
+  w.repaired(5,6,10);eq(a.fixed,true);eq(b.fixed,nil);w.advance(.5);assert(a.r<.8);near(b.r,.8)
+ end)
+ test('procedural raster is deterministic can yield without changing bytes and clips masks at texel centres',function()
+  local h={x=5.13,y=6.72,r=1,fill=0,seed=42,ground='#556644',paved='#555555'};local a=Pixels.paint(cfg,h);local calls=0;local b=Pixels.paint(cfg,h,function()calls+=1 end);assert(calls>0);eq(buffer.tostring(a.pixels),buffer.tostring(b.pixels))
+  local clipped=Pixels.paint(cfg,h,nil,function(x)return x<h.x end);local shown=0
+  for y=0,a.height-1 do for x=0,a.width-1 do local at=(y*a.width+x)*4;local alpha=buffer.readu8(clipped.pixels,at+3);if clipped.left+(x+.5)/clipped.scale>=h.x then eq(alpha,0)elseif alpha>0 then shown+=1 end end end;assert(shown>0)
+  assert(not pcall(Pixels.paint,cfg,h,function()error('cancel')end))
+ end)
+ test('water step and broken paving change pixels without changing the world footprint',function()
+  local h={x=5,y=6,r=2,fill=0,seed=7,ground='#556644'};local dry=Pixels.paint(cfg,h);h.fill=1;local wet=Pixels.paint(cfg,h);eq(dry.width,wet.width);assert(buffer.tostring(dry.pixels)~=buffer.tostring(wet.pixels));h.fill=0;h.paved='#555555';local road=Pixels.paint(cfg,h);assert(buffer.tostring(dry.pixels)~=buffer.tostring(road.pixels))
+ end)
+ test('actual server presentation bridge feeds persistent craters and keeps transient blast transport',function()
+  local src=fs.readFile('src/server/Match/MatchService.luau');local a=assert(src:find('sim.presentBlast=function',1,true));local b=assert(src:find('\n\tdo',a,true));local sim={time=10};local q={};local calls={};sim.craters={blast=function(...)table.insert(calls,{...})end}
+  local env=setmetatable({sim=sim,blastSizes={shell=4,bullets=0},BlastEvents=require('../src/shared/Protocol/BlastEvents'),blastSequence=0,blasts=q,map={width=100,height=100}},{__index=getfenv()});luau.load(src:sub(a,b-1),{environment=env})();sim.presentBlast(5,6,'shell');sim.presentBlast(5,6,'bullets');eq(#q,1);eq(#calls,1);eq(calls[1][3],4);eq(calls[1][4],'shell')
+ end)
+ test('actual private-state crater path denies a missing fog viewer and sends only ready clients',function()
+  local src=fs.readFile('src/server/Match/MatchService.luau');local a=assert(src:find('\t\tif sim.craters then',src:find('local function privateState',1,true),true));local b=assert(src:find('\n\t\tpayload.refugees={}',a,true));local output={};local player={}
+  local env=setmetatable({sim={fogOn=yes,craters={view=function(_,visible)eq(visible(5,5),false);return {rows={}},{}end}},side=1,viewers={},payload=output,sentCraters={},player=player},{__index=getfenv()});luau.load(src:sub(a,b-1),{environment=env})();assert(output.craters~=nil)
+  local start=assert(src:find('local function privateState',1,true));local state=src:sub(start);assert(state:find('if not readyView[player] then continue end',1,true))
+ end)
+end
