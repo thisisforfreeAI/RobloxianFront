@@ -1,8 +1,10 @@
 --!strict
--- Tank/IFV muzzle primitives from the source effects. Uses existing observed recoil and shared pool.
--- Ground dust/scorch, dynamic lights, shake and projectiles are separate presentation work.
+-- Vehicle muzzle primitives from source effects. Existing observed recoil and shared particle pool.
+-- Dynamic lights, shake, projectiles and tank/IFV ground dust/scorch remain separate work.
+local Heavy=if script then require(script.Parent.HeavyMuzzle)else require("./HeavyMuzzle")
 local Muzzle={}
 local TAU=math.pi*2
+local EMPTY={}
 local function finite(n:any):boolean return type(n)=="number" and n==n and math.abs(n)<math.huge end
 local function range(rng:()->number,a:number,b:number):number return a+rng()*(b-a) end
 local function pick(rng:()->number,r:any):number return range(rng,r[1],r[2]) end
@@ -18,20 +20,20 @@ local function puff(cfg:any,x:number,y:number,h:number,size:number,life:number,v
 	local color=cfg.colors.smokeLight
 	return emit({tex=texture(rng),x=x,y=y,h=h,vx=vx,vy=vy,vh=cfg.motion.rise*rise*range(rng,.7,1.3),size=size,life=life,rot=rng()*TAU,grow=size*cfg.motion.grow/life,drag=1.2,wind=true,lean=0,ground=false,color=color,color1=mix(color,cfg.colors.smokeLight,.4),a0=1,a1=0,small=true,erode=true,swell=true})
 end
-function Muzzle.supports(kind:string):boolean return kind=="tank" or kind=="ifv" end
+function Muzzle.supports(kind:string):boolean return kind=="tank" or kind=="ifv" or kind=="artillery" or kind=="rocket" end
 function Muzzle.new():any return {sequence=nil,pose={}} end
-function Muzzle.cancel(s:any) s.pending=nil;s.events=nil;s.fired=false;s.distance=nil end
+function Muzzle.cancel(s:any) s.pending=nil;s.events=nil;s.fired=false;s.distance=nil;s.linger=nil end
 function Muzzle.receive(s:any,ride:any,tx:number?,ty:number?)
 	if not ride or ride.warAt==nil or ride.sequence==nil then Muzzle.cancel(s);s.sequence=nil;return end
 	if s.sequence~=nil and ride.sequence>s.sequence then
 		Muzzle.cancel(s)
-		if finite(ride.shotAt) then s.pending={at=ride.shotAt,army=ride.army or "coalition",tx=tx,ty=ty} end
+		if finite(ride.shotAt) then s.pending={at=ride.shotAt,army=ride.army or "coalition",weapon=ride.weapon,offsets=ride.offsets,tx=tx,ty=ty} end
 	elseif s.sequence~=nil and ride.sequence<s.sequence then Muzzle.cancel(s) end
 	s.sequence=ride.sequence
 end
 -- Written once per frame into the view's reused record; geometry comes from the actual drawn turret.
-function Muzzle.place(s:any,x:number,y:number,barrelX:number,barrelY:number,heading:number)
-	local p=s.pose;p.x=x;p.y=y;p.barrelX=barrelX;p.barrelY=barrelY;p.heading=heading
+function Muzzle.place(s:any,x:number,y:number,barrelX:number,barrelY:number,heading:number,bodyX:number?,bodyY:number?)
+	local p=s.pose;p.x=x;p.y=y;p.barrelX=barrelX;p.barrelY=barrelY;p.heading=heading;p.bodyX=bodyX or x;p.bodyY=bodyY or y
 end
 function Muzzle.tip(cfg:any,kind:string,pose:any,distance:number?):any
 	local reach=math.min(cfg.gun[kind],(distance or math.huge)*.5)
@@ -89,8 +91,23 @@ function Muzzle.breath(cfg:any,tip:any,kind:string,emit:(any)->boolean,rng:()->n
 		if not puff(cfg,x,y,tip.h,size,life,tip.ux*kick,tip.uy*kick,rise,emit,rng) then break end
 	end
 end
-function Muzzle.step(s:any,ride:any,cfg:any,kind:string,now:number,hidden:(number,number)->boolean,emit:(any)->boolean,budget:any,rng:(()->number)?)
+local function linger(s:any,cfg:any,now:number,tip:any,hidden:any,emit:any,budget:any,rng:any)
+	local gas=s.linger;if not gas then return end
+	local c=cfg.artillery;local age=now-gas.at;local delta=now-gas.last;gas.last=now
+	if age>=c.lingerSec or age<0 then s.linger=nil;return end
+	-- APPROX bounded source rate integration; stalls/hidden/over-budget work leave no catch-up queue.
+	if delta>.1 or hidden(tip.x,tip.y) then gas.acc=0;return end
+	gas.acc+=math.max(0,delta)*c.lingerPerSec*(1-age/c.lingerSec)
+	local count=math.min(4,math.floor(gas.acc));gas.acc%=1
+	for _=1,count do
+		if budget.pulses<=0 then break end
+		budget.pulses-=1
+		if not Heavy.gas(cfg,tip,emit,rng)then s.linger=nil;break end
+	end
+end
+function Muzzle.step(s:any,ride:any,cfg:any,kind:string,now:number,hidden:(number,number)->boolean,emit:(any)->boolean,budget:any,rng:(()->number)?,wet:((number,number)->boolean)?)
 	if not Muzzle.supports(kind) or not ride or ride.warAt==nil or not finite(now) then Muzzle.cancel(s);return end
+	if kind=="artillery"and (not cfg.artillery or ride.weapon=="tbm"and not cfg.tbm) or kind=="rocket"and not cfg.rocket then Muzzle.cancel(s);return end
 	local pose=s.pose
 	if pose.x==nil then return end
 	if hidden(pose.x,pose.y) then Muzzle.cancel(s);return end
@@ -103,26 +120,44 @@ function Muzzle.step(s:any,ride:any,cfg:any,kind:string,now:number,hidden:(numbe
 		local events={}
 		if kind=="tank" then
 			table.insert(events,{at=pending.at,round=0,first=true});table.insert(events,{at=pending.at+cfg.tank.evacuator.delay,gas=true})
-		else
+		elseif kind=="ifv"then
 			for i=0,cfg.ifv.rounds-1 do table.insert(events,{at=pending.at+i*cfg.ifv.gap,round=i,first=i==0}) end
 			table.insert(events,{at=pending.at+(cfg.ifv.rounds-1)*cfg.ifv.gap+cfg.ifv.breath.delay,gas=true})
+		elseif kind=="artillery"then
+			table.insert(events,{at=pending.at,first=true,missile=pending.weapon=="tbm"})
+		else
+			local offsets=pending.offsets or {};local count=math.min(#offsets,64)
+			for i=1,count do table.insert(events,{at=pending.at+offsets[i],round=i-1,count=count,last=i==count,first=i==1})end
 		end
 		s.events=events
 	end
-	if not s.events then return end
+	if not s.events and not s.linger then return end
 	local tip:any=nil
 	local remaining=0
-	for i=1,#s.events do
+	local events=s.events or EMPTY
+	local root=s.root or {};s.root=root;root.x=pose.bodyX;root.y=pose.bodyY
+	for i=1,#events do
 		local event=s.events[i]
 		if event.at>now+1e-6 then remaining+=1;s.events[remaining]=event;continue end
 		if now-event.at>(if event.first then .25 else .1) or budget.pulses<=0 or (event.gas and not s.fired) then continue end
-		tip=tip or Muzzle.tip(cfg,kind,pose,s.distance)
-		if hidden(tip.x,tip.y) then continue end
+		local current=if kind=="rocket"then Heavy.rocketTip(cfg,pose,event.round,event.count)elseif event.missile then {x=root.x,y=root.y,h=cfg.unitMuzzleHeight} else tip or Muzzle.tip(cfg,kind,pose,s.distance)
+		if kind~="rocket"and not event.missile then tip=current end
+		if hidden(current.x,current.y) then continue end
 		budget.pulses-=1
 		if event.gas then Muzzle.breath(cfg,tip,kind,emit,random)
-		else local accepted=if kind=="tank" then Muzzle.tank(cfg,tip,s.army,emit,random) else Muzzle.ifv(cfg,tip,event.round,emit,random);s.fired=s.fired or accepted end
+		else
+			local accepted
+			if kind=="tank"then accepted=Muzzle.tank(cfg,current,s.army,emit,random)
+			elseif kind=="ifv"then accepted=Muzzle.ifv(cfg,current,event.round,emit,random)
+			elseif kind=="rocket"then accepted=Heavy.rocket(cfg,current,root,event.last,emit,random)
+			elseif event.missile then accepted=Heavy.missile(cfg,root,pose.heading,emit,random)
+			else accepted=Heavy.howitzer(cfg,current,root,emit,random,wet);if accepted then s.linger={at=event.at,last=now,acc=0}end end
+			s.fired=s.fired or accepted
+		end
 	end
-	for i=#s.events,remaining+1,-1 do s.events[i]=nil end
-	if remaining==0 then Muzzle.cancel(s) end
+	for i=#events,remaining+1,-1 do events[i]=nil end
+	s.events=if remaining>0 then events else nil
+	if s.linger then tip=tip or Muzzle.tip(cfg,"artillery",pose,s.distance);linger(s,cfg,now,tip,hidden,emit,budget,random)end
+	if not s.events and not s.linger then Muzzle.cancel(s) end
 end
 return Muzzle

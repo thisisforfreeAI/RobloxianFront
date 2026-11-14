@@ -4416,6 +4416,8 @@ require("./image_residency")(test, eq)
 
 require("./crew_muzzles")(test, eq)
 
+require("./heavy_muzzles")(test, eq)
+
 print(`\n{passed} passed, {failed} failed`)
 if failed > 0 then
 	error("tests failed")

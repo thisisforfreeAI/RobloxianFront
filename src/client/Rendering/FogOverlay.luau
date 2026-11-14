@@ -121,4 +121,12 @@ function FogOverlay.hidden(x: number, y: number): boolean
 	return buffer.readu8(visible,cy*width+cx)==0
 end
 
+-- Static water classification for optional ground particles; detection/vision are unchanged.
+function FogOverlay.water(x:number,y:number):boolean
+	local cx,cy=math.floor(x),math.floor(y)
+	if not terrain or cx<0 or cy<0 or cx>=width or cy>=height then return false end
+	local name=Terrain.names[buffer.readu8(terrain,cy*width+cx)+1]
+	return name=="deep"or name=="shallow"or name=="river"
+end
+
 return FogOverlay

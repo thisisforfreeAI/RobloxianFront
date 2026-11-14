@@ -621,8 +621,9 @@ local function place(v: View, pos: Vector3, yaw: number, dt: number)
 		local tpos = turretAt(look, visualPos, yaw)
 		if slide~=0 then tpos-=Vector3.new(math.cos(turretH)*slide*S,0,math.sin(turretH)*slide*S)end
 		if v.muzzle and vehicleMuzzleConfig then
-			VehicleMuzzle.place(v.muzzle,pos.X/S,pos.Z/S,tpos.X/S,tpos.Z/S,turretH)
-			VehicleMuzzle.step(v.muzzle,v.vehicle,vehicleMuzzleConfig,v.kind,VehicleRecoil.time(v.vehicle,os.clock()),FogOverlay.hidden,emitRifleParticle,rifleBudget)
+			local muzzleHeading=if v.kind=="artillery"or v.kind=="rocket"then hullH else turretH
+			VehicleMuzzle.place(v.muzzle,pos.X/S,pos.Z/S,tpos.X/S,tpos.Z/S,muzzleHeading,visualPos.X/S,visualPos.Z/S)
+			VehicleMuzzle.step(v.muzzle,v.vehicle,vehicleMuzzleConfig,v.kind,VehicleRecoil.time(v.vehicle,os.clock()),FogOverlay.hidden,emitRifleParticle,rifleBudget,nil,FogOverlay.water)
 		end
 		local soot = sootOf(v)
 		if soot > 0 and not v.sooted then
@@ -1313,7 +1314,7 @@ function UnitRenderer.apply(tick: number, units: { any }, deaths: { any }?,war:a
 		end
 		if VehicleRecoil.supports(kind)then
 			v.vehicle=v.vehicle or VehicleRecoil.new();VehicleRecoil.receive(v.vehicle,u[20],war,os.clock())
-			if kind=="tank"or kind=="ifv"then
+			if VehicleMuzzle.supports(kind)then
 				v.muzzle=v.muzzle or VehicleMuzzle.new()
 				VehicleMuzzle.receive(v.muzzle,v.vehicle,if bit32.btest(v.flags,1)then v.aimX else nil,v.aimY)
 			end

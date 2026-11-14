@@ -20,8 +20,10 @@ function Motion.snapshot(e:any,previous:any?,sim:any):(any,any)
  else known={sequence=0,shot=shot,at=nil,aim=0,offsets=EMPTY}end
  local offsets=known.offsets
  if known.at==nil or sim.time-known.at>((offsets[#offsets]or 0)+1)then offsets=EMPTY end
- local army=if e.kind=="tank"or e.kind=="ifv"then (if sim.armyOf then sim.armyOf(e.side)else "coalition")else nil
- return {known.sequence,known.at or false,known.aim,offsets,army},known
+ local army=if e.kind=="tank"or e.kind=="ifv"or e.kind=="artillery"or e.kind=="rocket"then (if sim.armyOf then sim.armyOf(e.side)else "coalition")else nil
+ -- The simulation keeps the missile launcher's base weapon as salvo; its missile table selects TBM.
+ local missile=if e.kind=="artillery"and sim.unitKey and sim.rules and sim.rules.has then sim.rules:has(sim.unitKey(e)..".missile.splash")else false
+ return {known.sequence,known.at or false,known.aim,offsets,army,if missile then "tbm"else nil},known
 end
 function Motion.new():any return{sequence=nil,shotAt=-math.huge,aim=0,offsets=EMPTY,warAt=nil,running=false,received=0}end
 function Motion.time(state:any,wall:number):number
@@ -29,7 +31,7 @@ function Motion.time(state:any,wall:number):number
 end
 function Motion.receive(state:any,packet:any,war:any,wall:number)
  if type(packet)~='table'or not finite(packet[1])or packet[1]<0 or packet[1]%1~=0 then
-  state.sequence=nil;state.shotAt=-math.huge;state.offsets=EMPTY;state.warAt=nil;state.army="coalition";return
+  state.sequence=nil;state.shotAt=-math.huge;state.offsets=EMPTY;state.warAt=nil;state.army="coalition";state.weapon=nil;return
  end
  if type(war)=='table'and finite(war[1])and war[1]>=0 and(war[2]==0 or war[2]==1)then
   local running=war[2]==1
@@ -37,6 +39,7 @@ function Motion.receive(state:any,packet:any,war:any,wall:number)
  else state.warAt=nil end
  local sequence=packet[1]
  state.army=if packet[5]=="republic"then "republic"else "coalition"
+ state.weapon=if packet[6]=="tbm"then "tbm"else nil
  if state.sequence~=nil and sequence>state.sequence then
   state.shotAt=-math.huge;state.offsets=EMPTY
   if state.warAt~=nil and finite(packet[2])and finite(packet[3])then

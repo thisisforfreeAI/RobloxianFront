@@ -1,4 +1,4 @@
-// Extract tank/IFV muzzle settings from the owner's local install. Output stays git-ignored.
+// Extract vehicle/heavy-weapon muzzle settings from the owner's install. Output stays git-ignored.
 // Usage: node export_vehicle_muzzle.cjs <install> [project root]
 const fs=require('fs'),path=require('path'),vm=require('vm');
 const install=process.argv[2],root=path.resolve(process.argv[3]||path.join(__dirname,'../..'));
@@ -21,13 +21,27 @@ const profile=/const [\w$]+=([\w$]+)\.tank,[\w$]+=[\w$]+&&\(\([\w$]+=([\w$]+)\[/
 const colorAlias=/color:([\w$]+)\.fire/.exec(tankMethod)?.[1],motionAlias=/vh:[\w$]+\?([\w$]+)\.rise/.exec(puffMethod)?.[1],sparkAlias=/\{const [\w$]+=([\w$]+);for/.exec(sparkMethod)?.[1];
 if(!profile||!colorAlias||!motionAlias||!sparkAlias)throw Error('unrecognized vehicle muzzle configuration paths');
 method('autocannon');method('barrelBreath');method('gunFlash');method('spentCase');
-const vehicle=imported(profile[1],['gun','gunHeight','tank','ifv']),factions=imported(profile[2]),colors=imported(colorAlias,['fire','hot','ember','smoke','smokeLight','dustLight']),motion=imported(motionAlias,['rise','grow']),sparks=imported(sparkAlias,['muzzle','size','impactSpeed','impactLife']);
+const vehicle=imported(profile[1],['gun','gunHeight','tank','ifv','artillery']),factions=imported(profile[2]),colors=imported(colorAlias,['fire','hot','ember','smoke','smokeLight','dust','dustLight']),motion=imported(motionAlias,['rise','grow']),sparks=imported(sparkAlias,['muzzle','size','impactSpeed','impactLife']);
+const rocketAlias=/const [\w$]+=([\w$]+),[\w$]+=Math\.max/.exec(method('rocketLaunch'))?.[1];
+const dustAlias=/const [\w$]+=([\w$]+)\.muzzle/.exec(method('muzzleDust'))?.[1];
+const groundMotionAlias=/h:([\w$]+)\.dustHeight/.exec(method('gunDust'))?.[1];
+const groundAlias=/&&([\w$]+)\.ground\[/.exec(method('groundLook'))?.[1];
+const weaponAlias=/const [\w$]+=([\w$]+)\[[\w$]+\],/.exec(method('muzzle'))?.[1];
+const height=/\)\+(\.\d+|\d+(?:\.\d+)?):/.exec(method('gunHeight'))?.[1];
+if(!rocketAlias||!dustAlias||!groundMotionAlias||!groundAlias||!weaponAlias||!height)throw Error('unrecognized heavy muzzle configuration paths');
+const rocket=imported(rocketAlias),muzzleDust=imported(dustAlias,['muzzle']).muzzle,groundMotion=imported(groundMotionAlias,['dustHeight','dustRise','grow']);
+const howitzer=method('howitzer'),brakeAlias=/for\(const [\w$]+ of ([\w$]+)\)/.exec(howitzer)?.[1];
+const brakeLiteral=brakeAlias&&new RegExp('\\b'+escaped(brakeAlias)+'=(\\[[^\\]]+\\])').exec(effects)?.[1];
+if(!brakeLiteral||JSON.stringify(vm.runInNewContext(brakeLiteral,{}, {timeout:1000}))!=='[1,-1]')throw Error('howitzer brake orientation changed; review port');
+const ground=properties(literal(groundAlias)).get('ground'),earth=ground&&properties(ground).get('earth');if(!earth)throw Error('missing source earth material');
+const material=vm.runInNewContext('('+earth+')',{}, {timeout:1000}),tbm=imported(weaponAlias,['tbm']).tbm;
+if(vehicle.artillery.smoke>16||vehicle.artillery.dust>32||vehicle.artillery.lingerPerSec>64||vehicle.artillery.lingerSec>8||rocket.rockets>64||rocket.backblast>16||rocket.cloud>16||rocket.haze>16||muzzleDust.puffs>32||muzzleDust.big>4||tbm.muzzleSmoke>16)throw Error('heavy muzzle bounds changed; review port');
 const variantAlias=/const [\w$]+=[\w$]+\.army\?([\w$]+)\[[\w$]+\.army\]:void 0;/.exec(method('vehicleFire'))?.[1];
 const sourceIfvVariants=variantAlias?[...properties(literal(variantAlias)).keys()]:[];
 if(vehicle.ifv.rounds!==4||vehicle.ifv.gap!==.2)throw Error('IFV cadence changed; review VehicleRecoil and muzzle timing together');
 if(vehicle.tank.evacuator.puffs>8||vehicle.ifv.breath.puffs>8||vehicle.ifv.cases.n>4||vehicle.tank.smoke>8||sparks.muzzle>8)throw Error('vehicle muzzle bounds changed; review port');
-const data={sourceIfvVariants,gun:{tank:vehicle.gun.tank,ifv:vehicle.gun.ifv},gunHeight:vehicle.gunHeight,tank:vehicle.tank,ifv:vehicle.ifv,factions:{coalition:{flash:1,ball:1},republic:factions.republic.tank},colors:{fire:colors.fire,hot:colors.hot,ember:colors.ember,smoke:colors.smoke,smokeLight:colors.smokeLight,dustLight:colors.dustLight},motion:{rise:motion.rise,grow:motion.grow},sparks:{muzzle:sparks.muzzle,size:sparks.size,speed:sparks.impactSpeed,life:sparks.impactLife}};
+const data={sourceIfvVariants,gun:{tank:vehicle.gun.tank,ifv:vehicle.gun.ifv,artillery:vehicle.gun.artillery},gunHeight:vehicle.gunHeight,tank:vehicle.tank,ifv:vehicle.ifv,artillery:vehicle.artillery,rocket,tbm:{flash:tbm.flash,muzzleSmoke:tbm.muzzleSmoke},unitMuzzleHeight:Number(height),muzzleDust,groundMotion,ground:{dust:material.dust,dustPale:material.dustPale},factions:{coalition:{flash:1,ball:1},republic:factions.republic.tank},colors:{fire:colors.fire,hot:colors.hot,ember:colors.ember,smoke:colors.smoke,smokeLight:colors.smokeLight,dust:colors.dust,dustLight:colors.dustLight},motion:{rise:motion.rise,grow:motion.grow},sparks:{muzzle:sparks.muzzle,size:sparks.size,speed:sparks.impactSpeed,life:sparks.impactLife}};
 function lua(v){if(v===null)return'nil';if(typeof v!=='object')return JSON.stringify(v);if(Array.isArray(v))return'{'+v.map(lua).join(',')+'}';return'{'+Object.entries(v).map(([k,x])=>'['+JSON.stringify(k)+']='+lua(x)).join(',')+'}';}
 const target=path.join(root,'src/shared/GameData/VehicleMuzzleFx.luau');fs.mkdirSync(path.dirname(target),{recursive:true});fs.writeFileSync(target,'-- Generated locally from your install; git-ignored.\nreturn '+lua(data)+'\n');
-console.log('Generated private base tank/IFV muzzle settings; reuses the existing particle atlas.');
+console.log('Generated private tank/IFV/howitzer/rocket and single-missile muzzle settings; existing atlas only.');
 if(sourceIfvVariants.length)console.log('Source also has faction-specific IFV dispatch for '+sourceIfvVariants.join(', ')+'. Those newer variant routines require a separate parity audit.');
