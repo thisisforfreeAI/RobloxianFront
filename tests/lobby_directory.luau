@@ -212,4 +212,15 @@ return function(test: any, eq: any)
 		eq(D.reasonText("full"), D.REASONS.full.text); eq(D.reasonRetry("forbidden"), false)
 		eq(D.reasonText("nonsense"), D.REASONS.unavailable.text)
 	end)
+	test("legacy holds migrate to owned attempts without exposing metadata or retaining expired owners",function()
+		local l=listing({players=0,capacity=4})
+		l.reservations={["1"]=NOW+20,["2"]=NOW-1};l.reservationIds={["2"]="expired"}
+		local held=D.reserve(l,{userId=1},NOW,"other","new-attempt") :: any
+		eq(l.reservationIds["1"],nil);eq(held.reservations["2"],nil);eq(held.reservationIds["2"],nil)
+		eq(D.release(held,1,"old-attempt"),nil);eq(D.publicView(held,NOW).reservationIds,nil)
+		local arrived=D.claimArrival(held,{userId=1},NOW,"arrival") :: any
+		eq(D.release(arrived,1,"new-attempt"),nil);assert(D.release(arrived,1,"arrival"))
+		local merged=D.mergeHeartbeat(arrived,listing({players=1,userIds={1}}),NOW) :: any
+		eq(merged.reservations["1"],nil);eq(merged.reservationIds["1"],nil)
+	end)
 end

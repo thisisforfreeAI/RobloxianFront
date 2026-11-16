@@ -74,11 +74,24 @@ function Service.new(deps: any)
 	local friends: { [any]: { [number]: { at: number, value: boolean } } } = {}
 	local pending: { [any]: { id: string, at: number } } = {} -- player -> teleport in flight
 	local arrivals: { [any]: { [string]: any } } = {} -- player -> their arrival check here
+	local arrivalOwners: {[any]:string}={}
 	local lastErr: string? = nil
 	local joining: {[any]:boolean}={}
 	local browsing:{[any]:boolean}={}
 	local reading=false
 	local readAt=-math.huge
+	local readFailed=false
+	local heartbeatRunning=false
+	local function active(player:any):boolean
+		return not closed and (not deps.isPresent or deps.isPresent(player))
+	end
+	local function requestId(player:any):string
+		self.serial=(self.serial or 0)+1
+		return tostring(lobbyId)..":"..tostring(player.UserId)..":"..tostring(deps.now())..":"..tostring(self.serial)
+	end
+	local function release(id:string,player:any,owner:string?)
+		deps.store.update(id,function(old) return LobbyDirectory.release(old,player.UserId,owner) end,LobbyDirectory.STORE_TTL_SEC)
+	end
 
 	self.lobbyId = lobbyId
 	if not lobbyId then
@@ -96,6 +109,7 @@ function Service.new(deps: any)
 	end
 
 	local function friendOf(player: any, userId: number): boolean
+		if not active(player) then return false end
 		if userId == 0 then
 			return false
 		end
@@ -110,6 +124,7 @@ function Service.new(deps: any)
 			return hit.value
 		end
 		local ok, value = pcall(deps.isFriend, player, userId)
+		if not active(player) then friends[player]=nil;return false end
 		if not ok then return false end -- A transient service failure is not a cached negative friendship.
 		local result = ok and value == true
 		per[userId] = { at = now, value = result }
@@ -172,7 +187,7 @@ function Service.new(deps: any)
 	end
 
 	-- Writes (or deletes) this server's listing. Returns true when the directory reflects our state.
-	function self.heartbeat(): boolean
+	local function heartbeatRequest(): boolean
 		if closed then
 			return false
 		end
@@ -203,12 +218,22 @@ function Service.new(deps: any)
 		end
 		return ok == true
 	end
+	function self.heartbeat():boolean
+		if closed or heartbeatRunning then return false end
+		heartbeatRunning=true
+		local ok,result=pcall(heartbeatRequest)
+		heartbeatRunning=false
+		if not ok then log("[Lobby] heartbeat write failed");return false end
+		return result
+	end
 
 	-- Starts publishing. stateFn is called each heartbeat; return nil to skip a beat.
 	function self.start(stateFn: () -> LocalState?)
 		if closed then return end
 		getState = stateFn
 		self.heartbeat()
+		if closed then return end
+		if stopLoop then stopLoop() end
 		stopLoop = deps.every(LobbyDirectory.HEARTBEAT_SEC, self.heartbeat)
 	end
 
@@ -228,6 +253,9 @@ function Service.new(deps: any)
 				pcall(deps.messaging.publish, { t = "closed", id = lobbyId })
 			end
 		end
+		cache=nil
+		table.clear(lastBrowse);table.clear(lastJoin);table.clear(friends)
+		table.clear(arrivals);table.clear(arrivalOwners);table.clear(admitted);table.clear(pending)
 	end
 
 	-- Other servers announce closes so our browse cache drops them before the next directory read.
@@ -241,25 +269,27 @@ function Service.new(deps: any)
 					end
 				end
 				cache.listings = kept
+				for _,last in lastBrowse do last.response=nil end
 			end
 		end)
 	end
 
-	-- Reads the whole directory (cached for CACHE_SEC) and deletes a few dead keys it finds.
-	local function readAll(now: number): (boolean, { any })
+	-- Shared bounded reads; stale records are filtered at response time, never deleted by browsers.
+	local function readAll(now: number): (boolean, { any }, boolean?)
 		if cache and now - cache.at < CACHE_SEC then
 			return true, cache.listings
 		end
-		if reading or now-readAt<CACHE_SEC then return cache~=nil,if cache then cache.listings else {} end
+		if reading or now-readAt<CACHE_SEC then return cache~=nil,if cache then cache.listings else {},readFailed end
 		reading=true;readAt=now
 		local all: { any } = {}
 		local after: any = nil
 		for _ = 1, MAX_PAGES do
-			local ok, items = deps.store.range(RANGE_PAGE, after)
-			if not ok or type(items) ~= "table" then
-				reading=false
+			local called, ok, items = pcall(deps.store.range,RANGE_PAGE, after)
+			if closed then reading=false;return false,{} end
+			if not called or not ok or type(items) ~= "table" then
+				reading=false;readAt=deps.now();readFailed=true
 				if cache then
-					return true, cache.listings -- serve the last good read
+					return true, cache.listings, true -- serve the last good read with recovery feedback
 				end
 				return false, {}
 			end
@@ -271,7 +301,7 @@ function Service.new(deps: any)
 				break
 			end
 		end
-		reading=false;cache = { at = now, listings = all }
+		reading=false;readAt=deps.now();readFailed=false;cache = { at = readAt, listings = all }
 		return true, all
 	end
 
@@ -294,25 +324,35 @@ function Service.new(deps: any)
 	end
 
 	local function browseRequest(player: any, rawFilter: any): { [string]: any }
+		if not active(player) then return reply("closed") end
 		if deps.enabled==false then return reply("unavailable",{message="Cross-server matches are available in Roblox Player."}) end
 		local now = deps.now()
 		local filter = LobbyDirectory.readFilter(rawFilter)
 		local last = lastBrowse[player]
+		local cachedOnly=false
 		if last and now - last.at < LobbyProtocol.BROWSE_COOLDOWN_SEC then
 			local same=true;for _,key in {"map","status","hasSpace","friendsOnly","limit"} do if filter[key]~=last.filter[key] then same=false end end
-			if same then return last.response end
-			return reply("busy",{refreshAfter=LobbyProtocol.BROWSE_COOLDOWN_SEC-(now-last.at)})
+			if not same then return reply("busy",{refreshAfter=LobbyProtocol.BROWSE_COOLDOWN_SEC-(now-last.at)}) end
+			if now==last.at and last.response then return last.response end
+			cachedOnly=true -- Recheck expiry without spending another store read or extending the cooldown.
 		end
-		local ok, listings = readAll(now)
+		local ok,listings,degraded
+		if cachedOnly then ok=cache~=nil;listings=if cache then cache.listings else {};degraded=readFailed
+		else ok,listings,degraded=readAll(now) end
+		if not active(player) then return reply("closed") end
 		local response
 		if not ok then
 			response = reply("unavailable", { refreshAfter = LobbyProtocol.REFRESH_AFTER_SEC })
 		else
-			local lobbies, dead = LobbyDirectory.browse(listings, viewerFor(player, listings,filter.friendsOnly), now, filter)
+			local viewer=viewerFor(player, listings,filter.friendsOnly)
+			now=deps.now() -- range/friendship requests may have yielded past listing expiry.
+			if not active(player) then return reply("closed") end
+			local lobbies, dead = LobbyDirectory.browse(listings, viewer, now, filter)
 			sweep(dead)
 			response = { ok = true, lobbies = lobbies, refreshAfter = LobbyProtocol.REFRESH_AFTER_SEC, currentLobbyId=lobbyId }
+			if degraded then response.message="Directory refresh is unavailable. Showing the last available matches; refresh to try again." end
 		end
-		lastBrowse[player] = { at = now, response = response,filter=filter }
+		lastBrowse[player] = { at = if cachedOnly then last.at else now, response = response,filter=filter }
 		return response
 	end
 	function self.browse(player:any,filter:any):any
@@ -323,6 +363,7 @@ function Service.new(deps: any)
 	end
 
 	local function joinRequest(player: any, rawLobbyId: any): { [string]: any }
+		if not active(player) then return reply("closed") end
 		local now = deps.now()
 		local id = LobbyDirectory.readLobbyId(rawLobbyId)
 		if not id then
@@ -347,11 +388,13 @@ function Service.new(deps: any)
 			return reply("gone")
 		end
 		local viewer = viewerFor(player, { current })
+		local operation={id=id,at=deps.now(),requestId=requestId(player)}
 
 		-- 2. Recheck and hold a seat atomically. The transform may run more than once; it is pure.
 		local outcome: any = nil
 		local okUpdate = deps.store.update(id, function(old: any)
-			local nextL, result = LobbyDirectory.reserve(old, viewer, deps.now(), lobbyId)
+			if not active(player) then outcome="closed";return nil end
+			local nextL, result = LobbyDirectory.reserve(old, viewer, deps.now(), lobbyId,operation.requestId)
 			outcome = result
 			return nextL
 		end, LobbyDirectory.STORE_TTL_SEC)
@@ -375,20 +418,16 @@ function Service.new(deps: any)
 
 		-- 3. Route the player to that lobby's server. Teleport data is a hint only; the destination
 		-- rechecks the reservation in the store.
-		if deps.isPresent and not deps.isPresent(player) then
-			deps.store.update(id,function(old) return LobbyDirectory.release(old,player.UserId) end,LobbyDirectory.STORE_TTL_SEC)
+		if not active(player) then
+			release(id,player,operation.requestId)
 			return reply("gone")
 		end
-		self.serial=(self.serial or 0)+1
-		local operation={id=id,at=deps.now(),requestId=tostring(player.UserId)..":"..tostring(now)..":"..tostring(self.serial)}
 		pending[player] = operation
 		local okTp, tpErr = deps.teleport(player, route, { lobbyId = id, from = lobbyId,requestId=operation.requestId })
 		if pending[player]~=operation then return reply("teleportFailed") end
 		if not okTp then
 			pending[player] = nil
-			deps.store.update(id, function(old: any)
-				return LobbyDirectory.release(old, player.UserId)
-			end, LobbyDirectory.STORE_TTL_SEC)
+			release(id,player,operation.requestId)
 			log(`[Lobby] teleport to {id} failed: {tostring(tpErr)}`)
 			return reply("teleportFailed")
 		end
@@ -411,12 +450,11 @@ function Service.new(deps: any)
 		end
 		local id = inFlight.id
 		pending[player] = nil
-		deps.store.update(id, function(old: any)
-			return LobbyDirectory.release(old, player.UserId)
-		end, LobbyDirectory.STORE_TTL_SEC)
-		if deps.fireNotice then
+		-- Notify before the yielding cleanup; otherwise its completion can cancel a later UI join.
+		if active(player) and deps.fireNotice then
 			deps.fireNotice(player, { reason = "teleportFailed", message = LobbyDirectory.reasonText("teleportFailed"), retry = true })
 		end
+		release(id,player,inFlight.requestId)
 	end
 
 	--[[
@@ -425,33 +463,40 @@ function Service.new(deps: any)
 		admit = false means (send back to the start place, or seat as spectator).
 	]]
 	function self.arrive(player: any): { [string]: any }
+		if not active(player) then return {admit=false,reason="closed"} end
 		if arrivals[player] then return arrivals[player] end
 		local now = deps.now()
+		local owner=requestId(player)
+		arrivalOwners[player]=owner
 		local localListing=fresh(now,true)
 		local result:any=nil
 		if localListing then
 			local viewer=viewerFor(player,{localListing})
 			if lobbyId and (deps.jobId or deps.accessCode) and deps.enabled~=false then
 				local ok=deps.store.update(lobbyId,function(old)
-					if closed then result={admit=false,reason="closed"};return nil end
+					if not active(player) then result={admit=false,reason="closed"};return nil end
 					-- Read current local seating inside every retry; no yielding in this provider.
-					local latest=fresh(now,true);if not latest then result=nil;return nil end
+					now=deps.now();local latest=fresh(now,true);if not latest then result=nil;return nil end
 					local merged=LobbyDirectory.mergeHeartbeat(old,latest,now)
 					if not merged then result={admit=true,seat=false,reason="inProgress"};return nil end
-					local nextL,verdict=LobbyDirectory.claimArrival(merged,viewer,now);result=verdict
+					local nextL,verdict=LobbyDirectory.claimArrival(merged,viewer,now,owner);result=verdict
 					return nextL or merged
 				end,LobbyDirectory.STORE_TTL_SEC)
 				if not ok then result=nil end
 			end
 			-- During outages/unroutable local servers, still enforce this server's actual privacy.
-			result=result or LobbyDirectory.checkArrival(localListing,viewer,now)
+			if not result then
+				now=deps.now();local latest=fresh(now,true)
+				-- Reuse resolved permissions: introducing another yielding lookup here would stale latest.
+				result=if latest then LobbyDirectory.checkArrival(latest,viewer,now) else {admit=false,reason="unavailable"}
+			end
 		else
 			local ok,own=true,nil
 			if lobbyId then ok,own=deps.store.get(lobbyId) end
 			result=LobbyDirectory.checkArrival(if ok then own else nil,viewerFor(player,{own}),now)
 		end
-		if deps.isPresent and not deps.isPresent(player) then
-			if lobbyId and deps.enabled~=false then deps.store.update(lobbyId,function(old) return LobbyDirectory.release(old,player.UserId) end,LobbyDirectory.STORE_TTL_SEC) end
+		if not active(player) then
+			if lobbyId and deps.enabled~=false then release(lobbyId,player,owner) end
 			return {admit=false,reason="gone"}
 		end
 		if result.admit then
@@ -468,14 +513,15 @@ function Service.new(deps: any)
 	end
 
 	function self.leave(player: any)
+		local owner=arrivalOwners[player];arrivalOwners[player]=nil
 		admitted[player.UserId] = nil
 		lastBrowse[player] = nil
 		lastJoin[player] = nil
 		friends[player] = nil
 		pending[player] = nil
 		arrivals[player] = nil
-		if lobbyId and deps.enabled~=false then
-			deps.store.update(lobbyId,function(old) return LobbyDirectory.release(old,player.UserId) end,LobbyDirectory.STORE_TTL_SEC)
+		if owner and lobbyId and deps.enabled~=false then
+			release(lobbyId,player,owner)
 		end
 	end
 

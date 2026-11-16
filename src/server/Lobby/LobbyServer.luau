@@ -238,9 +238,15 @@ function LobbyServer.start(stateFn: () -> any, options: Options?)
 		if ok and type(data)=="table" and type(data.requestId)=="string" then service.teleportFailed(player,data.requestId) end
 	end))
 
+	local active=true
+	local checking:{[Player]:boolean}={}
 	local function onPlayer(player: Player)
+		-- PlayerAdded and the startup GetPlayers snapshot can name the same loading player.
+		if not active or checking[player] or service.arrival(player) then return end
+		checking[player]=true
 		local result = service.arrive(player)
-		if player.Parent~=Players then return end
+		checking[player]=nil
+		if not active or player.Parent~=Players then return end
 		if result.admit then
 			if opts.onAdmitted then
 				opts.onAdmitted(player, result)
@@ -264,6 +270,8 @@ function LobbyServer.start(stateFn: () -> any, options: Options?)
 	end))
 	local close=service.close
 	function service.close()
+		if not active then return end
+		active=false
 		for _,connection in connections do connection:Disconnect() end;table.clear(connections)
 		folder:Destroy();close()
 	end

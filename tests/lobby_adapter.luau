@@ -19,6 +19,7 @@ return function(test:any,eq:any)
 		function map:GetAsync(key) h.reads+=1;if h.outage then error("unavailable") end;return h.values[key] end
 		function map:UpdateAsync(key,transform,ttl)
 			h.writes+=1;if h.outage then error("unavailable") end
+			if h.onUpdate then h.onUpdate(key) end
 			transform(h.values[key]);local v=transform(h.values[key]);if v then h.values[key]=v end;return v
 		end
 		function map:RemoveAsync(key) h.values[key]=nil end
@@ -41,7 +42,8 @@ return function(test:any,eq:any)
 		local env=setmetatable({game=game,script={Parent={LobbyDirectoryService="service"}},require=function(key) return if key=="directory" then D elseif key=="protocol" then P else Service end,
 			Instance={new=instance},Enum={SortDirection={Ascending=1}},task=fakeTask,os={time=function() return h.t end,clock=function() return h.clock end},warn=function() end},{__index=getfenv()})
 		local adapter=luau.load(fs.readFile("src/server/Lobby/LobbyServer.luau"),{environment=env})();h.state=state or {map="Saddle",players=0,capacity=2,status="waiting",userIds={}}
-		h.svc=adapter.start(function() return h.state end)
+		h.admissions=0
+		h.svc=adapter.start(function() return h.state end,{onAdmitted=function() h.admissions+=1 end})
 		function h:player(id)
 			return {UserId=id,Parent=self.players,IsFriendsWithAsync=function(_,host) h.friendCalls+=1;return id==6 and host==42 end,Kick=function(_,message) h.kicked=message end}
 		end
@@ -72,5 +74,17 @@ return function(test:any,eq:any)
 		local h=fixture();h.svc.close();eq(h.values["local-job"],nil);eq(h.unsubscribed,true)
 		for _,c in h.players.PlayerAdded.connections do eq(c.dead,true) end
 		for _,item in h.instances do if item.ClassName=="Folder" then eq(item.dead,true) end end
+	end)
+	test("duplicate PlayerAdded during a yielding arrival performs one check and admission callback",function()
+		local h=fixture();local p=h:player(1);local checks=0
+		h.onUpdate=function() checks+=1;coroutine.yield() end
+		local thread=coroutine.create(function() h.players.PlayerAdded:fire(p) end);assert(coroutine.resume(thread));eq(checks,1)
+		local duplicate=coroutine.create(function() h.players.PlayerAdded:fire(p) end);assert(coroutine.resume(duplicate));eq(coroutine.status(duplicate),"dead");eq(checks,1);assert(coroutine.resume(thread))
+		eq(h.svc.arrival(p).seat,true);h.players.PlayerAdded:fire(p);eq(checks,1);eq(h.admissions,1)
+	end)
+	test("shutdown during a yielding arrival prevents admission and a post-close kick",function()
+		local h=fixture();local p=h:player(1);h.onUpdate=function() coroutine.yield() end
+		local thread=coroutine.create(function() h.players.PlayerAdded:fire(p) end);assert(coroutine.resume(thread))
+		h.svc.close();assert(coroutine.resume(thread));eq(h.kicked,nil);eq(h.admissions,0);eq(h.svc.arrival(p),nil);eq(h.values["local-job"],nil)
 	end)
 end

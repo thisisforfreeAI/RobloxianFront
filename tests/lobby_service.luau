@@ -105,6 +105,7 @@ return function(test: any, eq: any)
 		}, { __index = getfenv() })
 		local Service = luau.load(source, { environment = env })()
 		s.svc = Service.new({
+			isPresent = opts.isPresent,
 			store = w.store,
 			now = function() return w.t end,
 			lobbyId = opts.lobbyId,
@@ -118,6 +119,7 @@ return function(test: any, eq: any)
 			end,
 			isFriend = function(player: any, userId: number)
 				s.friendCalls += 1
+				if s.onFriend then s.onFriend() end
 				return (friendships[player.UserId] or {})[userId] == true
 			end,
 			messaging = {
@@ -126,7 +128,7 @@ return function(test: any, eq: any)
 						cb(copy(msg))
 					end
 				end,
-				subscribe = function(cb: any)
+			subscribe = function(cb: any)
 					table.insert(w.bus, cb)
 				end,
 			},
@@ -421,6 +423,100 @@ return function(test: any, eq: any)
 		local w=world();local a=server(w,{lobbyId="job-a"});local update=w.store.update
 		w.store.update=function(...) a.state.players=2;a.state.userIds={1,2};return update(...) end
 		a.svc.heartbeat();eq(w.raw("job-a").players,2);eq(#w.raw("job-a").userIds,2)
+	end)
+	test("a delayed teleport cleanup cannot release a newer retry of the same destination",function()
+		local w=world();server(w,{lobbyId="job-a"});local b=server(w,{lobbyId="job-b",start=false});local p=player()
+		assert(b.svc.join(p,"job-a").ok);local old=b.teleports[1].data.requestId
+		local update=w.store.update;local delayed=true
+		w.store.update=function(...) if delayed then delayed=false;coroutine.yield() end;return update(...) end
+		local thread=coroutine.create(function() b.svc.teleportFailed(p,old) end);assert(coroutine.resume(thread))
+		local notices=#b.notices
+		w.t+=4;assert(b.svc.join(p,"job-a").ok);local latest=b.teleports[2].data.requestId
+		assert(coroutine.resume(thread));assert(w.raw("job-a").reservations[tostring(p.UserId)],"old cleanup erased the retry's hold")
+		eq(notices,1);eq(#b.notices,1) -- Failure feedback must precede yielding cleanup.
+		eq(w.raw("job-a").reservationIds[tostring(p.UserId)],latest)
+		b.svc.teleportFailed(p,latest);eq(w.raw("job-a").reservations[tostring(p.UserId)],nil)
+	end)
+	test("arrival ownership survives a late source-server failure and heartbeat",function()
+		local w=world();local a=server(w,{lobbyId="job-a",state={userIds={}}});local b=server(w,{lobbyId="job-b",start=false});local p=player()
+		assert(b.svc.join(p,"job-a").ok);local old=b.teleports[1].data.requestId
+		assert(a.svc.arrive(p).seat)
+		a.svc.heartbeat();b.svc.teleportFailed(p,old)
+		assert(w.raw("job-a").reservations[tostring(p.UserId)],"late source failure erased an arrival's hold")
+		a.svc.leave(p);eq(w.raw("job-a").reservations[tostring(p.UserId)],nil)
+	end)
+	test("departure before a yielding join resumes prevents travel and a seat write",function()
+		local w=world();server(w,{lobbyId="job-a"});local present=true
+		local b=server(w,{lobbyId="job-b",start=false,isPresent=function() return present end});local p=player()
+		local get=w.store.get;w.store.get=function(...) coroutine.yield();return get(...) end
+		local thread=coroutine.create(function() return b.svc.join(p,"job-a") end);assert(coroutine.resume(thread))
+		present=false;b.svc.leave(p);local ok,r=coroutine.resume(thread);assert(ok);eq(r.ok,false)
+		eq(#b.teleports,0);eq(next(w.raw("job-a").reservations),nil)
+	end)
+	test("closing during a yielding join prevents new reservations and all later requests",function()
+		local w=world();server(w,{lobbyId="job-a"});local b=server(w,{lobbyId="job-b",start=false});local p=player()
+		local get=w.store.get;w.store.get=function(...) coroutine.yield();return get(...) end
+		local thread=coroutine.create(function() return b.svc.join(p,"job-a") end);assert(coroutine.resume(thread));b.svc.close()
+		local ok,r=coroutine.resume(thread);assert(ok);eq(r.ok,false);eq(#b.teleports,0);eq(next(w.raw("job-a").reservations),nil)
+		eq(b.svc.browse(p,nil).ok,false);eq(b.svc.arrive(p).admit,false)
+	end)
+	test("an exception during directory read does not wedge the shared read guard",function()
+		local w=world();server(w,{lobbyId="job-a"});local b=server(w,{lobbyId="job-b",start=false})
+		local range=w.store.range;w.store.range=function() error("throttled") end
+		eq(b.svc.browse(player(),nil).ok,false);w.store.range=range;w.t+=4
+		eq(ids(b.svc.browse(player(),nil)),"job-a");eq(w.rangeCount,1)
+	end)
+	test("listings expire while browse is waiting for a range or friendship response",function()
+		local w=world();server(w,{lobbyId="job-a",state={expiresAt=T0+1,visibility="friends",hostUserId=42}})
+		local b=server(w,{lobbyId="job-b",start=false});b.onFriend=function() w.t+=2 end
+		eq(ids(b.svc.browse(player(6),nil)),"")
+		local w2=world();server(w2,{lobbyId="job-x",state={expiresAt=T0+1}});local c=server(w2,{lobbyId="job-c",start=false})
+		local range=w2.store.range;w2.store.range=function(...) local ok,rows=range(...);w2.t+=2;return ok,rows end
+		eq(ids(c.svc.browse(player(),nil)),"")
+	end)
+	test("arrival outage fallback rechecks privacy changed during a yielding write",function()
+		local w=world();local a=server(w,{lobbyId="job-a"})
+		w.store.update=function() a.state.visibility="private";a.state.hostUserId=42;return false,nil end
+		eq(a.svc.arrive(player(7)).admit,false)
+	end)
+	test("closing during initial publication cannot register a heartbeat loop afterwards",function()
+		local w=world();local a=server(w,{lobbyId="job-a",start=false});local update=w.store.update
+		w.store.update=function(...) a.svc.close();return update(...) end
+		a.svc.start(function() return a.state end);eq(#a.loops,0);eq(w.raw("job-a"),nil)
+	end)
+	test("heartbeat work is single flight and recovers after a failing write",function()
+		local w=world();local a=server(w,{lobbyId="job-a"});local update=w.store.update
+		w.store.update=function(...) coroutine.yield();return update(...) end
+		local thread=coroutine.create(a.svc.heartbeat);assert(coroutine.resume(thread))
+		local overlap=coroutine.create(a.svc.heartbeat);local ok,r=coroutine.resume(overlap);assert(ok);eq(coroutine.status(overlap),"dead");eq(r,false);assert(coroutine.resume(thread))
+		w.store.update=function() error("unavailable") end;eq(a.svc.heartbeat(),false)
+		w.store.update=update;eq(a.svc.heartbeat(),true)
+	end)
+	test("same-filter cooldown responses recheck short listing expiry without extra store reads",function()
+		local w=world();server(w,{lobbyId="job-a",state={expiresAt=T0+1}});local b=server(w,{lobbyId="job-b",start=false});local p=player()
+		eq(ids(b.svc.browse(p,nil)),"job-a");local reads=w.rangeCount
+		w.t+=1;eq(ids(b.svc.browse(p,nil)),"");eq(w.rangeCount,reads)
+	end)
+	test("outage fallback explains cached rows and hides them when their heartbeat goes stale",function()
+		local w=world();server(w,{lobbyId="job-a"});local b=server(w,{lobbyId="job-b",start=false});local p=player()
+		eq(ids(b.svc.browse(p,nil)),"job-a");w.fail=true;w.t+=4
+		local r=b.svc.browse(p,nil);eq(ids(r),"job-a");assert(r.message:find("refresh"))
+		w.t+=D.STALE_SEC;eq(ids(b.svc.browse(p,nil)),"")
+		w.fail=false;server(w,{lobbyId="job-a"});w.t+=4
+		r=b.svc.browse(p,nil);eq(ids(r),"job-a");eq(r.message,nil)
+	end)
+	test("slow failed reads apply backoff from completion and keep concurrent work bounded",function()
+		local w=world();local b=server(w,{lobbyId="job-b",start=false});local calls=0
+		w.store.range=function() calls+=1;coroutine.yield();return false,nil end
+		local thread=coroutine.create(function() return b.svc.browse(player(),nil) end);assert(coroutine.resume(thread))
+		for _=1,20 do w.t+=1;eq(b.svc.browse(player(),nil).ok,false) end;eq(calls,1)
+		assert(coroutine.resume(thread))
+		local retry=coroutine.create(function() return b.svc.browse(player(),nil) end);local ok,r=coroutine.resume(retry);assert(ok);eq(coroutine.status(retry),"dead");eq(r.ok,false);eq(calls,1)
+	end)
+	test("a closure notice invalidates the same player's cached response without bypassing cooldown",function()
+		local w=world();local a=server(w,{lobbyId="job-a"});local b=server(w,{lobbyId="job-b",start=false});local p=player()
+		eq(ids(b.svc.browse(p,nil)),"job-a");local reads=w.rangeCount;a.svc.close()
+		eq(ids(b.svc.browse(p,nil)),"");eq(w.rangeCount,reads);eq(b.svc.browse(p,{map="Other"}).reason,"busy")
 	end)
 end
 

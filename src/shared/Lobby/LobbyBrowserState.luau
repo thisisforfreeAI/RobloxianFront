@@ -4,18 +4,22 @@ local Browser={}
 function Browser.new(deps:any):any
 	local self:any={view={open=false,loading=false,joining=nil,rows={},filter={hasSpace=true},message=""}}
 	local alive=true;local browseToken:any=nil;local joinToken:any=nil;local nextBrowse=-math.huge;local refreshAt=math.huge;local joinUntil=0;local rowsAt=0;local problem:string?=nil
+	local revision=0
+	-- Invalidate replies with revisions, but retain the transport token until its callback completes.
+	-- Dropping that token on filter/close would allow arbitrarily many yielding InvokeServer calls.
 	local function changed() if alive and deps.changed then deps.changed(self.view) end end
 	local function failMessage(r:any):string return if type(r)=="table" and type(r.message)=="string" then r.message else "The match list is unavailable. Try refreshing." end
 	function self.refresh():boolean
 		if not alive or not self.view.open or self.view.joining or browseToken then return false end
 		local now=deps.now();if now<nextBrowse then refreshAt=nextBrowse;return false end
-		local token={};browseToken=token;nextBrowse=now+(deps.cooldown or 2);self.view.loading=true;changed()
+		local token={revision=revision};browseToken=token;nextBrowse=now+(deps.cooldown or 2);self.view.loading=true;changed()
 		local function done(r:any)
 			if not alive or browseToken~=token then return end
 			browseToken=nil;self.view.loading=false;local now=deps.now()
+			if token.revision~=revision or not self.view.open or self.view.joining then changed();return end
 			if type(r)=="table" and r.ok==true and type(r.lobbies)=="table" then
 				self.view.rows={};for i,row in r.lobbies do if i>100 then break end;if type(row)=="table" and type(row.lobbyId)=="string" then table.insert(self.view.rows,row) end end
-				self.view.currentLobbyId=r.currentLobbyId;self.view.message=problem or (if #self.view.rows==0 then "No matching games right now. Try All matches or refresh." else "Choose a match to join.");rowsAt=now
+				self.view.currentLobbyId=r.currentLobbyId;self.view.message=problem or (if type(r.message)=="string" then r.message elseif #self.view.rows==0 then "No matching games right now. Try All matches or refresh." else "Choose a match to join.");rowsAt=now
 			else self.view.message=failMessage(r) end
 			refreshAt=now+math.clamp(if type(r)=="table" then tonumber(r.refreshAfter) or 10 else 10,2,60);changed()
 		end
@@ -25,13 +29,13 @@ function Browser.new(deps:any):any
 	function self.setOpen(open:boolean):boolean
 		if not alive or (not open and self.view.joining) then return false end
 		self.view.open=open
-		if open then refreshAt=deps.now();self.refresh() else browseToken=nil;self.view.loading=false end
+		if open then refreshAt=deps.now();self.refresh() else revision+=1;self.view.loading=false end
 		changed();return true
 	end
 	function self.filter(filter:any)
 		if not alive or self.view.joining then return end
 		problem=nil;self.view.filter=table.clone(filter);self.view.rows={};self.view.message="Refreshing matches…"
-		browseToken=nil;self.view.loading=false;refreshAt=math.max(deps.now(),nextBrowse);changed()
+		revision+=1;self.view.loading=false;refreshAt=math.max(deps.now(),nextBrowse);changed()
 	end
 	function self.join(id:string):boolean
 		if not alive or not self.view.open or self.view.joining then return false end
@@ -40,7 +44,7 @@ function Browser.new(deps:any):any
 		if not selected or not selected.joinable or (tonumber(selected.expiresIn) or 0)<=deps.now()-rowsAt then
 			self.view.message="That seat is no longer available. Refreshing…";refreshAt=deps.now();changed();return false
 		end
-		local token={};problem=nil;joinToken=token;browseToken=nil;self.view.loading=false;self.view.joining=id;self.view.message="Joining match…";joinUntil=deps.now()+65;changed()
+		local token={};problem=nil;joinToken=token;revision+=1;self.view.loading=false;self.view.joining=id;self.view.message="Joining match…";joinUntil=deps.now()+65;changed()
 		local function done(r:any)
 			if not alive or joinToken~=token then return end
 			if type(r)=="table" and r.ok==true and r.route=="teleport" then self.view.message="Connecting to match…"

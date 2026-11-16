@@ -19,6 +19,7 @@
 		capacity     seats
 		userIds      ids represented in players (consume holds only after actual seating)
 		reservations { [tostring(userId)] = expiry } seats held for players being teleported in
+		reservationIds optional server-only request owners for conditional cleanup of live holds
 		status       "waiting" | "inProgress" | "closing"
 		visibility   "public" | "friends" | "private"
 		joinInProgress  whether a running match still takes new players
@@ -49,18 +50,18 @@ LobbyDirectory.VISIBILITY = { public = true, friends = true, private = true }
 
 -- Refusal reasons a join can return. `retry` says whether a fresh browse might find a seat elsewhere.
 LobbyDirectory.REASONS = {
-	gone = { text = "That lobby no longer exists.", retry = true },
-	stale = { text = "That lobby's server stopped responding.", retry = true },
-	closed = { text = "That lobby is closing.", retry = true },
-	expired = { text = "That lobby has expired.", retry = true },
+	gone = { text = "That lobby no longer exists. Refresh to find another match.", retry = true },
+	stale = { text = "That lobby's server stopped responding. Refresh to find another match.", retry = true },
+	closed = { text = "That lobby is closing. Refresh to find another match.", retry = true },
+	expired = { text = "That lobby has expired. Refresh to find another match.", retry = true },
 	forbidden = { text = "You don't have permission to join that lobby.", retry = false },
-	full = { text = "That lobby is full.", retry = true },
+	full = { text = "That lobby is full. Refresh for open seats.", retry = true },
 	inProgress = { text = "That match has already started.", retry = true },
 	already = { text = "You are already in that lobby.", retry = false },
 	unroutable = { text = "That lobby can't be reached right now.", retry = true },
-	teleportFailed = { text = "The teleport failed. Try again.", retry = true },
+	teleportFailed = { text = "Travel to the match failed. Refresh, then choose Join to try again.", retry = true },
 	busy = { text = "Too many requests. Wait a moment.", retry = true },
-	unavailable = { text = "The lobby directory is unavailable right now.", retry = true },
+	unavailable = { text = "The lobby directory is unavailable right now. Wait a moment, then refresh.", retry = true },
 	invalid = { text = "Invalid request.", retry = false },
 }
 
@@ -441,12 +442,23 @@ local function prune(reservations: any, userIds: { number }, now: number): { [st
 	return out
 end
 
+-- Optional ownership metadata keeps delayed cleanup transforms from releasing a later attempt.
+-- Numeric reservation expiries stay compatible with existing records/seat counting.
+local function owners(l: Listing, reservations: any): { [string]: string }
+	local out = {}
+	for key in reservations do
+		local id = if type(l.reservationIds) == "table" then l.reservationIds[key] else nil
+		if type(id) == "string" then out[key] = id end
+	end
+	return out
+end
+
 --[[
 	UpdateAsync transform for joining: returns the new record holding a seat for the viewer, plus the
 	route; or nil (cancel the write) and a reason. Reserving through the store's atomic update is what
 	stops two servers from handing out the last seat twice.
 ]]
-function LobbyDirectory.reserve(l: any, viewer: Viewer, now: number, currentLobbyId: string?): (Listing?, string | Route)
+function LobbyDirectory.reserve(l: any, viewer: Viewer, now: number, currentLobbyId: string?, requestId: string?): (Listing?, string | Route)
 	local ok, result = LobbyDirectory.checkJoin(l, viewer, now, currentLobbyId)
 	if not ok then
 		return nil, result
@@ -466,17 +478,21 @@ function LobbyDirectory.reserve(l: any, viewer: Viewer, now: number, currentLobb
 		return nil, "busy"
 	end
 	nextL.reservations[key] = now + LobbyDirectory.RESERVATION_SEC
+	nextL.reservationIds = owners(l, nextL.reservations)
+	nextL.reservationIds[key] = requestId
 	return nextL, route
 end
 
 -- UpdateAsync transform to give a seat back after a failed teleport. nil = nothing to change.
-function LobbyDirectory.release(l: any, userId: number): Listing?
+function LobbyDirectory.release(l: any, userId: number, requestId: string?): Listing?
 	if type(l) ~= "table" or type(l.reservations) ~= "table" or l.reservations[tostring(userId)] == nil then
 		return nil
 	end
+	if requestId and (type(l.reservationIds) ~= "table" or l.reservationIds[tostring(userId)] ~= requestId) then return nil end
 	local nextL = table.clone(l)
 	nextL.reservations = table.clone(l.reservations)
 	nextL.reservations[tostring(userId)] = nil
+	nextL.reservationIds = owners(l, nextL.reservations)
 	return nextL
 end
 
@@ -495,6 +511,7 @@ function LobbyDirectory.mergeHeartbeat(old: any, fresh: Listing, now: number): L
 	else
 		nextL.reservations = {}
 	end
+	nextL.reservationIds = owners(old or {}, nextL.reservations)
 	return nextL
 end
 
@@ -538,7 +555,7 @@ end
 
 -- Destination UpdateAsync: direct arrivals also hold a seat until the match handshake seats them.
 -- A mere PlayerAdded must not consume a teleport hold or make that seat available to someone else.
-function LobbyDirectory.claimArrival(l: Listing, viewer: Viewer, now: number): (Listing?, any)
+function LobbyDirectory.claimArrival(l: Listing, viewer: Viewer, now: number, requestId: string?): (Listing?, any)
 	local result=LobbyDirectory.checkArrival(l,viewer,now)
 	if not result.admit or not result.seat or present(l,viewer.userId) then return nil,result end
 	local nextL=table.clone(l);nextL.reservations=prune(l.reservations,l.userIds or {},now)
@@ -546,6 +563,8 @@ function LobbyDirectory.claimArrival(l: Listing, viewer: Viewer, now: number): (
 	local key=tostring(viewer.userId)
 	if not nextL.reservations[key] and count>=LobbyDirectory.MAX_RESERVATIONS then return nil,{admit=true,seat=false,reason="full"} end
 	nextL.reservations[key]=now+LobbyDirectory.RESERVATION_SEC
+	nextL.reservationIds=owners(l,nextL.reservations)
+	if requestId then nextL.reservationIds[key]=requestId end
 	return nextL,result
 end
 
